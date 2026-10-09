@@ -1,0 +1,8 @@
+[Unit]
+Description=influ - refit arrival-hazard model
+
+[Service]
+Type=oneshot
+WorkingDirectory=%h/influ/analysis
+ExecStart=%h/influ/.venv/bin/python fit_hazard.py
+Nice=10
