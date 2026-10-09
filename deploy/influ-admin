@@ -1,0 +1,103 @@
+#!/bin/sh
+# influ-admin - the only root-level actions the influ project needs.
+# Installed root-owned at /usr/local/sbin/influ-admin; x230 may run it via sudo without a
+# password (/etc/sudoers.d/influ). It takes no free-form arguments: every path and every
+# file it writes is fixed below, so the sudo rule cannot be used for anything else.
+#
+#   influ-admin status
+#   influ-admin mode direct     dump1090-fa owns the RTL-SDR (original setup, restored from backup)
+#   influ-admin mode sdrmux     sdrmux owns the RTL-SDR, dump1090-fa reads its FIFO
+#   influ-admin restart dump1090|sdrmux
+#   influ-admin stop dump1090 | start dump1090     (for measuring restart overhead)
+set -eu
+
+DEF=/etc/default/dump1090-fa
+ORIG=/etc/default/dump1090-fa.influ-orig
+UNIT=/etc/systemd/system/sdrmux.service
+DROPIN_DIR=/etc/systemd/system/dump1090-fa.service.d
+DROPIN=$DROPIN_DIR/influ-sdrmux.conf
+
+OVERRIDE='--device-type ifile --ifile /run/sdrmux/adsb.cu8 --iformat UC8 --fix --lat 30.55 --lon 105.62 --max-range 360 --net-ro-port 30002 --net-sbs-port 30003 --net-bi-port 30004,30104 --net-bo-port 30005 --json-location-accuracy 1'
+
+backup() { [ -f "$ORIG" ] || cp -p "$DEF" "$ORIG"; }
+
+write_unit() {
+  cat > "$UNIT" <<'EOF'
+[Unit]
+Description=sdrmux - RTL-SDR time-share multiplexer (influ)
+Before=dump1090-fa.service
+
+[Service]
+Type=notify
+NotifyAccess=main
+User=x230
+Group=plugdev
+RuntimeDirectory=sdrmux
+RuntimeDirectoryMode=0755
+RuntimeDirectoryPreserve=yes
+EnvironmentFile=-/home/x230/influ/sdrmux/sdrmux.env
+ExecStart=/usr/bin/python3 /home/x230/influ/sdrmux/sdrmux.py $SDRMUX_ARGS
+WatchdogSec=15
+Restart=always
+RestartSec=5
+Nice=-5
+
+[Install]
+WantedBy=multi-user.target
+EOF
+  mkdir -p "$DROPIN_DIR"
+  cat > "$DROPIN" <<'EOF'
+[Unit]
+Wants=sdrmux.service
+After=sdrmux.service
+EOF
+}
+
+current_mode() {
+  if grep -q '^OVERRIDE_OPTIONS=.*sdrmux' "$DEF" 2>/dev/null; then echo sdrmux; else echo direct; fi
+}
+
+case "${1:-}" in
+  status)
+    echo "mode: $(current_mode)"
+    for s in sdrmux dump1090-fa piaware fr24feed; do
+      printf '%s: %s\n' "$s" "$(systemctl is-active "$s" 2>/dev/null || true)"
+    done
+    ;;
+  mode)
+    case "${2:-}" in
+      sdrmux)
+        backup
+        write_unit
+        { grep -v '^OVERRIDE_OPTIONS=' "$ORIG"; echo "OVERRIDE_OPTIONS=\"$OVERRIDE\""; } > "$DEF.tmp"
+        mv "$DEF.tmp" "$DEF"
+        systemctl daemon-reload
+        systemctl stop dump1090-fa
+        systemctl enable sdrmux >/dev/null 2>&1
+        systemctl restart sdrmux
+        systemctl start dump1090-fa
+        ;;
+      direct)
+        [ -f "$ORIG" ] && cp -p "$ORIG" "$DEF"
+        rm -f "$DROPIN"
+        systemctl daemon-reload
+        systemctl stop dump1090-fa
+        systemctl disable --now sdrmux >/dev/null 2>&1 || true
+        systemctl start dump1090-fa
+        ;;
+      *) echo "usage: influ-admin mode direct|sdrmux" >&2; exit 2 ;;
+    esac
+    echo "mode: $(current_mode)"
+    ;;
+  restart|stop|start)
+    case "${2:-}" in
+      dump1090) systemctl "$1" dump1090-fa ;;
+      sdrmux) [ "$1" = restart ] && systemctl restart sdrmux || { echo "only restart for sdrmux" >&2; exit 2; } ;;
+      *) echo "usage: influ-admin $1 dump1090|sdrmux" >&2; exit 2 ;;
+    esac
+    ;;
+  *)
+    sed -n '2,13p' "$0" >&2
+    exit 2
+    ;;
+esac
