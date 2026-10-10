@@ -4,7 +4,7 @@ After=network-online.target
 
 [Service]
 EnvironmentFile=-%h/influ/scheduler/scheduler.env
-ExecStart=%h/influ/.venv/bin/python %h/influ/scheduler/influ_scheduler.py $SCHED_ARGS
+ExecStart=/usr/bin/sg dialout -c "%h/influ/.venv/bin/python %h/influ/scheduler/influ_scheduler.py ${SCHED_ARGS}"
 Restart=always
 RestartSec=10
 

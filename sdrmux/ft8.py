@@ -37,7 +37,8 @@ BLANK_S = 4 * 65536 / 2 / 2_400_000      # sdrmux zero-fills 4 buffers after a r
 
 def station():
     try:
-        return json.load(open(STATION))
+        with open(STATION) as f:
+            return json.load(f)
     except (OSError, ValueError):
         return {"call": "", "grid": ""}
 
@@ -86,14 +87,14 @@ def jt9(pcm, slot_start, workdir):
     return res
 
 
-def decode_recording(path, meta):
+def decode_recording(path, meta, dials=FT8_DIALS):
     t_first = meta.get("first_t") or (meta["t_start"] + meta.get("switch_out_ms", 85) / 1000
                                       + BLANK_S)
     lo, hi = meta["freq"] - 0.45 * meta["rate"], meta["freq"] + 0.45 * meta["rate"]
     out = []
     work = tempfile.mkdtemp(prefix="ft8_")
     try:
-        for dial in FT8_DIALS:
+        for dial in dials:
             if not lo < dial < hi - 3000:
                 continue
             audio = usb_audio(path, meta, dial)

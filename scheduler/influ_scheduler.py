@@ -162,6 +162,8 @@ def main():
     ap.add_argument("--min-quiet", type=float, default=120)
     ap.add_argument("--active-s", type=float, default=60)
     ap.add_argument("--post-hook", default=os.path.join(HERE, "post_window.sh"))
+    ap.add_argument("--ft8-tx", action="store_true", help="enable calibrated CEC FT8 auto-sequence")
+    ap.add_argument("--radio-port", default="/dev/serial/by-id/usb-Prolific_Technology_Inc._USB-Serial_Controller_D-if00-port0")
     a = ap.parse_args()
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
     os.makedirs(a.out, exist_ok=True)
@@ -169,6 +171,12 @@ def main():
     tr = Tracker()
     threading.Thread(target=tr.run, daemon=True).start()
     budget = Budget(os.path.join(a.out, "budget.json"))
+    auto = None
+    if a.ft8_tx and a.mode == "live":
+        from ft8_auto import Auto
+        auto = Auto(a.radio_port, os.path.expanduser("~/influ/radio/calibration.json"),
+                    os.path.expanduser("~/influ/ft8"))
+        log.info("FT8 auto-sequence enabled for %s", auto.call)
     hz, hz_mtime = None, 0
     time.sleep(5)
     log.info("scheduler started in %s mode", a.mode)
@@ -190,9 +198,21 @@ def main():
             mux = sdrmux({"cmd": "status"}, timeout=5)
         except Exception as e:
             mux = {"ok": False, "error": str(e)}
+        if auto and mux.get("sdr_ok") and mux.get("fifo_connected") and mux.get("mode") == "adsb":
+            try:
+                if auto.transmit(int(now // 15) * 15):
+                    # The V4 remains on 1090 during TX; never open a simultaneous RX window.
+                    continue
+            except Exception as e:
+                log.exception("FT8 TX disabled: %s", e)
+                auto.write("disabled", error=str(e))
+                auto.close()
+                auto = None
         hour = int(local_hour(now))
         exp_hidden = hz.expected_hidden(now, D) if hz else 1.0
         reasons = []
+        if auto and not auto.want_receive(int(now // 15) * 15):
+            reasons.append("ft8_transmit_parity")
         if not (mux.get("ok") and mux.get("sdr_ok") and mux.get("fifo_connected")):
             reasons.append("sdrmux_unhealthy")
         if not dump1090_fresh():
@@ -231,10 +251,29 @@ def main():
                 budget.spend(exp_hidden, res["off_1090_s"], hour)
                 w0, w1 = res["t_start"], res["t_start"] + res["off_1090_s"]
                 threading.Thread(target=follow_up, args=(tr, w0, w1, a, rec), daemon=True).start()
-                if os.path.exists(a.post_hook):
+                if auto:
+                    # Start only if two more RX windows fit the same risk budgets.
+                    can_start = (budget.risk + 2 * exp_hidden <= a.day_risk
+                                 and budget.hour_risk.get(hour, 0) + 2 * exp_hidden <= a.hour_risk
+                                 and budget.blind + 2 * D <= a.day_blind
+                                 and budget.per_hour.get(hour, 0) + 2 <= a.max_per_hour)
+                    threading.Thread(target=decode_then_post,
+                                     args=(auto, res["file"], a.post_hook, can_start), daemon=True).start()
+                elif os.path.exists(a.post_hook):
                     subprocess.Popen(["/bin/sh", a.post_hook, res["file"]],
                                      stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
         write(a.out, "decisions", rec)
+
+
+def decode_then_post(auto, path, hook, can_start):
+    try:
+        auto.receive(path, can_start)
+    except Exception:
+        log.exception("FT8 receive decode failed for %s", path)
+        return                       # keep IQ for diagnosis; don't invent an empty receive slot
+    if os.path.exists(hook):
+        subprocess.Popen(["/bin/sh", hook, path, "--skip-ft8"],
+                         stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
 
 
 def follow_up(tr, w0, w1, a, rec):

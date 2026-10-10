@@ -46,6 +46,7 @@ def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("file")
     ap.add_argument("--keep-iq", action="store_true")
+    ap.add_argument("--skip-ft8", action="store_true", help="scheduler already decoded and published FT8")
     a = ap.parse_args()
     os.makedirs(os.path.dirname(LOCK), exist_ok=True)
     with open(LOCK, "w") as lk:
@@ -61,7 +62,7 @@ def process(a):
     fc, fs = meta["freq"], meta["rate"]
     summary = dict(meta, seconds=iqtools.n_samples(a.file) / fs)
 
-    summary["ft8"] = ft8.decode_recording(a.file, meta)
+    summary["ft8"] = [] if a.skip_ft8 else ft8.decode_recording(a.file, meta)
 
     rfi = set(json.load(open(KNOWN_RFI))) if os.path.exists(KNOWN_RFI) else set()
     floor, chans = active_channels(a.file, fc, fs)
