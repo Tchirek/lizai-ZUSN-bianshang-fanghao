@@ -1,0 +1,9 @@
+{
+  "call": "N0CALL",
+  "grid": "AA00aa",
+  "lat": 0.0,
+  "lon": 0.0,
+  "antenna_asl_m": 0,
+  "antenna_agl_m": 0,
+  "note": "copy to ~/influ/station.json on the station host; the real file is not committed"
+}
