@@ -1,0 +1,12 @@
+[Unit]
+Description=Minimal FT8 log HTTP service
+After=network-online.target
+
+[Service]
+ExecStart=/usr/bin/python3 %h/influ/tools/ft8log_http.py --port 8073
+Restart=always
+RestartSec=3
+NoNewPrivileges=true
+
+[Install]
+WantedBy=default.target
