@@ -29,6 +29,8 @@ UA = "influ-collector/1.0 (personal ADS-B feeder research)"
 
 log = logging.getLogger("influ")
 stop = threading.Event()
+cloud_lock = threading.Lock()
+cloud_latest = {}
 
 
 class HourlyWriter:
@@ -220,7 +222,7 @@ CLOUD_SOURCES = {
 }
 
 
-def run_cloud(w, name, url, period, offset):
+def run_cloud(w, name, url, period, offset, latest):
     stop.wait(offset)
     fails = 0
     while not stop.is_set():
@@ -228,13 +230,22 @@ def run_cloud(w, name, url, period, offset):
         try:
             d = fetch_json(url)
             ac = d.get("ac") or d.get("aircraft") or []
-            w.write(json.dumps({"t": t0, "src": name, "now": d.get("now"), "ac": ac},
-                               separators=(",", ":")) + "\n")
+            rec = {"t": t0, "src": name, "now": d.get("now"), "ac": ac}
+            w.write(json.dumps(rec, separators=(",", ":")) + "\n")
             fails = 0
         except Exception as e:
             fails += 1
-            w.write(json.dumps({"t": t0, "src": name, "error": str(e)[:200]}) + "\n")
+            rec = {"t": t0, "src": name, "error": str(e)[:200]}
+            w.write(json.dumps(rec) + "\n")
             log.warning("cloud %s: %s", name, e)
+        try:
+            with cloud_lock:
+                cloud_latest[name] = rec
+                with open(latest + ".tmp", "w") as f:
+                    json.dump(cloud_latest, f)
+                os.replace(latest + ".tmp", latest)
+        except OSError:
+            log.exception("cloud latest cache")
         # back off on repeated errors (rate limit / outage)
         stop.wait(period * min(2 ** max(fails - 1, 0), 30))
 
@@ -304,7 +315,8 @@ def main():
     if not a.no_cloud:
         for k, (name, url) in enumerate(CLOUD_SOURCES.items()):
             jobs.append((run_cloud, (W["cloud"], name, url, a.cloud_period,
-                                     k * a.cloud_period / len(CLOUD_SOURCES))))
+                                     k * a.cloud_period / len(CLOUD_SOURCES),
+                                     os.path.join(a.data, "cloud-latest.json"))))
     threads = [threading.Thread(target=f, args=args, daemon=True, name=f.__name__) for f, args in jobs]
     for t in threads:
         t.start()

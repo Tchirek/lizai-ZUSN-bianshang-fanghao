@@ -1,0 +1,8 @@
+[Unit]
+Description=influ - fit unidentified/light aircraft activity schedule
+
+[Service]
+Type=oneshot
+WorkingDirectory=%h/influ/analysis
+ExecStart=%h/influ/.venv/bin/python fit_training.py
+Nice=10
