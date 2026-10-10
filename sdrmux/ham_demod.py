@@ -11,28 +11,19 @@ import wave
 import numpy as np
 from scipy import signal
 
+import iqtools
+
 FS_IF = 48_000
 FS_AUDIO = 16_000
 
 
-def load(path):
-    raw = np.fromfile(path, dtype=np.uint8).astype(np.float32)
-    return ((raw[0::2] - 127.4) + 1j * (raw[1::2] - 127.4)) / 128.0
-
-
-def channel(iq, fs, offset, bw=12_500):
-    """Shift `offset` Hz to baseband, filter to bw, decimate to 48 kHz."""
-    n = np.arange(len(iq))
-    x = iq * np.exp(-2j * np.pi * offset / fs * n)
-    dec = int(fs // FS_IF)                       # 2.4 MHz / 48 kHz = 50
-    sos = signal.butter(8, bw / 2, fs=fs, output="sos")
-    x = signal.sosfilt(sos, x)[::dec]
-    return x
+def channel(path, fs, offset, bw=12_500):
+    return iqtools.channelize(path, fs, offset, bw, FS_IF)
 
 
 def fm_demod(x):
     d = np.angle(x[1:] * np.conj(x[:-1]))
-    # 75 us-ish de-emphasis is for broadcast; amateur NBFM uses 6 dB/oct pre-emphasis from 300 Hz
+    # amateur NBFM uses 6 dB/oct pre-emphasis from ~300 Hz: integrate it back out
     b, a = signal.butter(1, 300, fs=FS_IF, btype="low")
     d = signal.lfilter(b, a, d)
     sos = signal.butter(6, [300, 3000], fs=FS_IF, btype="band", output="sos")
@@ -58,6 +49,15 @@ def describe(x, audio):
                 peak_tone_hz=round(float(f[band][np.argmax(psd[band])]), 0))
 
 
+def write_wav(path, audio, rate):
+    pcm = np.clip(audio / (np.abs(audio).max() + 1e-9) * 0.9 * 32767, -32768, 32767).astype("<i2")
+    with wave.open(path, "wb") as w:
+        w.setnchannels(1)
+        w.setsampwidth(2)
+        w.setframerate(rate)
+        w.writeframes(pcm.tobytes())
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("file")
@@ -66,16 +66,10 @@ def main():
     ap.add_argument("--bw", type=float, default=12_500)
     a = ap.parse_args()
     meta = json.load(open(os.path.splitext(a.file)[0] + ".json"))
-    iq = load(a.file)
-    x = channel(iq, meta["rate"], a.freq - meta["freq"], a.bw)
+    x = channel(a.file, meta["rate"], a.freq - meta["freq"], a.bw)
     audio = fm_demod(x)
     out = a.out or os.path.splitext(a.file)[0] + f"_{int(a.freq)}.wav"
-    pcm = np.clip(audio / (np.abs(audio).max() + 1e-9) * 0.9 * 32767, -32768, 32767).astype("<i2")
-    with wave.open(out, "wb") as w:
-        w.setnchannels(1)
-        w.setsampwidth(2)
-        w.setframerate(FS_AUDIO)
-        w.writeframes(pcm.tobytes())
+    write_wav(out, audio, FS_AUDIO)
     print(json.dumps(dict(freq=a.freq, wav=out, **describe(x, audio))))
 
 

@@ -1,41 +1,45 @@
 #!/usr/bin/env python3
-"""Post-process one listen window: find active channels, demodulate them, keep only what
-looks like speech, then delete the raw IQ (96 MB per 20 s).
+"""Post-process one listen window, then delete the raw IQ (~96 MB per 20 s):
+  * FT8: decode every FT8 dial frequency inside the recording (ft8.py)
+  * FM: find active 12.5 kHz channels, demodulate the strongest, keep speech candidates
 
-Writes <base>.summary.json; speech-like channels as <base>_<freq>.wav.
+Writes <base>.summary.json; speech candidates as <base>_<freq>.wav.
+Runs one job at a time (flock), so a burst of windows cannot exhaust memory.
 usage: ham_process.py FILE.cu8 [--keep-iq]
 """
 import argparse
+import fcntl
 import json
 import os
 
 import numpy as np
 
+import ft8
 import ham_demod
+import iqtools
 
 CH = 12_500
-SPEECH_MOD_DB = 10.0      # 20 ms energy p90 - p10 in demodulated audio; noise/RFI ~3 dB
+SPEECH_MOD_DB = 10.0      # 20 ms energy p90 - p10; noise/RFI ~3 dB. Candidates only: the
+                          # 145.025 MHz clanging of 2026-10-10 also passed this test.
+MAX_FM_CHANNELS = 8
+KNOWN_RFI = os.path.expanduser("~/influ/sched/known_rfi.json")   # [freq_hz, ...]
+LOCK = os.path.expanduser("~/influ/sched/ham_process.lock")
 
 
-def active_channels(iq, fc, fs, n=4096, thresh_db=10.0):
-    frames = len(iq) // n
-    x = iq[: frames * n].reshape(frames, n) * np.hanning(n)
-    spec = np.abs(np.fft.fftshift(np.fft.fft(x, axis=1), axes=1)) ** 2
-    freqs = fc + np.fft.fftshift(np.fft.fftfreq(n, 1 / fs))
-    keep = (np.abs(freqs - fc) > 15e3) & (np.abs(freqs - fc) < 0.45 * fs)
-    floor = np.median(10 * np.log10(spec.mean(0)[keep] + 1e-20))
-    per = max(1, int(0.25 * fs / n))
-    S = spec[: frames // per * per].reshape(-1, per, n).mean(1)
+def active_channels(path, fc, fs, thresh_db=10.0):
+    freqs, S = iqtools.spectrogram(path, fs)
+    keep = (np.abs(freqs) > 15e3) & (np.abs(freqs) < 0.45 * fs)
+    floor = np.median(10 * np.log10(S.mean(0)[keep] + 1e-20))
     out = []
     for cf in np.arange(np.ceil((fc - 0.45 * fs) / CH) * CH, fc + 0.45 * fs, CH):
         if abs(cf - fc) < 15e3:
             continue
-        m = np.abs(freqs - cf) < CH * 0.4
+        m = np.abs(freqs - (cf - fc)) < CH * 0.4
         p = 10 * np.log10(S[:, m].mean(1) + 1e-20) - floor
         if p.max() > thresh_db:
             out.append(dict(freq=int(cf), peak_db=round(float(p.max()), 1),
                             active=round(float((p > thresh_db).mean()), 3)))
-    return floor, out
+    return float(floor), out
 
 
 def main():
@@ -43,38 +47,46 @@ def main():
     ap.add_argument("file")
     ap.add_argument("--keep-iq", action="store_true")
     a = ap.parse_args()
+    os.makedirs(os.path.dirname(LOCK), exist_ok=True)
+    with open(LOCK, "w") as lk:
+        fcntl.flock(lk, fcntl.LOCK_EX)
+        process(a)
+
+
+def process(a):
+    if not os.path.exists(a.file):
+        return
     base = os.path.splitext(a.file)[0]
     meta = json.load(open(base + ".json"))
-    iq = ham_demod.load(a.file)
     fc, fs = meta["freq"], meta["rate"]
-    floor, chans = active_channels(iq, fc, fs)
+    summary = dict(meta, seconds=iqtools.n_samples(a.file) / fs)
+
+    summary["ft8"] = ft8.decode_recording(a.file, meta)
+
+    rfi = set(json.load(open(KNOWN_RFI))) if os.path.exists(KNOWN_RFI) else set()
+    floor, chans = active_channels(a.file, fc, fs)
+    summary["floor_db"] = round(floor, 1)
     results = []
-    for c in sorted(chans, key=lambda c: -c["peak_db"])[:20]:
-        x = ham_demod.channel(iq, fs, c["freq"] - fc)
+    cand = [c for c in chans if c["freq"] not in rfi]
+    for c in sorted(cand, key=lambda c: -c["peak_db"])[:MAX_FM_CHANNELS]:
+        x = ham_demod.channel(a.file, fs, c["freq"] - fc)
         audio = ham_demod.fm_demod(x)
-        feat = ham_demod.describe(x, audio)
-        c.update(feat)
-        c["speech_like"] = feat["syllabic_mod_db"] >= SPEECH_MOD_DB
-        if c["speech_like"]:
-            wav = f"{base}_{c['freq']}.wav"
-            import wave
-            pcm = np.clip(audio / (np.abs(audio).max() + 1e-9) * 0.9 * 32767, -32768,
-                          32767).astype("<i2")
-            with wave.open(wav, "wb") as w:
-                w.setnchannels(1)
-                w.setsampwidth(2)
-                w.setframerate(ham_demod.FS_AUDIO)
-                w.writeframes(pcm.tobytes())
-            c["wav"] = wav
+        c.update(ham_demod.describe(x, audio))
+        c["speech_candidate"] = c["syllabic_mod_db"] >= SPEECH_MOD_DB
+        if c["speech_candidate"]:
+            c["wav"] = f"{base}_{c['freq']}.wav"
+            ham_demod.write_wav(c["wav"], audio, ham_demod.FS_AUDIO)
         results.append(c)
-    summary = dict(meta, floor_db=round(float(floor), 1), seconds=len(iq) / fs,
-                   active=results, speech_channels=[c["freq"] for c in results if c["speech_like"]])
+    summary["active"] = results
+    summary["active_total"] = len(chans)
+    summary["speech_candidates"] = [c["freq"] for c in results if c["speech_candidate"]]
     with open(base + ".summary.json", "w") as f:
         json.dump(summary, f)
     if not a.keep_iq:
         os.remove(a.file)
-    print(json.dumps(dict(file=os.path.basename(a.file), active=len(results),
-                          speech=summary["speech_channels"])))
+    print(json.dumps(dict(file=os.path.basename(a.file), active=len(chans),
+                          speech_candidates=summary["speech_candidates"],
+                          ft8=[d["message"] for f in summary["ft8"] for d in f["decodes"]])))
 
 
 if __name__ == "__main__":
