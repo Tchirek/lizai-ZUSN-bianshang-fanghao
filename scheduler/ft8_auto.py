@@ -176,6 +176,7 @@ class Auto:
                    for rec in cal["decoded"] for d in rec["decodes"]):
             raise ValueError("calibration station identity does not match")
         self.call, self.grid = st["call"], st["grid"]
+        self.tx_df = cal["frequencies_hz"][0]
         self.qso = QSO(self.call, self.grid)
         self.lock = threading.Lock()
         self.decoding = threading.Event()
@@ -188,6 +189,73 @@ class Auto:
         self.dial, self.out = dial, out
         self.last_cq = 0
         os.makedirs(out, exist_ok=True)
+        from ft8_web import Control, serve
+        self.web = Control(self.call, self.grid, self.validate_manual)
+        self.web_stopped = threading.Event()
+        threading.Thread(target=serve, args=(os.path.join(out, "web.sock"), self.web,
+                                           self.web_stopped), daemon=True).start()
+
+    def validate_manual(self, message):
+        if not isinstance(message, str) or not message.isascii():
+            raise ValueError("请使用英文、数字和 FT8 支持的标点")
+        message = " ".join(message.upper().split())
+        if not re.fullmatch(r"[A-Z0-9 +./?-]{1,37}", message):
+            raise ValueError("消息格式不受 FT8 支持")
+        parts = message.split()
+        standard = (message == f"CQ {self.call} {self.grid[:4]}" or
+                    (len(parts) == 3 and CALL.fullmatch(parts[0]) and parts[1] == self.call
+                     and (is_grid(parts[2]) or REPORT.fullmatch(parts[2])
+                          or parts[2] in ("RRR", "RR73", "73"))))
+        if not standard and (len(message) > 13 or parts[0] in ("CQ", "QRZ", "DE")):
+            raise ValueError("自由文本最多 13 字符；标准消息须使用本台呼号")
+        k5ft8.encode(message, free_text=not standard)
+        return message
+
+    def has_manual(self):
+        return self.web.queued() is not None
+
+    def manual_context(self, message, slot):
+        parts = message.split()
+        if parts[0] == "CQ":
+            self.qso.reset()
+            self.last_cq = slot
+            self.qso.rx_parity = 1 - int(slot // 15) % 2
+            if self.chat:
+                self.chat.start(None)
+        elif (len(parts) == 3 and CALL.fullmatch(parts[0]) and parts[1] == self.call
+              and (is_grid(parts[2]) or REPORT.fullmatch(parts[2]) or parts[2] in ("RRR", "RR73", "73"))):
+            peer, _, body = parts
+            if self.chat:
+                self.chat.start(None)
+            if self.qso.peer != peer:
+                self.qso.reset()
+                self.qso.peer, self.qso.started = peer, slot
+                self.qso.sent_report, self.qso.received_report, self.qso.peer_grid = "", "", ""
+                self.qso.peer_df = 0
+            self.qso.rx_parity = 1 - int(slot // 15) % 2
+            if m := REPORT.fullmatch(body):
+                self.qso.sent_report = m[1]
+            self.qso.pending = message
+            self.qso.finish_after_tx = (body in ("RRR", "RR73", "73")
+                                       and bool(self.qso.sent_report and self.qso.received_report))
+            self.qso.transmitted(slot)
+            self.qso.pending = None
+        else:
+            self.qso.pending = None
+            self.qso.last_tx = slot
+            self.qso.rx_parity = 1 - int(slot // 15) % 2
+            if self.chat:
+                previous = self.chat.peer if self.chat.active(slot) else {}
+                peer = self.qso.peer or previous.get("call", "UNKNOWN")
+                df = (self.qso.peer_df if self.qso.peer else 0) or previous.get("df", self.tx_df)
+                context = dict(call=peer, end=slot + 13.2, df=df, rx_parity=self.qso.rx_parity)
+                if not self.chat.peer or self.chat.peer["call"] != peer:
+                    self.chat.start(context)
+                else:
+                    if self.chat.future:
+                        self.chat.future.cancel()
+                    self.chat.future, self.chat.peer = None, context
+                self.chat.history = (self.chat.history + [dict(role="assistant", content=message)])[-8:]
 
     def write(self, event, **values):
         rec = dict(t=time.time(), event=event, **values)
@@ -196,13 +264,14 @@ class Auto:
         log.info("%s %s", event, values)
 
     def receive(self, path, can_start=True):
-        meta = json.load(open(os.path.splitext(path)[0] + ".json"))
+        with open(os.path.splitext(path)[0] + ".json") as f:
+            meta = json.load(f)
         for rec in ft8.decode_recording(path, meta, dials=[self.dial]):
             with self.lock:
                 if self.qso.peer or can_start:
                     self.qso.receive(rec["slot"], rec["decodes"])
                 chatting = self.chat is not None and self.chat.active(rec["slot"])
-                if chatting and not self.qso.peer:
+                if chatting and (not self.qso.peer or self.web.recent(rec["slot"])):
                     self.chat.receive(rec)
                 # CQ only follows an actually approved RX window, never blind.
                 if can_start and not chatting and not self.qso.peer and rec["slot"] - self.last_cq >= 120:
@@ -210,10 +279,14 @@ class Auto:
                     self.qso.pending = f"CQ {self.call} {self.grid[:4]}"
                     self.qso.started = rec["slot"]
                     self.qso.tries = 0
+                if self.qso.pending and not self.web.queued():
+                    self.web.allow(self.qso.pending, "状态机")
             self.write("receive", slot=rec["slot"], decodes=rec["decodes"])
 
     def want_receive(self, slot):
         if self.decoding.is_set():
+            return False
+        if self.has_manual():
             return False
         with self.lock:
             if self.qso.pending and self.qso.last_tx < self.qso.last_decode:
@@ -225,28 +298,37 @@ class Auto:
 
     def in_qso(self, slot):
         with self.lock:
-            if self.qso.pending and slot - self.qso.started > 240:
+            if (self.qso.peer or self.qso.pending) and slot - self.qso.started > 240:
                 self.qso.reset()
-            return bool(self.qso.peer and (self.qso.last_tx >= self.qso.started
-                        or 0 <= self.qso.started - self.last_cq <= 240))
+                self.web.discard("状态机")
+            return (self.web.recent(slot) or bool(self.qso.peer and
+                    (self.qso.last_tx >= self.qso.started or 0 <= self.qso.started - self.last_cq <= 240)))
 
     def transmit(self, slot):
         if self.decoding.is_set():
             return False                # never repeat an old message while its reply is decoding
         with self.lock:
-            message = self.qso.due(slot)
+            manual = self.web.queued()
+            message = manual["message"] if manual else self.qso.due(slot)
             chat_reply = False
-            if not message and self.chat and not self.qso.peer:
+            if not message and self.chat and (not self.qso.peer or self.web.recent(slot)):
                 message = self.chat.due(slot)
                 chat_reply = message is not None
             if not message:
+                if not self.qso.pending and (not self.chat or self.chat.future is None):
+                    self.web.discard()
                 return False
+            if not manual and not self.web.allow(message, "LLM" if chat_reply else "状态机"):
+                return False
+            guard = lambda: self.web.permit(manual["id"] if manual else None, message,
+                                           "LLM" if chat_reply else "状态机")
+            source = "manual" if manual else "approved" if self.web.owner else "auto"
             try:
                 if chat_reply:
-                    self.radio.transmit(message, slot, free_text=True)
+                    self.radio.transmit(message, slot, free_text=True, guard=guard)
                 else:
-                    self.radio.transmit(message, slot)
-            except k5ft8.MissedSlot:
+                    self.radio.transmit(message, slot, guard=guard)
+            except (k5ft8.MissedSlot, k5ft8.TransmitCancelled):
                 self.write("skip_late", slot=slot, message=message)
                 return False
             except ValueError:
@@ -255,14 +337,18 @@ class Auto:
                 self.chat.future = None
                 self.write("llm_error", error="invalid_free_text_encoding")
                 return False
-            if chat_reply:
+            if manual:
+                self.manual_context(message, slot)
+            elif chat_reply:
                 self.chat.sent(message)
             elif message.startswith("CQ "):
                 self.last_cq = slot
                 self.qso.pending = None
             else:
                 self.qso.transmitted(slot)
-            self.write("transmit", slot=slot, message=message, dial=self.dial, offset_hz=1200)
+            self.web.sent(message, slot, manual["id"] if manual else None)
+            self.write("transmit", slot=slot, message=message, dial=self.dial, offset_hz=1200,
+                       source=source)
             for qso in self.qso.completed:
                 with open(os.path.join(self.out, "qsos.adi"), "a") as f:
                     f.write(adif(qso, self.call, self.grid, self.dial))
@@ -273,6 +359,7 @@ class Auto:
             return True
 
     def close(self):
+        self.web_stopped.set()
         if self.chat:
             self.chat.close()
         self.radio.close()

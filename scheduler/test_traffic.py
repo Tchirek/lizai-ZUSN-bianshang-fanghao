@@ -8,6 +8,7 @@ import unittest
 from influ_scheduler import window_reasons
 from influ.traffic import fit, near_or_approaching, Policy
 from ft8_auto import Auto, QSO
+from ft8_web import Control
 
 
 class Tests(unittest.TestCase):
@@ -48,6 +49,7 @@ class Tests(unittest.TestCase):
     def test_only_started_qso_gets_priority_and_it_expires(self):
         controller = object.__new__(Auto)
         controller.lock, controller.qso, controller.last_cq = threading.Lock(), QSO('BG8ASN','OM20'), -1000
+        controller.web = Control('BG8ASN', 'OM20', lambda s:s)
         controller.qso.receive(30, [dict(message='CQ W1ABC FN42', snr=-12)])
         self.assertFalse(controller.in_qso(45))
         controller.qso.transmitted(45)

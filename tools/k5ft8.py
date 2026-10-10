@@ -24,6 +24,10 @@ class MissedSlot(RuntimeError):
     pass
 
 
+class TransmitCancelled(RuntimeError):
+    pass
+
+
 def packet(cmd, data=b"\0" * 5, payload=b""):
     if len(data) != 5 or len(payload) > 110:
         raise ValueError("CEC header needs five bytes; payload limit is 110")
@@ -92,7 +96,7 @@ class Radio:
         if self.mode() != "FT8":
             raise RuntimeError("radio left FT8 mode while setting frequency")
 
-    def transmit(self, message, slot, offset_hz=1200, free_text=False):
+    def transmit(self, message, slot, offset_hz=1200, free_text=False, guard=None):
         tones = encode(message, free_text=free_text)
         target = slot + 0.45
         if time.time() > target + 0.08:
@@ -102,6 +106,8 @@ class Radio:
         if time.time() > target + 0.08:
             raise MissedSlot("mode query missed FT8 start; skipping this slot")
         wait_until(target)
+        if guard is not None and not guard():
+            raise TransmitCancelled("page approval or queued message changed before TX")
         self.s.write(tx_packet(tones, offset_hz))
         self.s.flush()
         # Firmware cannot process a stop command inside its blocking symbol loop.

@@ -12,6 +12,7 @@ import numpy as np
 
 import ft8_auto as auto
 import k5ft8
+from ft8_web import Control
 
 
 class Tests(unittest.TestCase):
@@ -48,6 +49,7 @@ class Tests(unittest.TestCase):
         controller = object.__new__(auto.Auto)
         controller.lock, controller.decoding = threading.Lock(), threading.Event()
         controller.chat = None
+        controller.web = Control('BG8ASN', 'OM20', lambda s: s)
         controller.qso = auto.QSO("BG8ASN", "OM20")
         controller.decoding.set()
         self.assertFalse(controller.want_receive(15))

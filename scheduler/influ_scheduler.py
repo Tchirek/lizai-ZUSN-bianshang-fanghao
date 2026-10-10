@@ -248,7 +248,8 @@ def main():
                 traffic = traffic_policy.assess(now, local)
             except (OSError, ValueError, KeyError, TypeError):
                 traffic["reasons"] = ["traffic_data_unavailable"]
-        tx_allowed = a.policy != "traffic" or in_qso or not traffic["reasons"]
+        tx_allowed = (a.policy != "traffic" or in_qso or not traffic["reasons"]
+                      or (auto and auto.has_manual()))
         if (auto and tx_allowed and mux.get("sdr_ok") and mux.get("fifo_connected")
                 and mux.get("mode") == "adsb"):
             try:

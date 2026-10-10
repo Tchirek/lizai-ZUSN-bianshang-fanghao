@@ -4,12 +4,13 @@ from concurrent.futures import Future
 import tempfile
 import threading
 import unittest
-from unittest.mock import Mock, patch
+from unittest.mock import ANY, Mock, patch
 from pathlib import Path
 
 import ft8_auto
 import ft8_llm as llm
 import k5ft8
+from ft8_web import Control
 
 
 class Tests(unittest.TestCase):
@@ -93,6 +94,7 @@ class Tests(unittest.TestCase):
     def test_auto_receive_uses_hook_only_after_qso(self):
         controller = object.__new__(ft8_auto.Auto)
         controller.lock = threading.Lock()
+        controller.web = Control('BG8ASN', 'OM20', lambda s:s)
         controller.qso = ft8_auto.QSO('BG8ASN', 'OM20')
         controller.chat = self.chat()
         controller.last_cq, controller.call, controller.grid = 0, 'BG8ASN', 'OM20'
@@ -107,7 +109,7 @@ class Tests(unittest.TestCase):
         self.assertIsNone(controller.qso.pending)
         controller.decoding, controller.radio = threading.Event(), Mock()
         self.assertTrue(controller.transmit(45))
-        controller.radio.transmit.assert_called_once_with('FINE TNX', 45, free_text=True)
+        controller.radio.transmit.assert_called_once_with('FINE TNX', 45, free_text=True, guard=ANY)
 
 
 if __name__ == '__main__':
