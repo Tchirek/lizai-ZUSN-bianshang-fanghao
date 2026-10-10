@@ -112,11 +112,13 @@ class Budget:
         self.risk = 0.0
         self.blind = 0.0
         self.per_hour = {}
+        self.hour_risk = {}
         try:
             d = json.load(open(path))
             if d["day"] == self.today():
                 self.day, self.risk, self.blind = d["day"], d["risk"], d["blind"]
                 self.per_hour = {int(k): v for k, v in d["per_hour"].items()}
+                self.hour_risk = {int(k): v for k, v in d.get("hour_risk", {}).items()}
         except Exception:
             pass
 
@@ -126,15 +128,17 @@ class Budget:
 
     def roll(self):
         if self.day != self.today():
-            self.day, self.risk, self.blind, self.per_hour = self.today(), 0.0, 0.0, {}
+            self.day, self.risk, self.blind = self.today(), 0.0, 0.0
+            self.per_hour, self.hour_risk = {}, {}
 
     def spend(self, risk, blind, hour):
         self.risk += risk
         self.blind += blind
         self.per_hour[hour] = self.per_hour.get(hour, 0) + 1
+        self.hour_risk[hour] = self.hour_risk.get(hour, 0.0) + risk
         with open(self.path + ".tmp", "w") as f:
             json.dump(dict(day=self.day, risk=self.risk, blind=self.blind,
-                           per_hour=self.per_hour), f)
+                           per_hour=self.per_hour, hour_risk=self.hour_risk), f)
         os.replace(self.path + ".tmp", self.path)
 
 
@@ -143,12 +147,16 @@ def main():
     ap.add_argument("--mode", choices=["shadow", "live"], default="shadow")
     ap.add_argument("--model", default=os.path.expanduser("~/influ/model/hazard.json"))
     ap.add_argument("--out", default=os.path.expanduser("~/influ/sched"))
-    ap.add_argument("--period", type=float, default=30.0)
-    ap.add_argument("--listen", type=float, default=20.0)
+    # 15 s period = FT8 slot; 14 s windows cover one full slot (signals end at 13.14 s)
+    ap.add_argument("--period", type=float, default=15.0)
+    ap.add_argument("--listen", type=float, default=14.0)
     ap.add_argument("--overhead", type=float, default=0.25)
-    ap.add_argument("--freq", type=float, default=145_500_000)
-    ap.add_argument("--risk-max", type=float, default=0.01)
+    # 144.9 MHz centre: 143.82-145.98 MHz usable, incl. FT8 144.174/144.460 and most 2 m FM
+    ap.add_argument("--freq", type=float, default=144_900_000)
+    ap.add_argument("--risk-max", type=float, default=0.015)
     ap.add_argument("--day-risk", type=float, default=0.1)
+    ap.add_argument("--hour-risk", type=float, default=0.02,
+                    help="spread the daily budget: max expected misses spent per hour")
     ap.add_argument("--day-blind", type=float, default=1800)
     ap.add_argument("--max-per-hour", type=int, default=6)
     ap.add_argument("--min-quiet", type=float, default=120)
@@ -199,6 +207,8 @@ def main():
             reasons.append("risk_above_max")
         if budget.risk + exp_hidden > a.day_risk:
             reasons.append("day_risk_budget")
+        if budget.hour_risk.get(hour, 0.0) + exp_hidden > a.hour_risk:
+            reasons.append("hour_risk_budget")
         if budget.blind + D > a.day_blind:
             reasons.append("day_blind_budget")
         if budget.per_hour.get(hour, 0) >= a.max_per_hour:
