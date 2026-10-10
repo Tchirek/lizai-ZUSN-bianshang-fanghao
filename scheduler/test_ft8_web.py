@@ -108,6 +108,19 @@ class Tests(unittest.TestCase):
         self.assertFalse(state['manual'])
         self.assertTrue(web.allow('HELLO','LLM'))
 
+    def test_unanswered_proactive_sends_are_logged_without_a_qso(self):
+        for action, message in [('cq', 'CQ BG8ASN OM20'), ('send', 'HI'),
+                                ('send', 'W1ABC BG8ASN OM20')]:
+            with self.subTest(action=action, message=message):
+                c = self.controller()
+                c.web.handle(dict(action=action, session=SID, message=message))
+                self.assertTrue(c.transmit(0))
+                c.write.assert_any_call('transmit', slot=0, message=message,
+                                        dial=144174000, offset_hz=1200,
+                                        source='web_cq' if action == 'cq' else 'manual')
+                self.assertEqual(c.qso.completed, [])
+                self.assertFalse(any(call.args[0] == 'qso' for call in c.write.call_args_list))
+
     def test_recent_cq_receive_window_survives_service_restart(self):
         from pathlib import Path
         c = self.controller()

@@ -6,8 +6,8 @@
 
 回复只允许最多 13 个 ASCII 字符，发送前还须被 WSJT-X 编码器确认属于自由文本类型 0.0；不会拆成长篇多帧消息。例：`HOW R U?` → `FINE TNX`。自由聊天记录仍在 `auto.jsonl`，事件名为 `llm_receive`、`llm_transmit`、`llm_error`；不计作新的 ADIF 通联。
 
-发给 API 的内容只有双方呼号、收到的短文本和最多四轮聊天历史。密钥、精确坐标、飞机数据不进入聊天提示。API 使用 `store=false`，实际调用按所选 API 账户计费。2026-10-10 已在 X230 启用 `deepseek-flash`，并通过一条不发射的真实 API 测试。
+发给 API 的内容包括双方呼号、收到的短文本、最多四轮聊天历史，以及简短的已确认设备背景：UV-K5、RTL-SDR V4、CEC 0.3V、X230、K1 USB 写频线。仅在被问到时回答这些信息；功率、天线和操作员姓名未知，不编造。密钥、精确坐标、飞机数据不进入聊天提示。API 使用 `store=false`，实际调用按所选 API 账户计费。2026-10-10 已在 X230 启用 `deepseek-flash`，并通过一条不发射的真实 API 测试。
 
-通联查看：`http://192.168.10.167:8073/`；收发文本：`/events`；ADIF 下载：`/qsos.adi`。这是只读的局域网 HTTP 服务。
+通联查看和发送：`http://192.168.10.167:8073/`；收发文本：`/events`；ADIF 下载：`/qsos.adi`。每次实际完成的发射都会记入收发日志，即使无人回应；ADIF 仅记录已完成的双向通联。
 
 接口依据：[OpenAI Responses API 文本生成](https://developers.openai.com/api/docs/guides/text)、[DeepSeek Responses API](https://api-docs.deepseek.com/api/create-response/)。协议依据：[FT4/FT8 协议规范，类型 0.0、13 字符自由文本](https://wsjt.sourceforge.io/FT4_FT8_QEX.pdf)。
