@@ -257,6 +257,7 @@ def main():
                                  and budget.hour_risk.get(hour, 0) + 2 * exp_hidden <= a.hour_risk
                                  and budget.blind + 2 * D <= a.day_blind
                                  and budget.per_hour.get(hour, 0) + 2 <= a.max_per_hour)
+                    auto.decoding.set()
                     threading.Thread(target=decode_then_post,
                                      args=(auto, res["file"], a.post_hook, can_start), daemon=True).start()
                 elif os.path.exists(a.post_hook):
@@ -271,6 +272,8 @@ def decode_then_post(auto, path, hook, can_start):
     except Exception:
         log.exception("FT8 receive decode failed for %s", path)
         return                       # keep IQ for diagnosis; don't invent an empty receive slot
+    finally:
+        auto.decoding.clear()
     if os.path.exists(hook):
         subprocess.Popen(["/bin/sh", hook, path, "--skip-ft8"],
                          stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)

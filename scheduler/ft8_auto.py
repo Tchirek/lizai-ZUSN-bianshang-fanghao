@@ -176,6 +176,7 @@ class Auto:
         self.call, self.grid = st["call"], st["grid"]
         self.qso = QSO(self.call, self.grid)
         self.lock = threading.Lock()
+        self.decoding = threading.Event()
         self.radio = k5ft8.Radio(port)
         self.radio.configure(dial)
         self.dial, self.out = dial, out
@@ -203,11 +204,17 @@ class Auto:
             self.write("receive", slot=rec["slot"], decodes=rec["decodes"])
 
     def want_receive(self, slot):
+        if self.decoding.is_set():
+            return False
         with self.lock:
+            if self.qso.pending and self.qso.last_tx < self.qso.last_decode:
+                return False            # send the decoded reply before spending another RX window
             parity = self.qso.rx_parity
             return parity is None or int(slot // 15) % 2 == parity
 
     def transmit(self, slot):
+        if self.decoding.is_set():
+            return False                # never repeat an old message while its reply is decoding
         with self.lock:
             message = self.qso.due(slot)
             if not message:

@@ -5,6 +5,7 @@ from unittest.mock import Mock, patch
 import os
 import subprocess
 import tempfile
+import threading
 import wave
 
 import numpy as np
@@ -42,6 +43,20 @@ class Tests(unittest.TestCase):
             with self.assertRaises(k5ft8.MissedSlot):
                 radio.transmit("CQ BG8ASN OM20", 0)
         radio.s.write.assert_not_called()
+
+    def test_slow_decode_does_not_spend_extra_windows_or_repeat_tx(self):
+        controller = object.__new__(auto.Auto)
+        controller.lock, controller.decoding = threading.Lock(), threading.Event()
+        controller.qso = auto.QSO("BG8ASN", "OM20")
+        controller.decoding.set()
+        self.assertFalse(controller.want_receive(15))
+        self.assertFalse(controller.transmit(15))
+        controller.decoding.clear()
+        self.receive(controller.qso, 0, "CQ W1ABC FN42")
+        self.assertFalse(controller.want_receive(30))
+        self.assertEqual(controller.qso.due(45), "W1ABC BG8ASN OM20")
+        controller.qso.transmitted(45)
+        self.assertTrue(controller.want_receive(60))
 
     def test_answer_cq(self):
         q = auto.QSO("BG8ASN", "OM20tn")
