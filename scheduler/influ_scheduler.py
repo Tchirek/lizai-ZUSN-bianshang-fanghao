@@ -105,6 +105,36 @@ def dump1090_fresh():
         return False
 
 
+def window_reasons(a, mux, fresh, snap, hz, risk, budget, hour, D, traffic, in_qso):
+    reasons = []
+    if not (mux.get("ok") and mux.get("sdr_ok") and mux.get("fifo_connected")):
+        reasons.append("sdrmux_unhealthy")
+    if not fresh:
+        reasons.append("dump1090_stale")
+    if a.policy == "traffic" and in_qso:
+        return reasons                # finish a finite QSO despite arriving aircraft or budgets
+    if a.policy == "traffic":
+        reasons += traffic["reasons"]
+    else:
+        if hz is None:
+            reasons.append("no_model")
+        if snap["active_60s"] > 0:
+            reasons.append("aircraft_active")
+        if snap["quiet_s"] < a.min_quiet:
+            reasons.append("not_quiet_long_enough")
+        if risk > a.risk_max:
+            reasons.append("risk_above_max")
+        if budget.risk + risk > a.day_risk:
+            reasons.append("day_risk_budget")
+        if budget.hour_risk.get(hour, 0.0) + risk > a.hour_risk:
+            reasons.append("hour_risk_budget")
+    if budget.blind + D > a.day_blind:
+        reasons.append("day_blind_budget")
+    if budget.per_hour.get(hour, 0) >= a.max_per_hour:
+        reasons.append("hour_cap")
+    return reasons
+
+
 class Budget:
     def __init__(self, path):
         self.path = path
@@ -146,6 +176,8 @@ def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--mode", choices=["shadow", "live"], default="shadow")
     ap.add_argument("--model", default=os.path.expanduser("~/influ/model/hazard.json"))
+    ap.add_argument("--policy", choices=["hazard", "traffic"], default="hazard")
+    ap.add_argument("--near-mi", type=float, default=60, help="statute miles; 60 mi = 96.56 km")
     ap.add_argument("--out", default=os.path.expanduser("~/influ/sched"))
     # 15 s period = FT8 slot; 14 s windows cover one full slot (signals end at 13.14 s)
     ap.add_argument("--period", type=float, default=15.0)
@@ -175,6 +207,12 @@ def main():
     threading.Thread(target=tr.run, daemon=True).start()
     budget = Budget(os.path.join(a.out, "budget.json"))
     auto = None
+    traffic_policy = None
+    if a.policy == "traffic":
+        from influ.traffic import Policy
+        traffic_policy = Policy(os.path.expanduser("~/influ/model/training.json"),
+                                os.path.expanduser("~/influ/data/cloud-latest.json"),
+                                os.path.expanduser("~/influ/station.json"), a.near_mi)
     if a.ft8_tx and a.mode == "live":
         from ft8_auto import Auto
         auto = Auto(a.radio_port, os.path.expanduser("~/influ/radio/calibration.json"),
@@ -192,7 +230,7 @@ def main():
             mt = os.path.getmtime(a.model)
             if mt != hz_mtime:
                 hz, hz_mtime = Hazard.load(a.model), mt
-        except OSError:
+        except (OSError, ValueError):
             hz = None
         budget.roll()
         D = a.listen + a.overhead
@@ -201,7 +239,18 @@ def main():
             mux = sdrmux({"cmd": "status"}, timeout=5)
         except Exception as e:
             mux = {"ok": False, "error": str(e)}
-        if auto and mux.get("sdr_ok") and mux.get("fifo_connected") and mux.get("mode") == "adsb":
+        in_qso = auto.in_qso(now) if auto else False
+        traffic = {"reasons": [], "threats": []}
+        if traffic_policy:
+            try:
+                with open("/run/dump1090-fa/aircraft.json") as f:
+                    local = json.load(f)
+                traffic = traffic_policy.assess(now, local)
+            except (OSError, ValueError, KeyError, TypeError):
+                traffic["reasons"] = ["traffic_data_unavailable"]
+        tx_allowed = a.policy != "traffic" or in_qso or not traffic["reasons"]
+        if (auto and tx_allowed and mux.get("sdr_ok") and mux.get("fifo_connected")
+                and mux.get("mode") == "adsb"):
             try:
                 if auto.transmit(int(now // 15) * 15):
                     # The V4 remains on 1090 during TX; never open a simultaneous RX window.
@@ -213,34 +262,16 @@ def main():
                 auto = None
         hour = int(local_hour(now))
         exp_hidden = hz.expected_hidden(now, D) if hz else 1.0
-        reasons = []
+        reasons = window_reasons(a, mux, dump1090_fresh(), snap, hz, exp_hidden,
+                                 budget, hour, D, traffic, in_qso)
         if auto and not auto.want_receive(int(now // 15) * 15):
             reasons.append("ft8_transmit_parity")
-        if not (mux.get("ok") and mux.get("sdr_ok") and mux.get("fifo_connected")):
-            reasons.append("sdrmux_unhealthy")
-        if not dump1090_fresh():
-            reasons.append("dump1090_stale")
-        if hz is None:
-            reasons.append("no_model")
-        if snap["active_60s"] > 0:
-            reasons.append("aircraft_active")
-        if snap["quiet_s"] < a.min_quiet:
-            reasons.append("not_quiet_long_enough")
-        if exp_hidden > a.risk_max:
-            reasons.append("risk_above_max")
-        if budget.risk + exp_hidden > a.day_risk:
-            reasons.append("day_risk_budget")
-        if budget.hour_risk.get(hour, 0.0) + exp_hidden > a.hour_risk:
-            reasons.append("hour_risk_budget")
-        if budget.blind + D > a.day_blind:
-            reasons.append("day_blind_budget")
-        if budget.per_hour.get(hour, 0) >= a.max_per_hour:
-            reasons.append("hour_cap")
         approve = not reasons
         rec = dict(t=now, mode=a.mode, hour=hour, approve=approve, reasons=reasons, D=D,
                    exp_hidden=round(exp_hidden, 6),
                    exp_hidden_mean=round(hz.expected_hidden(now, D, False), 6) if hz else None,
                    p_any_new=round(hz.p_any_new(now, D), 5) if hz else None,
+                   policy=a.policy, in_qso=in_qso, traffic=traffic,
                    budget_risk=round(budget.risk, 5), budget_blind=round(budget.blind, 1),
                    **{k: round(v, 1) for k, v in snap.items()})
         if approve and a.mode == "live":
@@ -256,10 +287,11 @@ def main():
                 threading.Thread(target=follow_up, args=(tr, w0, w1, a, rec), daemon=True).start()
                 if auto:
                     # Start only if two more RX windows fit the same risk budgets.
-                    can_start = (budget.risk + 2 * exp_hidden <= a.day_risk
-                                 and budget.hour_risk.get(hour, 0) + 2 * exp_hidden <= a.hour_risk
-                                 and budget.blind + 2 * D <= a.day_blind
+                    can_start = (budget.blind + 2 * D <= a.day_blind
                                  and budget.per_hour.get(hour, 0) + 2 <= a.max_per_hour)
+                    if a.policy == "hazard":
+                        can_start = (can_start and budget.risk + 2 * exp_hidden <= a.day_risk
+                                     and budget.hour_risk.get(hour, 0) + 2 * exp_hidden <= a.hour_risk)
                     auto.decoding.set()
                     threading.Thread(target=decode_then_post,
                                      args=(auto, res["file"], a.post_hook, can_start), daemon=True).start()

@@ -223,6 +223,13 @@ class Auto:
                 parity = self.chat.peer["rx_parity"]
             return parity is None or int(slot // 15) % 2 == parity
 
+    def in_qso(self, slot):
+        with self.lock:
+            if self.qso.pending and slot - self.qso.started > 240:
+                self.qso.reset()
+            return bool(self.qso.peer and (self.qso.last_tx >= self.qso.started
+                        or 0 <= self.qso.started - self.last_cq <= 240))
+
     def transmit(self, slot):
         if self.decoding.is_set():
             return False                # never repeat an old message while its reply is decoding
