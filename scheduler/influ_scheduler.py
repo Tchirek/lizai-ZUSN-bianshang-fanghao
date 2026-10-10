@@ -163,8 +163,11 @@ def main():
     ap.add_argument("--active-s", type=float, default=60)
     ap.add_argument("--post-hook", default=os.path.join(HERE, "post_window.sh"))
     ap.add_argument("--ft8-tx", action="store_true", help="enable calibrated CEC FT8 auto-sequence")
+    ap.add_argument("--ft8-llm", action="store_true", help="optional OpenAI replies to FT8 free text")
     ap.add_argument("--radio-port", default="/dev/serial/by-id/usb-Prolific_Technology_Inc._USB-Serial_Controller_D-if00-port0")
     a = ap.parse_args()
+    if a.ft8_llm and not (a.ft8_tx and a.mode == "live"):
+        ap.error("--ft8-llm requires --ft8-tx and --mode live")
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
     os.makedirs(a.out, exist_ok=True)
 
@@ -175,7 +178,7 @@ def main():
     if a.ft8_tx and a.mode == "live":
         from ft8_auto import Auto
         auto = Auto(a.radio_port, os.path.expanduser("~/influ/radio/calibration.json"),
-                    os.path.expanduser("~/influ/ft8"))
+                    os.path.expanduser("~/influ/ft8"), llm=a.ft8_llm)
         log.info("FT8 auto-sequence enabled for %s", auto.call)
     hz, hz_mtime = None, 0
     time.sleep(5)

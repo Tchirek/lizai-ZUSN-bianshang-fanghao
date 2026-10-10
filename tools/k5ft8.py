@@ -6,7 +6,6 @@ The radio must already show FT8/Ready (long-press MENU). A complete 79-tone
 packet starts one finite transmission; the firmware returns to RX afterwards.
 """
 import argparse
-import fcntl
 import json
 import os
 import re
@@ -14,7 +13,6 @@ import struct
 import subprocess
 import time
 
-import serial
 
 STX = bytes.fromhex("59575873")
 ETX = bytes.fromhex("95758537")
@@ -32,11 +30,15 @@ def packet(cmd, data=b"\0" * 5, payload=b""):
     return STX + bytes([cmd]) + struct.pack("<H", len(payload)) + data + ETX + payload
 
 
-def encode(message):
+def encode(message, free_text=False):
     out = subprocess.run(["ft8code", message], check=True, capture_output=True,
                          text=True, timeout=5).stdout
     if "Channel symbols (79 tones):" not in out or re.search(r"\*|Cannot|invalid", out, re.I):
         raise ValueError(f"FT8 encoder rejected {message!r}")
+    if free_text:
+        bits = re.search(r"Source-encoded message, 77 bits:\s*([01]{77})", out)
+        if not bits or bits[1][-6:] != "000000":
+            raise ValueError("LLM reply must encode as FT8 free text (type 0.0)")
     tones = "".join(re.findall(r"[0-7]+", out.split("Channel symbols (79 tones):", 1)[1]))
     if len(tones) != 79 or any(tones[i:i+7] != "3140652" for i in (0, 36, 72)):
         raise ValueError("unexpected ft8code output")
@@ -59,6 +61,8 @@ def wait_until(when):
 
 class Radio:
     def __init__(self, port=PORT):
+        import fcntl
+        import serial
         lockdir = os.path.expanduser("~/influ/radio")
         os.makedirs(lockdir, exist_ok=True)
         self.lock = open(os.path.join(lockdir, "serial.lock"), "w")
@@ -88,8 +92,8 @@ class Radio:
         if self.mode() != "FT8":
             raise RuntimeError("radio left FT8 mode while setting frequency")
 
-    def transmit(self, message, slot, offset_hz=1200):
-        tones = encode(message)
+    def transmit(self, message, slot, offset_hz=1200, free_text=False):
+        tones = encode(message, free_text=free_text)
         target = slot + 0.45
         if time.time() > target + 0.08:
             raise MissedSlot("missed FT8 start; refusing a late transmission")

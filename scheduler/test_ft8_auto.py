@@ -47,6 +47,7 @@ class Tests(unittest.TestCase):
     def test_slow_decode_does_not_spend_extra_windows_or_repeat_tx(self):
         controller = object.__new__(auto.Auto)
         controller.lock, controller.decoding = threading.Lock(), threading.Event()
+        controller.chat = None
         controller.qso = auto.QSO("BG8ASN", "OM20")
         controller.decoding.set()
         self.assertFalse(controller.want_receive(15))

@@ -45,6 +45,7 @@ class QSO:
         self.sent_report = ""
         self.received_report = ""
         self.peer_grid = ""
+        self.peer_df = 0
         self.finish_after_tx = False
         self.completed = []
         self.last_decode = -1
@@ -76,13 +77,13 @@ class QSO:
             if self.peer and src != self.peer:
                 continue
             if dst == self.call:
-                directed.append((src, body, d["snr"]))
+                directed.append((src, body, d["snr"], d.get("df", 0)))
             elif dst == "CQ" and is_grid(body):
-                cq.append((src, body, d["snr"]))
+                cq.append((src, body, d["snr"], d.get("df", 0)))
         choices = directed or (cq if not self.peer else [])
         if not choices:
             return
-        src, body, snr = choices[0]
+        src, body, snr, self.peer_df = choices[0]
         if not self.peer:
             # Reports without an exchange history cannot establish a new QSO.
             if not is_grid(body) or slot - self.recent.get(src, -1e9) < 600:
@@ -142,7 +143,8 @@ class QSO:
             self.recent[self.peer] = slot
             self.completed.append(dict(call=self.peer, grid=self.peer_grid,
                                        rst_sent=self.sent_report, rst_rcvd=self.received_report,
-                                       start=self.started, end=slot + 13.2))
+                                       start=self.started, end=slot + 13.2,
+                                       df=self.peer_df, rx_parity=self.rx_parity))
             self.reset()
         elif self.tries >= 3:
             log.info("QSO retry limit: %s", self.peer)
@@ -163,7 +165,7 @@ def adif(qso, station_call, station_grid, dial):
 
 
 class Auto:
-    def __init__(self, port, calibration, out, dial=144_174_000):
+    def __init__(self, port, calibration, out, dial=144_174_000, llm=False):
         cal = json.load(open(calibration))
         if not cal.get("pass_decode") or cal.get("sent", {}).get("offset_hz") != 1200:
             raise ValueError("a successful real TX/RX calibration is required")
@@ -177,6 +179,10 @@ class Auto:
         self.qso = QSO(self.call, self.grid)
         self.lock = threading.Lock()
         self.decoding = threading.Event()
+        self.chat = None
+        if llm:
+            from ft8_llm import Chat
+            self.chat = Chat(self.call, self.write)
         self.radio = k5ft8.Radio(port)
         self.radio.configure(dial)
         self.dial, self.out = dial, out
@@ -195,8 +201,11 @@ class Auto:
             with self.lock:
                 if self.qso.peer or can_start:
                     self.qso.receive(rec["slot"], rec["decodes"])
+                chatting = self.chat is not None and self.chat.active(rec["slot"])
+                if chatting and not self.qso.peer:
+                    self.chat.receive(rec)
                 # CQ only follows an actually approved RX window, never blind.
-                if can_start and not self.qso.peer and rec["slot"] - self.last_cq >= 120:
+                if can_start and not chatting and not self.qso.peer and rec["slot"] - self.last_cq >= 120:
                     self.qso.rx_parity = int(rec["slot"] // 15) % 2
                     self.qso.pending = f"CQ {self.call} {self.grid[:4]}"
                     self.qso.started = rec["slot"]
@@ -210,6 +219,8 @@ class Auto:
             if self.qso.pending and self.qso.last_tx < self.qso.last_decode:
                 return False            # send the decoded reply before spending another RX window
             parity = self.qso.rx_parity
+            if self.chat and not self.qso.peer and self.chat.active(slot):
+                parity = self.chat.peer["rx_parity"]
             return parity is None or int(slot // 15) % 2 == parity
 
     def transmit(self, slot):
@@ -217,14 +228,29 @@ class Auto:
             return False                # never repeat an old message while its reply is decoding
         with self.lock:
             message = self.qso.due(slot)
+            chat_reply = False
+            if not message and self.chat and not self.qso.peer:
+                message = self.chat.due(slot)
+                chat_reply = message is not None
             if not message:
                 return False
             try:
-                self.radio.transmit(message, slot)
+                if chat_reply:
+                    self.radio.transmit(message, slot, free_text=True)
+                else:
+                    self.radio.transmit(message, slot)
             except k5ft8.MissedSlot:
                 self.write("skip_late", slot=slot, message=message)
                 return False
-            if message.startswith("CQ "):
+            except ValueError:
+                if not chat_reply:
+                    raise
+                self.chat.future = None
+                self.write("llm_error", error="invalid_free_text_encoding")
+                return False
+            if chat_reply:
+                self.chat.sent(message)
+            elif message.startswith("CQ "):
                 self.last_cq = slot
                 self.qso.pending = None
             else:
@@ -234,8 +260,12 @@ class Auto:
                 with open(os.path.join(self.out, "qsos.adi"), "a") as f:
                     f.write(adif(qso, self.call, self.grid, self.dial))
                 self.write("qso", **qso)
+                if self.chat:
+                    self.chat.start(qso)
             self.qso.completed.clear()
             return True
 
     def close(self):
+        if self.chat:
+            self.chat.close()
         self.radio.close()
