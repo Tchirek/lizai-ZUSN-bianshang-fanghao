@@ -191,9 +191,29 @@ class Auto:
         os.makedirs(out, exist_ok=True)
         from ft8_web import Control, serve
         self.web = Control(self.call, self.grid, self.validate_manual)
+        self.restore_cq(time.time())
         self.web_stopped = threading.Event()
         threading.Thread(target=serve, args=(os.path.join(out, "web.sock"), self.web,
                                            self.web_stopped), daemon=True).start()
+
+    def restore_cq(self, now):
+        try:
+            with open(os.path.join(self.out, "auto.jsonl"), "rb") as f:
+                f.seek(0, 2)
+                f.seek(max(0, f.tell() - 65536))
+                lines = f.read().splitlines()
+            for line in reversed(lines):
+                try:
+                    rec = json.loads(line)
+                    if (rec.get("event") == "transmit" and rec.get("message") == f"CQ {self.call} {self.grid[:4]}"
+                            and 0 <= now - rec["slot"] <= 240):
+                        self.last_cq = self.web.cq_tx = rec["slot"]
+                        self.qso.rx_parity = 1 - int(rec["slot"] // 15) % 2
+                        break
+                except (ValueError, KeyError, TypeError):
+                    continue
+        except OSError:
+            pass
 
     def validate_manual(self, message):
         if not isinstance(message, str) or not message.isascii():
@@ -322,7 +342,8 @@ class Auto:
                 return False
             guard = lambda: self.web.permit(manual["id"] if manual else None, message,
                                            "LLM" if chat_reply else "状态机")
-            source = "manual" if manual else "approved" if self.web.owner else "auto"
+            source = ("web_cq" if manual and manual["automatic"] else "manual" if manual
+                      else "approved" if self.web.owner else "auto")
             try:
                 if chat_reply:
                     self.radio.transmit(message, slot, free_text=True, guard=guard)

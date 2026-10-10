@@ -31,7 +31,7 @@ class Tests(unittest.TestCase):
 
     def test_exact_approval_once_and_expiry(self):
         web = self.gate()
-        web.handle(dict(action='cq',session=SID))
+        web.handle(dict(action='send',session=SID,message='HI'))
         web.sent(web.queued()['message'],100,web.queued()['id'])
         self.assertFalse(web.allow('R-12','状态机'))
         old_id = web.suggestion['id']
@@ -62,9 +62,9 @@ class Tests(unittest.TestCase):
             self.addCleanup(c.chat.close)
         return c
 
-    def test_manual_cq_response_requires_approval_then_close_restores_auto(self):
+    def test_manually_typed_cq_requires_approval_then_close_restores_auto(self):
         c = self.controller()
-        c.web.handle(dict(action='cq',session=SID))
+        c.web.handle(dict(action='send',session=SID,message='CQ BG8ASN OM20'))
         self.assertTrue(c.transmit(0))
         self.assertEqual(c.last_cq,0)
         c.qso.receive(15,[dict(message='BG8ASN W1ABC FN42',snr=-12,df=1200)])
@@ -77,6 +77,45 @@ class Tests(unittest.TestCase):
         c.web.handle(dict(action='close',session=SID))
         self.assertTrue(c.transmit(60))
         self.assertEqual(c.radio.transmit.call_count,3)
+
+    def test_one_click_cq_is_auto_and_opens_existing_receive_window(self):
+        from influ_scheduler import window_reasons
+        from types import SimpleNamespace
+        c = self.controller()
+        state = c.web.handle(dict(action='cq',session=SID))
+        self.assertFalse(state['manual'])
+        c.web.handle(dict(action='close',session=SID))
+        self.assertTrue(c.has_manual())     # an automatic CQ survives closing its initiating page
+        self.assertTrue(c.transmit(0))
+        self.assertTrue(c.in_qso(15))
+        self.assertTrue(c.want_receive(15))
+        args = SimpleNamespace(policy='traffic')
+        mux = dict(ok=True,sdr_ok=True,fifo_connected=True)
+        self.assertEqual(window_reasons(args,mux,True,{},None,1,None,0,14.25,
+                         dict(reasons=['training_activity_window']),c.in_qso(15)), [])
+        c.qso.receive(15,[dict(message='BG8ASN W1ABC FN42',snr=-12,df=1200)])
+        self.assertTrue(c.transmit(30))
+        self.assertIsNone(c.web.owner)
+        self.assertIsNone(c.web.suggestion)
+        self.assertFalse(c.web.recent(241))
+
+    def test_cq_exits_a_previous_manual_approval_session(self):
+        web = self.gate()
+        web.handle(dict(action='send',session=SID,message='HI'))
+        web.sent('HI',100,web.queued()['id'])
+        self.assertFalse(web.allow('HELLO','LLM'))
+        state = web.handle(dict(action='cq',session=SID))
+        self.assertFalse(state['manual'])
+        self.assertTrue(web.allow('HELLO','LLM'))
+
+    def test_recent_cq_receive_window_survives_service_restart(self):
+        from pathlib import Path
+        c = self.controller()
+        (Path(c.out)/'auto.jsonl').write_text(json.dumps(dict(event='transmit',message='CQ BG8ASN OM20',slot=90))+'\n')
+        c.restore_cq(120)
+        self.assertTrue(c.in_qso(135))
+        self.assertTrue(c.want_receive(135))
+        self.assertIsNone(c.web.owner)
 
     def test_manual_free_text_binds_llm_and_needs_approval(self):
         c = self.controller(chat=True)

@@ -15,8 +15,7 @@ PAGE = '''<!doctype html><html lang="zh-CN"><meta charset="utf-8">
 <h3>FT8 · BG8ASN</h3><p id="mode">连接中…</p>
 <button id="cq" onclick="act('cq')">一键 CQ</button>
 <form onsubmit="event.preventDefault();act('send',{message:document.querySelector('input').value})">
-<p><input aria-label="发送内容" maxlength="37" placeholder="HOW R U? / 标准 FT8 消息"> <button id="send">发送</button></p></form>
-<small>自由文本最多 13 字符。仅打开页面保持全自动；点击 CQ 或发送后，自动回复需批准。关闭页面恢复全自动。</small>
+<p><input aria-label="发送内容" maxlength="37"> <button id="send">发送</button></p></form>
 <p id="queue"></p><p id="error" role="status"></p>
 <div id="draft" hidden><div>待批准：<strong id="message"></strong> <small id="source"></small></div>
 <button id="approve" onclick="act('approve',{id:draft.id})">批准并发送</button></div>
@@ -31,7 +30,7 @@ async function act(action,extra={}){
 function render(s){
  document.querySelector('#mode').textContent=!s.ok?'控制器暂不可用':s.manual?(s.owned?'手动会话 · 自动回复等待批准':'另一页面正在手动操作'):'全自动';
  const blocked=!s.ok||(s.manual&&!s.owned);for(const id of ['cq','send'])document.getElementById(id).disabled=blocked||!!s.queued;
- document.querySelector('#queue').textContent=s.queued?'已排队：'+s.queued.message+'（下个可用 FT8 时隙发送）':'';
+ document.querySelector('#queue').textContent=s.queued?'排队：'+s.queued.message:'';
  draft=s.suggestion||null;document.querySelector('#draft').hidden=!draft;
  if(draft){document.querySelector('#message').textContent=draft.message;document.querySelector('#source').textContent=draft.source;
  document.querySelector('#approve').disabled=!s.owned||s.approved===draft.id;document.querySelector('#approve').textContent=s.approved===draft.id?'已批准，等待时隙':'批准并发送';}
@@ -93,7 +92,6 @@ def content(root, route):
             text.append(f"{stamp(r['end'])}  {r['call']}  {r['grid']}  {r['rst_sent']}/{r['rst_rcvd']}")
         if len(text) == 3:
             text.append('尚无已完成通联')
-        text += ['', '收发过程：/events', 'ADIF 下载：/qsos.adi']
     elif route == '/events':
         text = [f"{stamp(r['t'])}  {r.get('event','')}  " +
                 (r.get('message') or ' | '.join(d['message'] for d in r.get('decodes', [])))

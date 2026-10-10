@@ -12,6 +12,7 @@ class Control:
         self.call, self.grid, self.validate, self.clock = call, grid[:4], validate, clock
         self.lock = threading.RLock()
         self.owner, self.seen, self.last_tx = None, 0, 0
+        self.cq_tx = float('-inf')
         self.queue, self.suggestion, self.approved = None, None, None
         self.sequence = 0
 
@@ -35,9 +36,9 @@ class Control:
                     raise ValueError("另一个页面正在手动操作")
                 if self.queue:
                     raise ValueError("已有消息排队，请等待发送或关闭页面取消")
-                self.owner, self.seen = session, self.clock()
+                self.owner, self.seen = (None, 0) if action == "cq" else (session, self.clock())
                 self.sequence += 1
-                self.queue = dict(id=self.sequence, message=message)
+                self.queue = dict(id=self.sequence, message=message, automatic=action == "cq")
                 self.suggestion, self.approved = None, None
             elif action == "approve":
                 if self.owner != session or not self.suggestion or req.get("id") != self.suggestion["id"]:
@@ -63,7 +64,8 @@ class Control:
     def recent(self, now):
         with self.lock:
             self.expire()
-            return bool(self.owner and 0 < now - self.last_tx <= 240)
+            return bool((self.owner and 0 < now - self.last_tx <= 240)
+                        or 0 < now - self.cq_tx <= 240)
 
     def allow(self, message, source):
         with self.lock:
@@ -95,6 +97,8 @@ class Control:
             if manual_id is not None:
                 self.last_tx = slot
                 if self.queue and self.queue["id"] == manual_id:
+                    if self.queue["automatic"]:
+                        self.cq_tx = slot
                     self.queue = None
             if self.suggestion and self.suggestion["message"] == message:
                 self.suggestion, self.approved = None, None
