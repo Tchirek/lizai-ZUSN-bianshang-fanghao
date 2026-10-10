@@ -53,6 +53,15 @@ class Tests(unittest.TestCase):
                      ('CQ BG8ASN OM20', 'BG8ASN W1ABC -09', 'RR73', '73')]))
         chat.pool.submit.assert_not_called()
 
+    def test_deepseek_endpoint_and_non_thinking(self):
+        response = dict(status='completed', output=[dict(type='message', role='assistant',
+                        content=[dict(type='output_text', text='FINE TNX')])])
+        with patch.dict('os.environ', OPENAI_BASE_URL='https://api.deepseek.com', OPENAI_REASONING_EFFORT='none'):
+            with patch.object(llm.urllib.request, 'urlopen', return_value=io.BytesIO(json.dumps(response).encode())) as send:
+                self.assertEqual(llm.reply('HI', [], 'BG8ASN', 'W1ABC', 'fake', 'deepseek-flash'), 'FINE TNX')
+                self.assertEqual(send.call_args.args[0].full_url, 'https://api.deepseek.com/responses')
+                self.assertEqual(json.loads(send.call_args.args[0].data)['reasoning'], dict(effort='none'))
+
     def test_free_chat_one_reply_on_opposite_slot(self):
         chat = self.chat()
         rec = dict(slot=30, decodes=[dict(df=1200, message='HOW R U?')])
