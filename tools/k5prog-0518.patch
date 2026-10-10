@@ -1,0 +1,13 @@
+diff --git a/k5prog.c b/k5prog.c
+index eba5992..15d5bee 100644
+--- a/k5prog.c
++++ b/k5prog.c
+@@ -720,7 +720,7 @@ int k5_writeflash(int fd, unsigned char *buf, int  len, int offset,int max_flash
+ 			k5_hexdump(cmd);
+ 		}
+ 		/* we're still getting "i'm in flash mode packets", can happen after the first flash command, ignore it */
+-		if ((cmd->cmd[0]==0x18)&&(cmd->cmd[1]==0x05)&&(cmd->cmd[2]==0x20)&&(cmd->cmd[3]==0x0)&&(cmd->cmd[4]==0x1)&&(cmd->cmd[5]==0x2)&&(cmd->cmd[6]==0x2)) {
++		if ((cmd->cmd[0]==0x18)&&(cmd->cmd[1]==0x05)) { /* influ: any 0x0518 broadcast (bootloader UID differs per radio) */
+ 			if (verbose>1)  printf("&&&&|  ignoring \"i'm in flash mode\" packet\n");
+ 			destroy_k5_struct(cmd);
+ 			continue;
