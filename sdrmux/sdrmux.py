@@ -96,6 +96,11 @@ class SDR:
             _lib.rtlsdr_set_tuner_gain(self.dev, g)
             return g / 10
 
+    def set_rtl_agc(self, on):
+        """RTL2832 digital AGC: scales samples to use the 8-bit output range."""
+        with self.ctl:
+            _lib.rtlsdr_set_agc_mode(self.dev, 1 if on else 0)
+
     def tune(self, hz):
         with self.ctl:
             r = _lib.rtlsdr_set_center_freq(self.dev, int(hz))
@@ -138,11 +143,12 @@ class Mux:
     def _on_samples(self, buf, n, _ctx):
         data = ctypes.string_at(buf, n)
         self.last_rx = time.monotonic()
+        t_end = time.time()                       # wall time of the buffer's last sample
         with self.lock:
             self.seq += 1
             tag = "blank" if self.seq <= self.blank_until else self.mode
         try:
-            self.q.put_nowait((tag, data))
+            self.q.put_nowait((tag, data, t_end))
         except queue.Full:
             self.dropped += 1
 
@@ -244,12 +250,19 @@ class Mux:
                 self.open_fifo()
                 continue
             try:
-                tag, data = self.q.get(timeout=1.0)
+                tag, data, t_end = self.q.get(timeout=1.0)
             except queue.Empty:
                 continue
             out = data if tag == "adsb" else (ZERO if len(data) == BUF_LEN else b"\x7f" * len(data))
-            if tag == "ham" and self.ham_fh:
-                self.ham_fh.write(data)
+            fh = self.ham_fh
+            if tag == "ham" and fh:
+                if self.ham_meta is not None and "first_t" not in self.ham_meta:
+                    self.ham_meta["first_t"] = t_end - len(data) / 2 / RATE
+                try:
+                    fh.write(data)
+                except ValueError:
+                    pass                          # window just closed the file
+
             self.stats["buffers"] += 1
             if out is not data:
                 self.stats["zero_buffers"] += 1
@@ -270,6 +283,7 @@ class Mux:
             try:
                 self.sdr = SDR(self.a.device, self.a.ppm)
                 self.sdr.set_gain(self.a.gain)
+                self.sdr.set_rtl_agc(self.a.rtl_agc)
                 self.sdr.tune(ADSB_FREQ)
                 log.info("SDR open, gains=%s", self.sdr.gains)
                 self.sdr_ok.set()
@@ -297,7 +311,7 @@ class Mux:
                 t_end = time.monotonic() + 1.0
                 while time.monotonic() < t_end:
                     try:
-                        self.q.put(("blank", ZERO), timeout=0.1)
+                        self.q.put(("blank", ZERO, time.time()), timeout=0.1)
                     except queue.Full:
                         pass
                     time.sleep(BUF_LEN / 2 / RATE)
@@ -325,6 +339,8 @@ class Mux:
                     elif req.get("cmd") == "listen":
                         res = self.listen(req["freq"], req["seconds"], req.get("gain"),
                                           req.get("tag", ""))
+                    elif req.get("cmd") == "set":
+                        res = self.set_adsb(req)
                     else:
                         res = {"ok": False, "error": "unknown cmd"}
                 except Exception as e:
@@ -332,11 +348,28 @@ class Mux:
                 f.write((json.dumps(res) + "\n").encode())
                 f.flush()
 
+    def set_adsb(self, req):
+        """Change 1090 MHz receive settings at runtime: {"gain": dB|null, "rtl_agc": bool}.
+        A gain of null selects tuner AGC. Applied immediately unless a window is active."""
+        if not self.window.acquire(timeout=200):
+            return {"ok": False, "error": "window active"}
+        try:
+            if "gain" in req:
+                self.a.gain = None if req["gain"] is None else float(req["gain"])
+                self.sdr.set_gain(self.a.gain)
+            if "rtl_agc" in req:
+                self.a.rtl_agc = bool(req["rtl_agc"])
+                self.sdr.set_rtl_agc(self.a.rtl_agc)
+        finally:
+            self.window.release()
+        log.info("1090 settings: gain=%s rtl_agc=%s", self.a.gain, self.a.rtl_agc)
+        return {"ok": True, "gain": self.a.gain, "rtl_agc": self.a.rtl_agc}
+
     def status(self):
         return dict(ok=True, mode=self.mode, sdr_ok=self.sdr_ok.is_set(),
                     fifo_connected=self.fifo_fd is not None, queue=self.q.qsize(),
                     dropped=self.dropped, last_rx_age=round(time.monotonic() - self.last_rx, 3),
-                    gain=self.a.gain, **self.stats)
+                    gain=self.a.gain, rtl_agc=self.a.rtl_agc, **self.stats)
 
 
 def notify(msg):
@@ -361,6 +394,7 @@ def main():
     ap.add_argument("--ppm", type=int, default=0)
     ap.add_argument("--gain", type=float, default=None,
                     help="dB for 1090 MHz; omit for tuner AGC")
+    ap.add_argument("--rtl-agc", action="store_true", help="enable RTL2832 digital AGC")
     ap.add_argument("--grace", type=float, default=60.0)
     ap.add_argument("--max-listen", type=float, default=MAX_LISTEN)
     a = ap.parse_args()
