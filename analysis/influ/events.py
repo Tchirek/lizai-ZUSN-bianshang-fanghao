@@ -2,7 +2,8 @@
 import numpy as np
 import pandas as pd
 
-VISIT_GAP = 300.0  # s without messages from an ICAO ends a visit
+VISIT_GAP = 1800.0  # s without messages from an ICAO ends a visit (weak, sparse reception
+                    # splits one pass into many fragments at shorter gaps)
 
 
 def confirmed_icaos(msgs):
