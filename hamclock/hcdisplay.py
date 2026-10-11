@@ -38,9 +38,10 @@ class Link(threading.Thread):
     """Live connection to HamClock. Posts ("full", png) and ("update", header, png) frames to a
     queue for the display thread; send() forwards input the other way."""
 
-    def __init__(self, frames):
+    def __init__(self, frames, url=URL):
         super().__init__(daemon=True)
         self.frames = frames
+        self.url = url
         self.ws = None
 
     def send(self, msg):
@@ -61,7 +62,7 @@ class Link(threading.Thread):
             time.sleep(2)
 
     def session(self):
-        ws = websocket.create_connection(URL, timeout=10)
+        ws = websocket.create_connection(self.url, timeout=10)
         self.ws = ws
         ws.send("get_live.png?")
         header = None
@@ -83,40 +84,51 @@ class Link(threading.Thread):
             ws.send("get_live.bin?")
 
 
+class Mirror:
+    """Full-size copy of the clock, kept current from live frames."""
+
+    def __init__(self):
+        self.image = None                        # pygame.Surface at HamClock's build size
+
+    def apply(self, kind, *data):
+        if kind == "full":
+            self.image = pygame.image.load(io.BytesIO(data[0]), "live.png")
+            return
+        header, png = data
+        bw, bh, n = header[0], header[1], header[2] << 8 | header[3]
+        if not (n and self.image):
+            return
+        # The strip can be far wider than 65535 px when much of the clock changes (e.g. while
+        # HamClock starts), and SDL blits wrap source x at 65536. So cut each region out of the
+        # strip's raw rows instead of blitting from a source rectangle.
+        strip = pygame.image.load(io.BytesIO(png), "regions.png")
+        rows, row = pygame.image.tobytes(strip, "RGB"), strip.get_width() * 3
+        sx = 0
+        for i in range(n):
+            x, y, blocks = header[4 + 3 * i: 7 + 3 * i]
+            w = blocks * bw
+            cut = b"".join(rows[r * row + sx * 3: r * row + (sx + w) * 3] for r in range(bh))
+            self.image.blit(pygame.image.frombuffer(cut, (w, bh), "RGB"), (x * bw, y * bh))
+            sx += w
+
+
 class Screen:
-    """Full-size copy of the clock, drawn scaled and centred on the display."""
+    """The full-screen window: the mirror scaled to fit, centred, aspect ratio kept."""
 
     def __init__(self):
         pygame.display.init()
         self.surface = pygame.display.set_mode((0, 0), pygame.FULLSCREEN)
         pygame.display.set_caption("HamClock")
-        self.clock = None                        # pygame.Surface at HamClock's build size
-        self.view = None                         # pygame.Rect where it appears on screen
+        self.view = None                         # pygame.Rect where the clock appears
 
-    def full(self, png):
-        self.clock = pygame.image.load(io.BytesIO(png), "live.png").convert()
+    def draw(self, image):
         sw, sh = self.surface.get_size()
-        cw, ch = self.clock.get_size()
+        cw, ch = image.get_size()
         k = min(sw / cw, sh / ch)
         self.view = pygame.Rect(0, 0, round(cw * k), round(ch * k))
         self.view.center = (sw // 2, sh // 2)
-
-    def update(self, header, png):
-        bw, bh, n = header[0], header[1], header[2] << 8 | header[3]
-        if not (n and self.clock):
-            return
-        strip = pygame.image.load(io.BytesIO(png), "regions.png").convert()
-        sx = 0
-        for i in range(n):
-            x, y, blocks = header[4 + 3 * i: 7 + 3 * i]
-            w = blocks * bw
-            self.clock.blit(strip, (x * bw, y * bh), pygame.Rect(sx, 0, w, bh))
-            sx += w
-
-    def draw(self):
         self.surface.fill((0, 0, 0))
-        if self.clock:
-            self.surface.blit(pygame.transform.smoothscale(self.clock, self.view.size), self.view)
+        self.surface.blit(pygame.transform.smoothscale(image, self.view.size), self.view)
         pygame.display.flip()
 
     def app_xy(self, pos):
@@ -138,7 +150,7 @@ def main():
     frames = queue.Queue()
     link = Link(frames)
     link.start()
-    screen = Screen()
+    mirror, screen = Mirror(), Screen()
     pressed, last_move, last_input = None, 0.0, time.time()
     while True:
         changed = False
@@ -171,14 +183,10 @@ def main():
                 link.send(f"set_char?char={name}&mod={mod}")
 
         while not frames.empty():
-            kind, *data = frames.get()
-            if kind == "full":
-                screen.full(*data)
-            else:
-                screen.update(*data)
+            mirror.apply(*frames.get())
             changed = True
-        if changed:
-            screen.draw()
+        if changed and mirror.image:
+            screen.draw(mirror.image)
         if time.time() - last_input > CURSOR_IDLE:
             pygame.mouse.set_visible(False)
         time.sleep(0.02)
