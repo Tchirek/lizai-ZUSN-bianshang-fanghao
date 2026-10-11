@@ -53,6 +53,8 @@ NEW_GLYPHS = 12               # labels first rendered in one frame while the vie
 FONTS = {"latin": ("/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf", 0),
          "cjk": ("/usr/share/fonts/opentype/noto/NotoSansCJK-Bold.ttc", 2)}   # 2: SC
 CITY, TOWN, GREY, CAMPUS = (230, 230, 230), (150, 150, 150), (139, 141, 139), (255, 130, 210)
+AIRPORT, RUNWAY = (150, 175, 255), (205, 205, 210)
+RING_ZOOM = 6                 # below this zoom an airport also gets a ring: its runways are specks
 log = logging.getLogger(__name__)
 
 
@@ -205,13 +207,15 @@ def text_size(text, size, scale):
 
 
 def spot(k, tw):
-    """Label offset from its point (view px): right, left, above, below."""
-    return ((7, -7), (-tw - 7, -7), (-tw / 2, -22), (-tw / 2, 7))[k]
+    """Label offset from its point (view px): right, left, above, below; then the same again
+    further out, for a point crowded close (as a campus around us is by our own marker)."""
+    return ((7, -7), (-tw - 7, -7), (-tw / 2, -22), (-tw / 2, 7),
+            (18, -7), (-tw - 18, -7), (-tw / 2, -33), (-tw / 2, 18))[k]
 
 
 def place_labels(items, scale):
     """For labels in priority order, each (text, base xy, size, from zoom): their sizes (view
-    px) and, per LABEL_ZOOMS step, the spot each takes (0..3) or -1. At each step a label
+    px) and, per LABEL_ZOOMS step, the spot each takes (0..7) or -1. At each step a label
     keeps its earlier spot if that is still clear, else takes the first clear one, else waits;
     nothing overlaps, and no label leaves the map."""
     pygame.freetype.init()
@@ -239,7 +243,7 @@ def place_labels(items, scale):
             if z < start * 0.999:
                 continue
             before = int(spots[i, li - 1]) if li else -1
-            for k in ([before] if before >= 0 else []) + [k for k in range(4) if k != before]:
+            for k in ([before] if before >= 0 else []) + [k for k in range(8) if k != before]:
                 dx, dy = spot(k, tw)
                 box = (x * z + dx - 1, y * z + dy, x * z + dx + tw + 1, y * z + dy + th + 2)
                 if box[0] >= 0 and box[1] >= 0 and box[2] <= W * z and box[3] <= H * z and free(box):
@@ -252,11 +256,25 @@ def place_labels(items, scale):
 # ------------------------------------------------- scene worker: what goes on the map ----
 
 _static = {}
+SHORT = ((" General Aviation Airport", " GA"), (" International Airport", ""), (" Air Base", " AB"),
+         (" Airbase", " AB"), (" Airport", ""))
+
+
+def airport_label(code, name):
+    """An airport by its code; one without (an air base, a general aviation field) by its
+    name, shortened."""
+    if code:
+        return code
+    for long, short in SHORT:
+        name = name.replace(long, short)
+    return " ".join(name.split())
 
 
 def static_scene(base):
-    """Places, campuses and the farthest point in base px; kept while their files stay."""
-    paths = [os.path.join(a.MODEL, f) for f in ("rangemap_osm.json", "rangemap.json", "campuses.json")]
+    """Places, campuses, airports with their runways, and the farthest point in base px; kept
+    while their files stay."""
+    paths = [os.path.join(a.MODEL, f) for f in ("rangemap_osm.json", "rangemap.json", "campuses.json",
+                                                 "airports.json")]
     key = tuple(os.path.getmtime(p) if os.path.exists(p) else 0 for p in paths)
     if _static.get("key") == key:
         return _static
@@ -276,8 +294,19 @@ def static_scene(base):
                 point = base.xy(*c["point"])
                 if 0 <= point[0] < W and 0 <= point[1] < H:
                     campuses.append(dict(name=c["name"], rings=rings, point=point))
+    airports, runways = [], []
+    if os.path.exists(paths[3]):
+        with open(paths[3]) as f:
+            found = json.load(f)
+        for x in sorted(found["airports"], key=lambda x: not x["code"]):          # coded first
+            point = base.xy(*x["point"])
+            if 0 <= point[0] < W and 0 <= point[1] < H:
+                airports.append(dict(text=airport_label(x["code"], x["name"]), point=point))
+        runways = [dict(line=np.array([base.xy(*p) for p in r["line"]]), width=r["width"], area=r["area"])
+                   for r in found["runways"]]
     _static.clear()
     _static.update(key=key, place_names=[p["name"] for p in places], place_xy=xy,
+                   airports=airports, runways=runways,
                    place_km=np.hypot(*(xy - (W / 2, H / 2)).T) * base.km_per_px,
                    name_km=info["reach_km"] * 1.1, campuses=campuses,
                    far=(base.xy(info["far_lat"], info["far_lon"]),
@@ -304,6 +333,10 @@ def load_scene(base, scale):
     for call, (x, y, colour, sent) in senders_first:
         items.append((call + (f" +{degrees[call]}" if degrees.get(call, 0) > 2 else ""), (x, y), 13, 1))
         kinds.append(("station", a.WHITE if sent else a.DIM))
+    for x in static["airports"]:
+        if x["text"]:
+            items.append((x["text"], x["point"], 13, 1))
+            kinds.append(("airport", AIRPORT))
     for call, xy, rf in aprs:
         if 0 <= xy[0] < W and 0 <= xy[1] < H:
             items.append((call, xy, 13, 1))
@@ -326,6 +359,7 @@ def load_scene(base, scale):
         links=[(base.xy(*positions[x][:2]), base.xy(*positions[y][:2]))
                for x, y in data.get("aprs_links", []) if x in positions and y in positions],
         qsos=[xy for _, xy in qsos], places=static["place_xy"], campuses=static["campuses"],
+        airports=[x["point"] for x in static["airports"]], runways=static["runways"],
         far=static["far"][0], labels=[(text, xy, size) for text, xy, size, _ in items],
         kinds=kinds, sizes=sizes, spots=spots)
 
@@ -481,6 +515,8 @@ class Scene:
         d["link_ends"] = np.array(d["links"], dtype=float).reshape(-1, 2, 2)
         d["qso_xy"] = points(d["qsos"])
         d["label_xy"] = points([xy for _, xy, _ in d["labels"]])
+        d["airport_xy"] = points(d.get("airports", []))
+        d["runway_box"] = np.array([(*r["line"].min(0), *r["line"].max(0)) for r in d.get("runways", [])]).reshape(-1, 4)
         d["label_campus"] = np.array([kind[0] == "campus" for kind in d["kinds"]], dtype=bool)
         boxes = [np.vstack(c["rings"]) if c["rings"] else np.array([c["point"]]) for c in d["campuses"]]
         d["campus_box"] = np.array([(*b.min(0), *b.max(0)) for b in boxes]).reshape(-1, 4)
@@ -531,7 +567,7 @@ class Scene:
         key = shape, colour
         if key not in self.marks:
             s = self.scale
-            r = {"diamond": 5, "dot": 4, "square": 4, "campus": 3, "city": 2, "town": 1}[shape] * s
+            r = {"diamond": 5, "dot": 4, "ring": 5, "square": 4, "campus": 3, "city": 2, "town": 1}[shape] * s
             n = math.ceil(2 * r) + 3
             pic = pygame.Surface((n, n), pygame.SRCALPHA)
             c = n / 2
@@ -540,6 +576,9 @@ class Scene:
             elif shape == "dot":
                 pygame.draw.circle(pic, (0, 0, 0), (c, c), max(2, round(r)) + 1)
                 pygame.draw.circle(pic, colour, (c, c), max(2, round(r)))
+            elif shape == "ring":
+                pygame.draw.circle(pic, (0, 0, 0), (c, c), round(r) + 1, max(1, round(2 * s)) + 2)
+                pygame.draw.circle(pic, colour, (c, c), round(r), max(1, round(2 * s)))
             elif shape == "campus":
                 pygame.draw.circle(pic, colour, (c, c), max(2, round(r)))
             else:                                        # square, city, town
@@ -609,13 +648,27 @@ class Scene:
                                round(r / view.km_per_px * s), 1)
 
     def draw_contacts(self, view, surface, s):
-        """Campuses and paths, translucent, under the markers: stations, APRS, our QSOs,
-        campus dots. Returns the legend's (colour, text) parts."""
+        """Runways; campuses and paths, translucent; over them the markers: airports (zoomed
+        out), stations, APRS, our QSOs, campus dots. Returns the legend's (colour, text) parts."""
         d = self.data
         if d is None:
             surface.blit(self.layer, (0, 0), special_flags=pygame.BLEND_ALPHA_SDL2)
             return []
         left, top, right, bottom = view.rect()
+        # runways to scale (never thinner than 2 px), on a dark edge so they show on any ground
+        box = d["runway_box"]
+        for i in np.flatnonzero((box[:, 2] >= left) & (box[:, 0] <= right) & (box[:, 3] >= top) & (box[:, 1] <= bottom)):
+            r = d["runways"][i]
+            pts = (view.points(r["line"]) * s).tolist()
+            if r["area"]:
+                pygame.draw.polygon(surface, RUNWAY, pts)
+            else:
+                width = max(2, round(r["width"] / 1000 / view.km_per_px * s))
+                pygame.draw.lines(surface, (40, 40, 40), False, pts, width + 2)
+                pygame.draw.lines(surface, RUNWAY, False, pts, width)
+        if view.zoom < RING_ZOOM:
+            airports = view.points(d["airport_xy"])
+            self.stamp(surface, "ring", AIRPORT, airports[inside(airports)])
         campuses = []
         if view.zoom >= CAMPUS_ZOOM:
             box = d["campus_box"]
@@ -680,8 +733,8 @@ class Scene:
             return
         k, (tw, th) = d["spots"][:, li], d["sizes"].T
         at = view.points(d["label_xy"])
-        x = at[:, 0] + np.select([k == 0, k == 1], [7, -tw - 7], -tw / 2)    # spot(): right, left,
-        y = at[:, 1] + np.select([k == 2, k == 3], [-22, 7], -7)            # above, below
+        x = at[:, 0] + np.select([k == 0, k == 1, k == 4, k == 5], [7, -tw - 7, 18, -tw - 18], -tw / 2)
+        y = at[:, 1] + np.select([k == 2, k == 3, k == 6, k == 7], [-22, 7, -33, 18], -7)   # as spot()
         shown = (k >= 0) & (x + tw > 0) & (x < W) & (y + th > 0) & (y < H)
         if view.zoom < CAMPUS_ZOOM:
             shown &= ~d["label_campus"]

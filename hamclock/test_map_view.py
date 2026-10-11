@@ -38,9 +38,10 @@ def blank_scene(m, scale=1.0):
     return s
 
 
-def scene_data(lines=(), campuses=(), labels=()):
+def scene_data(lines=(), campuses=(), labels=(), airports=(), runways=()):
     d = dict(stations=[], lines=list(lines), total=len(lines), bands={}, aprs=[], links=[], qsos=[],
              places=np.empty((0, 2)), campuses=list(campuses), far=(-100, -100),
+             airports=list(airports), runways=list(runways),
              labels=[(text, xy, 13) for text, xy, _ in labels], kinds=[kind for _, _, kind in labels],
              sizes=np.full((len(labels), 2), 30.0), spots=np.zeros((len(labels), len(v.LABEL_ZOOMS)), np.int8))
     return d
@@ -228,6 +229,10 @@ class LabelTests(unittest.TestCase):
         late = spots[-1]
         self.assertTrue(np.all(late[:6] == -1) and late[6] >= 0)  # from zoom 8 on only
 
+    def test_a_label_right_by_our_marker_still_finds_a_spot(self):
+        sizes, spots = v.place_labels([('四川师范大学遂宁校区', (v.W / 2 + .3, v.H / 2 - .2), 15, 1)], .8)
+        self.assertTrue(np.all(spots[0] >= 4))                    # further out, at every zoom
+
 
 class SceneTests(unittest.TestCase):
     def setUp(self):
@@ -248,6 +253,26 @@ class SceneTests(unittest.TestCase):
         frame.fill((0, 0, 0))
         self.scene.draw(frame, v.View(self.m, 4, (650, 300)), 33)  # same lines, just bigger
         self.assertGreater(frame.get_at((v.W // 2, v.H // 2)).r, 120)
+
+    def test_runways_to_scale_and_airport_rings_only_zoomed_out(self):
+        runway = dict(line=np.array([(600.0, 300.0), (603.0, 300.0)]), width=45.0, area=False)   # ~2.7 km
+        d = scene_data(airports=[(700.0, 300.0)], runways=[runway])
+        self.scene.take(d)
+        frame = pygame.Surface((v.W, v.H))
+        self.scene.draw(frame, v.View(self.m), 33)
+        self.assertEqual(frame.get_at((601, 300))[:3], v.RUNWAY)
+        self.assertIn(v.AIRPORT, [frame.get_at((x, 300))[:3] for x in range(702, 707)])   # the ring
+        frame.fill((0, 0, 0))
+        view = v.View(self.m, 16, (601.5, 300))
+        self.scene.draw(frame, view, 33)
+        x, y = view.project((601.5, 300))
+        lit = [frame.get_at((int(x), int(y) + dy))[:3] == v.RUNWAY for dy in range(-6, 7)]
+        self.assertGreaterEqual(sum(lit), 2)                                     # never under 2 px
+        frame.fill((0, 0, 0))
+        view = v.View(self.m, 16, (700, 300))
+        self.scene.draw(frame, view, 33)
+        x, y = view.project((700, 300))
+        self.assertNotIn(v.AIRPORT, [frame.get_at((int(x) + dx, int(y)))[:3] for dx in range(2, 7)])  # no ring
 
     def test_campuses_only_show_from_their_zoom(self):
         ring = np.array([(640.0, 320.0), (680.0, 320.0), (680.0, 340.0), (640.0, 340.0)])
