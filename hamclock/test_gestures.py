@@ -12,16 +12,17 @@ def fresh():
 
 
 class Tests(unittest.TestCase):
-    def test_pinch_gives_step_ratios_and_its_end(self):
+    def test_pinch_gives_step_ratios_and_each_pinch_starts_afresh(self):
         x = fresh()
-        x._begin(None, 1, 0, None, 2)
         x._update(None, 0, 1.5, -2.0, 1.2, 0)
         x._update(None, 0, 0.0, 0.0, 1.5, 0)
         x._end(None, 2, 0, 0)
+        x._update(None, 0, 0.0, 0.0, 0.8, 0)                     # the next pinch, from 1
         out = x.poll()
-        self.assertEqual([e[0] for e in out], ['pinch', 'pinch', 'pinch_end'])
+        self.assertEqual([e[0] for e in out], ['pinch', 'pinch', 'pinch_end', 'pinch'])
         self.assertAlmostEqual(out[0][1], 1.2)
         self.assertAlmostEqual(out[1][1], 1.25)
+        self.assertAlmostEqual(out[3][1], 0.8)
         self.assertEqual(out[0][2:], (1.5, -2.0))
 
     def test_finger_scrolls_pan_and_wheel_clicks_zoom(self):

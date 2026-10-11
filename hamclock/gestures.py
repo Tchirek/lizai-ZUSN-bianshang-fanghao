@@ -110,20 +110,19 @@ class Gestures:
             for event in ("axis", "axis_source", "axis_discrete", "axis_value120", "frame"):
                 self.pointer.dispatcher[event] = getattr(self, "_" + event)
             self.pinch = self.manager.get_pinch_gesture(self.pointer)
-            self.pinch.dispatcher["begin"] = self._begin
+            # no "begin": it names SDL's surface, which pywayland has no object for and so
+            # drops the event; "end" (cancelled or not) resets the scale instead
             self.pinch.dispatcher["update"] = self._update
             self.pinch.dispatcher["end"] = self._end
 
     # pinch: scale is relative to where the fingers started
-    def _begin(self, pinch, serial, time, surface, fingers):
-        self.scale = 1.0
-
     def _update(self, pinch, time, dx, dy, scale, rotation):
         if scale > 0:
             self.events.append(("pinch", scale / self.scale, dx, dy))
             self.scale = scale
 
     def _end(self, pinch, serial, time, cancelled):
+        self.scale = 1.0
         self.events.append(("pinch_end",))
 
     # scrolls: a frame groups a source, its axis values and maybe wheel clicks
