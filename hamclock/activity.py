@@ -8,7 +8,7 @@ Sources
                  internet-only ones.
   PSK Reporter   one query per 5 min, the Maidenhead fields the map covers taken in turn:
                  FT8/FT4 stations in the region (last 30 min), coloured by band as HamClock
-                 does; paths drawn when both ends are on the map.
+                 does; paths drawn when either end is on the map.
   our FT8 log    ~/influ/ft8/auto.jsonl: CQs we sent and QSOs completed since Monday 00:00
                  local time.
 
@@ -129,7 +129,7 @@ class Aprs(threading.Thread):
     def __init__(self, lat, lon):
         super().__init__(daemon=True)
         self.filter = f"r/{lat:.2f}/{lon:.2f}/{APRS_RANGE_KM}"
-        self.stations, self.lock = {}, threading.Lock()
+        self.stations, self.links, self.lock = {}, {}, threading.Lock()
 
     def run(self):
         while True:
@@ -159,18 +159,49 @@ class Aprs(threading.Thread):
             p = aprslib.parse(line)
         except (aprslib.ParseError, aprslib.UnknownFormat):
             return
-        if "latitude" not in p:
-            return
-        rf = any(q in p.get("path", []) for q in ("qAR", "qAO"))
+        hops = rf_hops(p["from"], p.get("path", []))
+        now = time.time()
         with self.lock:
-            self.stations[p["from"]] = (p["latitude"], p["longitude"], rf, time.time())
+            for a, b in zip(hops, hops[1:]):
+                if a and b:
+                    self.links[a, b] = now
+            if "latitude" in p:
+                self.stations[p["from"]] = (p["latitude"], p["longitude"], len(hops) > 1, now)
 
     def recent(self):
+        """(stations heard within the hour, positions known for any station, RF links within
+        the hour)."""
         now = time.time()
         with self.lock:
             for k in [k for k, v in self.stations.items() if now - v[3] > 2 * APRS_SHOW_S]:
                 del self.stations[k]
-            return {k: v for k, v in self.stations.items() if now - v[3] <= APRS_SHOW_S}
+            for k in [k for k, t in self.links.items() if now - t > APRS_SHOW_S]:
+                del self.links[k]
+            heard = {k: v for k, v in self.stations.items() if now - v[3] <= APRS_SHOW_S}
+            return heard, dict(self.stations), list(self.links)
+
+
+APRS_ALIASES = ("WIDE", "RELAY", "TRACE", "TCPIP", "TCPXX", "NOGATE", "RFONLY", "GATE", "ECHO")
+
+
+def rf_hops(source, path):
+    """The RF hops of an APRS packet: source -> each digipeater that repeated it -> the igate
+    that heard it on RF. In the path, digipeaters up to the last one marked '*' have repeated
+    it; a generic alias (WIDE2*...) hides who did, so None preserves that gap instead of
+    inventing a direct link. 'qAR,IGATE' (or qAO) names the igate. Internet-only packets give
+    just [source]."""
+    if any(h.rstrip("*").upper() in ("TCPIP", "TCPXX") for h in path):
+        return [source]
+    q = next((i for i, hop in enumerate(path) if hop.startswith("qA")), len(path))
+    if q < len(path) and path[q] not in ("qAR", "qAO"):
+        return [source]
+    digis = path[:q]
+    last = max((i for i, hop in enumerate(digis) if hop.endswith("*")), default=-1)
+    hops = [source] + [None if d.upper().startswith(APRS_ALIASES) else d.rstrip("*")
+                       for d in digis[:last + 1]]
+    if q < len(path) - 1 and path[q] in ("qAR", "qAO"):
+        hops.append(path[q + 1])
+    return [h for i, h in enumerate(hops) if i == 0 or h != hops[i - 1]]
 
 
 class Psk(threading.Thread):
@@ -224,25 +255,32 @@ class Psk(threading.Thread):
 
 
 def ft8_week():
-    """(CQs sent, QSOs completed, week start) since Monday 00:00 local time."""
+    """(CQs sent, completed QSOs as (call, grid), week start) since Monday 00:00 local time."""
     lt = time.localtime()
     monday = time.mktime((lt.tm_year, lt.tm_mon, lt.tm_mday - lt.tm_wday, 0, 0, 0, 0, 0, -1))
-    cq = qso = 0
+    cq, qsos = 0, []
     try:
-        for line in open(FT8_LOG):
-            e = json.loads(line)
-            if e.get("t", 0) < monday:
-                continue
-            if e.get("event") == "transmit" and str(e.get("message", "")).startswith("CQ "):
-                cq += 1
-            elif e.get("event") == "qso":
-                qso += 1
+        with open(FT8_LOG) as f:
+            for line in f:
+                e = json.loads(line)
+                if e.get("t", 0) < monday:
+                    continue
+                if e.get("event") == "transmit" and str(e.get("message", "")).startswith("CQ "):
+                    cq += 1
+                elif e.get("event") == "qso":
+                    qsos.append((e.get("call", ""), e.get("grid", "")))
     except (OSError, ValueError):
         pass
-    return cq, qso, monday
+    return cq, qsos, monday
 
 
-def draw_activity(m, aprs, reports):
+def draw_activity(m, aprs, reports, qsos):
+    """aprs: (heard, positions, links) from Aprs.recent(); reports: PSK Reporter; qsos: ours.
+
+    Both ends of every contact are joined: PSK sender-receiver (band colour, running off the
+    map toward a far partner), APRS RF hops (station - digipeater - igate), and our own FT8
+    QSOs (white, from us). Lines go under all markers and labels."""
+    heard, positions, links = aprs
     img = Image.new("RGBA", (W, H), (0, 0, 0, 0))
     d = ImageDraw.Draw(img)
     d.fontmode = "1"
@@ -260,40 +298,61 @@ def draw_activity(m, aprs, reports):
                 d.text((lx, ly), text, font=F_CALL, fill=colour, stroke_width=1, stroke_fill=BLACK)
                 return
 
-    # FT8 / FT4: paths with both ends on the map, then each station once (sender wins)
-    stations, drawn = {}, set()                            # drawn: bands with a station shown
+    # FT8 / FT4: a line for every report touching the map, each station on the map once
+    stations, drawn, pairs = {}, set(), set()               # drawn: bands with a station shown
     for r in reports:
         try:
             name, colour = band(int(r["frequency"]) / 1000)
         except ValueError:
             continue
-        ends = []
+        ends = {}
         for who in ("sender", "receiver"):
             ll = locator(r[who + "Locator"])
             if ll:
-                x, y = m.xy(*ll)
-                if m.inside(x, y):
-                    ends.append((x, y))
-                    drawn.add((name, colour))
-                    stations.setdefault(r[who + "Callsign"], (x, y, colour, who == "sender"))
-        if len(ends) == 2:
-            d.line(ends, fill=colour + (200,), width=1)
+                ends[who] = m.xy(*ll)
+        on_map = [who for who, (x, y) in ends.items() if m.inside(x, y)]
+        if not on_map:
+            continue
+        drawn.add((name, colour))
+        for who in on_map:
+            stations.setdefault(r[who + "Callsign"], ends[who] + (colour, who == "sender"))
+        pair = (r["senderCallsign"], r["receiverCallsign"], name)
+        if len(ends) == 2 and pair not in pairs:
+            pairs.add(pair)
+            d.line([ends["sender"], ends["receiver"]], fill=colour + (170,), width=1)
+
+    # APRS RF hops between stations whose positions we know
+    for a, b in links:
+        if a in positions and b in positions:
+            d.line([m.xy(*positions[a][:2]), m.xy(*positions[b][:2])], fill=APRS_RF + (200,), width=2)
+
+    # our own QSOs, from us
+    for call, grid in qsos:
+        ll = locator(grid)
+        if ll:
+            d.line([(W / 2, H / 2), m.xy(*ll)], fill=WHITE + (230,), width=2)
+
+    # markers and labels on top of every line
     for call, (x, y, colour, sent) in sorted(stations.items(), key=lambda kv: not kv[1][3]):
         d.polygon([(x, y - 5), (x + 5, y), (x, y + 5), (x - 5, y)], fill=colour, outline=WHITE)
         label(x, y, call, WHITE if sent else DIM)
-
-    # APRS beacons, RF-heard ones on top
-    for call, (lat, lon, rf, t) in sorted(aprs.items(), key=lambda kv: kv[1][2]):
+    for call, (lat, lon, rf, t) in sorted(heard.items(), key=lambda kv: kv[1][2]):
         x, y = m.xy(lat, lon)
         if not m.inside(x, y):
             continue
         colour = APRS_RF if rf else APRS_NET
         d.ellipse([x - 4, y - 4, x + 4, y + 4], fill=colour, outline=BLACK)
         label(x, y, call, colour)
+    for call, grid in qsos:
+        ll = locator(grid)
+        if ll and m.inside(*m.xy(*ll)):
+            x, y = m.xy(*ll)
+            d.rectangle([x - 4, y - 4, x + 4, y + 4], fill=WHITE, outline=BLACK)
+            label(x, y, call, WHITE)
 
     # legend, bottom right, like HamClock's map labels
     order = {name: i for i, (_, name, _) in enumerate(BANDS)}
-    parts = [(APRS_RF, f"APRS {len(aprs)}"), (WHITE, f"FT8/FT4 {len(stations)}")]
+    parts = [(APRS_RF, f"APRS {len(heard)}"), (WHITE, f"FT8/FT4 {len(stations)}")]
     parts += [(colour, name if name.endswith("cm") else name + "m")
               for name, colour in sorted(drawn, key=lambda b: order.get(b[0], 99))]
     widths = [d.textlength(text, font=F_SMALL) + 18 for _, text in parts]
@@ -334,8 +393,9 @@ def main():
     aprs.start()
     psk.start()
     while True:
-        save(draw_activity(m, aprs.recent(), psk.current()), "activity.png")
-        save(draw_tally(*ft8_week()), "ft8week.png")
+        cq, qsos, monday = ft8_week()
+        save(draw_activity(m, aprs.recent(), psk.current(), qsos), "activity.png")
+        save(draw_tally(cq, len(qsos), monday), "ft8week.png")
         time.sleep(30)
 
 
