@@ -1,0 +1,280 @@
+#!/usr/bin/env python3
+"""ADS-B radar scope drawn in HamClock's own style and pushed into one of its panes.
+
+Reads dump1090's aircraft.json every second, keeps short tracks, and every few seconds
+renders a 318x294 azimuthal-equidistant scope centred on the station (70 mi by default),
+then POSTs it to HamClock's RESTful set_bmp. Station position comes from
+~/influ/station.json (never committed).
+
+Symbols   jet/heavy (A3-A6) chevron along track, heavy drawn larger
+          light/small (A1-A2) dot, rotorcraft (A7) cross, glider/balloon/UAV (B*) diamond,
+          surface/obstacle (C*) square, unknown category triangle
+          hollow symbol = position from MLAT/TIS-B, filled = ADS-B
+Colour    altitude band (legend at the bottom), white = altitude unknown
+Vector    1-minute track projection; dotted trail of the last 5 minutes
+
+usage: adsb_scope.py [--pane 2] [--range-mi 70] [--every 5] [--once out.png]
+"""
+import argparse
+import io
+import json
+import math
+import os
+import socket
+import time
+import urllib.request
+from collections import defaultdict, deque
+
+from PIL import Image, ImageDraw, ImageFont
+
+W, H = 318, 294
+BLACK = (0, 0, 0)
+GRID = (41, 40, 98)            # HamClock Map_grid colour
+BORDER = (139, 141, 139)       # HamClock pane border grey
+DIM = (110, 110, 110)
+TITLE = (255, 125, 0)          # HamClock Short_path orange
+WHITE = (255, 255, 255)
+RED = (255, 0, 0)
+ALT_BANDS = [(2000, (255, 64, 64)), (10000, (246, 129, 49)), (20000, (255, 255, 0)),
+             (30000, (0, 255, 0)), (99999, (0, 255, 255))]
+FONT_DIRS = ["/usr/share/fonts/truetype/freefont", "/usr/share/fonts/truetype/liberation"]
+JSON = "/run/dump1090-fa/aircraft.json"
+SDRMUX = "/run/sdrmux/ctl.sock"
+MI_KM = 1.609344
+
+
+def font(bold, size):
+    names = (["FreeSansBold.ttf", "LiberationSans-Bold.ttf"] if bold
+             else ["FreeSans.ttf", "LiberationSans-Regular.ttf"])
+    for d in FONT_DIRS:
+        for n in names:
+            p = os.path.join(d, n)
+            if os.path.exists(p):
+                return ImageFont.truetype(p, size)
+    return ImageFont.load_default()
+
+
+F_TITLE, F_LABEL, F_SMALL = font(True, 20), font(True, 16), font(True, 14)
+
+
+def alt_colour(alt):
+    if not isinstance(alt, (int, float)):
+        return WHITE if alt != "ground" else ALT_BANDS[0][1]
+    for top, c in ALT_BANDS:
+        if alt < top:
+            return c
+    return ALT_BANDS[-1][1]
+
+
+def polar(lat0, lon0, lat, lon):
+    """Great-circle distance (km) and initial bearing (deg) from the station."""
+    p1, p2 = math.radians(lat0), math.radians(lat)
+    dl = math.radians(lon - lon0)
+    a = math.sin((p2 - p1) / 2) ** 2 + math.cos(p1) * math.cos(p2) * math.sin(dl / 2) ** 2
+    d = 2 * 6371.0 * math.asin(math.sqrt(a))
+    brg = math.degrees(math.atan2(math.sin(dl) * math.cos(p2),
+                                  math.cos(p1) * math.sin(p2) - math.sin(p1) * math.cos(p2) * math.cos(dl)))
+    return d, brg % 360
+
+
+class Scope:
+    def __init__(self, a):
+        st = json.load(open(os.path.expanduser("~/influ/station.json")))
+        self.lat0, self.lon0 = st["lat"], st["lon"]
+        self.range_km = a.range_mi * MI_KM
+        self.cx, self.cy = W // 2, H // 2 + 6
+        self.R = min(W // 2, H // 2 - 6) - 16
+        self.trails = defaultdict(lambda: deque(maxlen=300))     # hex -> (t, lat, lon)
+        self.last = {}
+
+    def xy(self, lat, lon):
+        d, b = polar(self.lat0, self.lon0, lat, lon)
+        r = d / self.range_km * self.R
+        return self.cx + r * math.sin(math.radians(b)), self.cy - r * math.cos(math.radians(b)), d
+
+    def sample(self):
+        try:
+            with open(JSON) as f:
+                j = json.load(f)
+        except (OSError, ValueError):
+            return
+        now = j.get("now", time.time())
+        self.last = {"now": now, "aircraft": j.get("aircraft", [])}
+        for ac in self.last["aircraft"]:
+            if ac.get("lat") is not None and ac.get("seen_pos", 99) < 2:
+                tr = self.trails[ac["hex"]]
+                if not tr or now - tr[-1][0] >= 4:
+                    tr.append((now, ac["lat"], ac["lon"]))
+        for h in [h for h, tr in self.trails.items() if now - tr[-1][0] > 300]:
+            del self.trails[h]
+
+    # ------------------------------------------------------------- drawing --
+    def frame(self, d):
+        cx, cy, R = self.cx, self.cy, self.R
+        for frac in (25 / 70, 50 / 70):
+            r = R * frac
+            d.ellipse([cx - r, cy - r, cx + r, cy + r], outline=GRID)
+        d.ellipse([cx - R, cy - R, cx + R, cy + R], outline=BORDER)
+        for ang in range(0, 360, 30):
+            s, c = math.sin(math.radians(ang)), math.cos(math.radians(ang))
+            r0 = R - (6 if ang % 90 else 10)
+            d.line([cx + r0 * s, cy - r0 * c, cx + R * s, cy - R * c], fill=BORDER)
+        for txt, ang in (("N", 0), ("E", 90), ("S", 180), ("W", 270)):
+            s, c = math.sin(math.radians(ang)), math.cos(math.radians(ang))
+            tw = d.textlength(txt, font=F_LABEL)
+            d.text((cx + (R + 9) * s - tw / 2, cy - (R + 9) * c - 8), txt, font=F_LABEL, fill=BORDER)
+        mi = self.range_km / MI_KM
+        for frac, lab in ((25 / 70, mi * 25 / 70), (50 / 70, mi * 50 / 70)):
+            r = R * frac
+            d.text((cx + r * 0.707 + 1, cy - r * 0.707 - 15), f"{lab:.0f}", font=F_SMALL, fill=GRID)
+        d.line([cx - 4, cy, cx + 4, cy], fill=WHITE)
+        d.line([cx, cy - 4, cx, cy + 4], fill=WHITE)
+
+    def symbol(self, d, x, y, ac, col):
+        cat = (ac.get("category") or "").upper()
+        hollow = bool(ac.get("mlat")) or bool(ac.get("tisb"))
+        fill = None if hollow else col
+        trk = math.radians(ac.get("track") or ac.get("true_heading") or 0)
+
+        def rot(px, py):
+            return (x + px * math.cos(trk) - py * math.sin(trk), y + px * math.sin(trk) + py * math.cos(trk))
+
+        if cat in ("A3", "A4", "A5", "A6") or (not cat and (ac.get("gs") or 0) > 250):
+            s = 6 if cat == "A5" else 4.5
+            pts = [rot(0, -s * 1.7), rot(s, s), rot(0, s * 0.35), rot(-s, s)]
+            d.polygon(pts, outline=col, fill=fill)
+        elif cat in ("A1", "A2"):
+            d.ellipse([x - 3, y - 3, x + 3, y + 3], outline=col, fill=fill)
+        elif cat == "A7":
+            d.line([x - 4, y - 4, x + 4, y + 4], fill=col, width=2)
+            d.line([x - 4, y + 4, x + 4, y - 4], fill=col, width=2)
+        elif cat.startswith("B"):
+            d.polygon([(x, y - 5), (x + 4, y), (x, y + 5), (x - 4, y)], outline=col, fill=fill)
+        elif cat.startswith("C"):
+            d.rectangle([x - 3, y - 3, x + 3, y + 3], outline=col, fill=fill)
+        else:
+            d.polygon([(x, y - 5), (x + 4, y + 4), (x - 4, y + 4)], outline=col, fill=None)
+
+    def render(self, away=None):
+        img = Image.new("RGB", (W, H), BLACK)
+        d = ImageDraw.Draw(img)
+        d.fontmode = "1"                      # crisp, un-antialiased like HamClock
+        self.frame(d)
+        now = self.last.get("now", time.time())
+        acs = self.last.get("aircraft", [])
+        placed, labels = [], []
+        n_pos = n_nopos = 0
+        for ac in sorted(acs, key=lambda a: a.get("seen", 99)):
+            if ac.get("seen", 99) > 60:
+                continue
+            if ac.get("lat") is None or ac.get("seen_pos", 99) > 60:
+                n_nopos += 1
+                continue
+            x, y, dist = self.xy(ac["lat"], ac["lon"])
+            if dist > self.range_km:
+                continue
+            n_pos += 1
+            col = alt_colour(ac.get("alt_baro"))
+            dim = tuple(int(c * 0.45) for c in col)
+            for _, la, lo in list(self.trails.get(ac["hex"], []))[:-1]:
+                tx, ty, _ = self.xy(la, lo)
+                d.point([(tx, ty)], fill=dim)
+            if ac.get("gs") and ac.get("track") is not None:
+                km = ac["gs"] * 1.852 / 60                       # 1 minute ahead
+                r = km / self.range_km * self.R
+                t = math.radians(ac["track"])
+                d.line([x, y, x + r * math.sin(t), y - r * math.cos(t)], fill=dim)
+            self.symbol(d, x, y, ac, col)
+            name = (ac.get("flight") or "").strip() or ac["hex"].upper()
+            alt = ac.get("alt_baro")
+            sub = "GND" if alt == "ground" else (f"{int(alt) // 100:03d}" if isinstance(alt, (int, float)) else "")
+            labels.append((x, y, name, sub, col))
+        for x, y, name, sub, col in labels:
+            tw = max(d.textlength(name, font=F_LABEL), d.textlength(sub, font=F_SMALL))
+            box = (x + 7, y - 15, x + 7 + tw, y + 16)
+            if box[2] > W - 2:
+                box = (x - 7 - tw, box[1], x - 7, box[3])
+            if any(not (box[2] < b[0] or box[0] > b[2] or box[3] < b[1] or box[1] > b[3]) for b in placed):
+                continue
+            placed.append(box)
+            d.text((box[0], box[1]), name, font=F_LABEL, fill=col)
+            if sub:
+                d.text((box[0], box[1] + 16), sub, font=F_SMALL, fill=col)
+
+        d.text((4, 1), "ADS-B", font=F_TITLE, fill=TITLE)
+        mi = self.range_km / MI_KM
+        d.text((4, 24), f"{mi:.0f} mi", font=F_SMALL, fill=DIM)
+        cnt = f"{n_pos} AC"
+        d.text((W - 4 - d.textlength(cnt, font=F_TITLE), 1), cnt, font=F_TITLE, fill=WHITE)
+        if n_nopos:
+            s = f"+{n_nopos} no pos"
+            d.text((W - 4 - d.textlength(s, font=F_SMALL), 24), s, font=F_SMALL, fill=DIM)
+        # altitude legend, bottom-left: colour chips for 0/2/10/20/30 kft
+        x0 = 4
+        for (top, c), lab in zip(ALT_BANDS, ("0", "2", "10", "20", "30k")):
+            d.rectangle([x0, H - 9, x0 + 7, H - 3], fill=c)
+            d.text((x0 + 9, H - 17), lab, font=F_SMALL, fill=DIM)
+            x0 += 11 + d.textlength(lab, font=F_SMALL) + 4
+        clock = time.strftime("%H:%MZ", time.gmtime(now))
+        d.text((W - 4 - d.textlength(clock, font=F_SMALL), H - 17), clock, font=F_SMALL, fill=DIM)
+        if away:
+            msg = " SDR ON 2m "
+            tw = d.textlength(msg, font=F_LABEL)
+            d.rectangle([self.cx - tw / 2 - 2, 44, self.cx + tw / 2 + 2, 63], fill=RED)
+            d.text((self.cx - tw / 2, 45), msg, font=F_LABEL, fill=WHITE)
+        return img
+
+
+def sdr_away():
+    """True while sdrmux has the SDR away from 1090 MHz (a 2 m listen window)."""
+    try:
+        s = socket.socket(socket.AF_UNIX)
+        s.settimeout(1)
+        s.connect(SDRMUX)
+        s.sendall(b'{"cmd":"status"}\n')
+        st = json.loads(s.makefile().readline())
+        s.close()
+        return st.get("mode") == "ham"
+    except (OSError, ValueError):
+        return None
+
+
+def push(img, pane, host):
+    b = io.BytesIO()
+    img.save(b, "BMP")
+    req = urllib.request.Request(f"http://{host}/set_bmp?pane={pane}&fit=crop", data=b.getvalue(),
+                                 method="POST", headers={"Content-Type": "application/octet-stream"})
+    return urllib.request.urlopen(req, timeout=10).read().decode().strip()
+
+
+def main():
+    ap = argparse.ArgumentParser()
+    ap.add_argument("--pane", type=int, default=2)
+    ap.add_argument("--range-mi", type=float, default=70)
+    ap.add_argument("--every", type=float, default=5)
+    ap.add_argument("--hamclock", default="127.0.0.1:8070")
+    ap.add_argument("--once", help="render one frame to this PNG and exit (no push)")
+    a = ap.parse_args()
+    sc = Scope(a)
+    if a.once:
+        for _ in range(3):
+            sc.sample()
+            time.sleep(1)
+        sc.render(sdr_away()).save(a.once)
+        return
+    nxt = 0
+    while True:
+        sc.sample()
+        if time.time() >= nxt:
+            try:
+                r = push(sc.render(sdr_away()), a.pane, a.hamclock)
+                if r != "ok":
+                    print("hamclock:", r, flush=True)
+            except OSError as e:
+                print("push failed:", e, flush=True)
+            nxt = time.time() + a.every
+        time.sleep(1)
+
+
+if __name__ == "__main__":
+    main()
