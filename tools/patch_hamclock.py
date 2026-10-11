@@ -9,6 +9,8 @@
 4. clocks.cpp: the top-of-the-hour band-conditions redraw skips a flagged pane.
 5. plot.cpp / dxpeds.cpp / contests.cpp: no data-source text on screen (weather attribution
    column, DXpeditions and Contests credit rows); the data and its readiness checks stay.
+6. clocks.cpp: the main clock and its date show DE local time (all computing stays UTC);
+   the UTC button reads LOC when the DE time zone is not UTC.
 
 Idempotent: refuses if a hunk is not found exactly once. Run inside the ESPHamClock source dir.
 """
@@ -126,6 +128,31 @@ patch("dxpeds.cpp",
       "    tft.setCursor (box.x + (box.w-c_w)/2, box.y + CREDITS_Y0);\n"
       "    tft.print (credit);\n",
       "    // influ: no credit row\n")
+
+patch("clocks.cpp",
+      "    // break into components\n"
+      "    tmElements_t tm_wo;\n"
+      "    breakTime (t_wo, tm_wo);\n",
+      "    // break into components -- influ: the main clock shows DE local time; t_wo stays UTC\n"
+      "    tmElements_t tm_wo;\n"
+      "    breakTime (t_wo + getTZ (de_tz), tm_wo);\n")
+
+patch("clocks.cpp",
+      "static void drawUTCButton()\n"
+      "{\n"
+      "    selectFontStyle (BOLD_FONT, FAST_FONT);\n",
+      "static void drawUTCButton()\n"
+      "{\n"
+      "    // influ: main clock is DE local -- ask first, getTZ() may touch the drawing state\n"
+      "    const char *zone = getTZ (de_tz) ? \"LOC\" : \"UTC\";\n"
+      "\n"
+      "    selectFontStyle (BOLD_FONT, FAST_FONT);\n")
+
+patch("clocks.cpp",
+      "        tft.setTextColor(RA8875_BLACK);\n"
+      "        strcpy (msg, \"UTC\");\n",
+      "        tft.setTextColor(RA8875_BLACK);\n"
+      "        strcpy (msg, zone);\n")
 
 patch("contests.cpp",
       "    // credit\n"

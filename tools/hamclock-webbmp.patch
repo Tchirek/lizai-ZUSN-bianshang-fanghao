@@ -97,8 +97,39 @@
      // draw to full raw resolution
      SBox raw_b;
 --- clocks.cpp.orig-influ	2025-11-24 00:56:31.000000000 +0800
-+++ clocks.cpp	2026-10-11 21:19:08.644148258 +0800
-@@ -1046,7 +1046,7 @@
++++ clocks.cpp	2026-10-11 22:12:56.453755726 +0800
+@@ -44,6 +44,9 @@
+  */
+ static void drawUTCButton()
+ {
++    // influ: main clock is DE local -- ask first, getTZ() may touch the drawing state
++    const char *zone = getTZ (de_tz) ? "LOC" : "UTC";
++
+     selectFontStyle (BOLD_FONT, FAST_FONT);
+     char msg[4];
+ 
+@@ -51,7 +54,7 @@
+         // at UTC for sure
+         tft.fillRect (clock_b.x+clock_b.w-UTC_W, clock_b.y, UTC_W, UTC_H, HMS_C);
+         tft.setTextColor(RA8875_BLACK);
+-        strcpy (msg, "UTC");
++        strcpy (msg, zone);
+     } else {
+         // unknown or time is other than UTC
+         bool toggle = (millis()%2000) > 1000;
+@@ -968,9 +971,9 @@
+     // misc
+     char buf[32];
+ 
+-    // break into components
++    // break into components -- influ: the main clock shows DE local time; t_wo stays UTC
+     tmElements_t tm_wo;
+-    breakTime (t_wo, tm_wo);
++    breakTime (t_wo + getTZ (de_tz), tm_wo);
+ 
+     // set to update other times as well
+     bool draw_other_times = false;
+@@ -1046,7 +1049,7 @@
          // update BC time marker if new hour and up
          if (prev_hr != tm_wo.Hour) {
              PlotPane bc_pane = findPaneChoiceNow(PLOT_CH_BC);
