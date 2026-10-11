@@ -4,7 +4,7 @@ After=network-online.target
 
 [Service]
 WorkingDirectory=%h/influ/tools
-ExecStart=%h/influ/.venv/bin/python adsb_scope.py --pane 2 --range-mi 70 --every 5
+ExecStart=%h/influ/.venv/bin/python adsb_scope.py --pane 2 --range-mi 30 --every 5
 Restart=always
 RestartSec=15
 

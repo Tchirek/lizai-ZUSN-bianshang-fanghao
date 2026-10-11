@@ -2,7 +2,8 @@
 """ADS-B radar scope drawn in HamClock's own style and pushed into one of its panes.
 
 Reads dump1090's aircraft.json every second, keeps short tracks, and every few seconds
-renders a 318x294 azimuthal-equidistant scope centred on the station (70 mi by default),
+renders a 318x294 azimuthal-equidistant scope centred on the station (30 mi by default)
+over a dim OpenStreetMap base map (build_basemap.py),
 then POSTs it to HamClock's RESTful set_bmp. Station position comes from
 ~/influ/station.json (never committed).
 
@@ -13,7 +14,7 @@ Symbols   jet/heavy (A3-A6) chevron along track, heavy drawn larger
 Colour    altitude band (legend at the bottom), white = altitude unknown
 Vector    1-minute track projection; dotted trail of the last 5 minutes
 
-usage: adsb_scope.py [--pane 2] [--range-mi 70] [--every 5] [--once out.png]
+usage: adsb_scope.py [--pane 2] [--range-mi 30] [--every 5] [--once out.png]
 """
 import argparse
 import io
@@ -41,6 +42,12 @@ FONT_DIRS = ["/usr/share/fonts/truetype/freefont", "/usr/share/fonts/truetype/li
 JSON = "/run/dump1090-fa/aircraft.json"
 SDRMUX = "/run/sdrmux/ctl.sock"
 MI_KM = 1.609344
+# base map: dim, so aircraft stay the brightest thing on the scope (old vector radar look)
+MAP_STYLE = {"water": ((20, 45, 110), 1), "river": ((30, 70, 160), 1), "rail": ((70, 70, 70), 1),
+             "trunk": ((75, 55, 20), 1), "motorway": ((120, 85, 25), 1),
+             "runway": ((175, 175, 175), 3)}
+MAP_CITY = (70, 150, 70)
+MAP_TOWN = (45, 90, 45)
 
 
 def font(bold, size):
@@ -86,6 +93,59 @@ class Scope:
         self.R = min(W // 2, H // 2 - 6) - 16
         self.trails = defaultdict(lambda: deque(maxlen=300))     # hex -> (t, lat, lon)
         self.last = {}
+        self.base = self.static_layer(a.basemap)
+
+    def static_layer(self, path):
+        """Base map + range rings + compass, drawn once and reused for every frame."""
+        img = Image.new("RGB", (W, H), BLACK)
+        d = ImageDraw.Draw(img)
+        d.fontmode = "1"
+        try:
+            bm = json.load(open(path))
+        except (OSError, ValueError):
+            bm = None
+        if bm:
+            self.basemap(d, bm)
+        self.frame(d)
+        return img
+
+    def inside(self, x, y, margin=0):
+        return (x - self.cx) ** 2 + (y - self.cy) ** 2 <= (self.R + margin) ** 2
+
+    def basemap(self, d, bm):
+        """Old vector-radar style: dim single-pixel lines, runways solid, a few town names."""
+        for kind in ("water", "river", "rail", "trunk", "motorway", "runway"):
+            col, width = MAP_STYLE[kind]
+            for ln in bm["lines"]:
+                if ln["k"] != kind:
+                    continue
+                pts = [self.xy(la, lo)[:2] for la, lo in ln["p"]]
+                for (x1, y1), (x2, y2) in zip(pts, pts[1:]):
+                    if self.inside(x1, y1) and self.inside(x2, y2):
+                        d.line([x1, y1, x2, y2], fill=col, width=width)
+        taken = []
+        for p in sorted(bm["places"], key=lambda p: p["kind"] != "city"):
+            x, y, dist = self.xy(p["lat"], p["lon"])
+            if dist > self.range_km * 0.97:
+                continue
+            if p["kind"] != "city":
+                d.point([(x, y)], fill=MAP_TOWN)
+                continue
+            d.rectangle([x - 1, y - 1, x + 1, y + 1], fill=MAP_CITY)
+            name = p["name"]
+            tw = d.textlength(name, font=F_SMALL)
+            box = (x + 4, y - 7, x + 4 + tw, y + 7)
+            if self.inside(box[2], y) and not any(
+                    not (box[2] < b[0] or box[0] > b[2] or box[3] < b[1] or box[1] > b[3]) for b in taken):
+                taken.append(box)
+                d.text((box[0], box[1]), name, font=F_SMALL, fill=MAP_CITY)
+        done = set()
+        for ap in bm["airports"]:
+            x, y, dist = self.xy(ap["lat"], ap["lon"])
+            if dist < self.range_km * 0.95 and ap["name"] not in done:
+                done.add(ap["name"])
+                d.text((x + 6, y + 2), ap["name"], font=F_SMALL, fill=MAP_STYLE["runway"][0])
+        d.text((W - 4 - d.textlength("OSM", font=F_SMALL), H - 32), "OSM", font=F_SMALL, fill=GRID)
 
     def xy(self, lat, lon):
         d, b = polar(self.lat0, self.lon0, lat, lon)
@@ -111,7 +171,7 @@ class Scope:
     # ------------------------------------------------------------- drawing --
     def frame(self, d):
         cx, cy, R = self.cx, self.cy, self.R
-        for frac in (25 / 70, 50 / 70):
+        for frac in (1 / 3, 2 / 3):
             r = R * frac
             d.ellipse([cx - r, cy - r, cx + r, cy + r], outline=GRID)
         d.ellipse([cx - R, cy - R, cx + R, cy + R], outline=BORDER)
@@ -124,7 +184,7 @@ class Scope:
             tw = d.textlength(txt, font=F_LABEL)
             d.text((cx + (R + 9) * s - tw / 2, cy - (R + 9) * c - 8), txt, font=F_LABEL, fill=BORDER)
         mi = self.range_km / MI_KM
-        for frac, lab in ((25 / 70, mi * 25 / 70), (50 / 70, mi * 50 / 70)):
+        for frac, lab in ((1 / 3, mi / 3), (2 / 3, mi * 2 / 3)):
             r = R * frac
             d.text((cx + r * 0.707 + 1, cy - r * 0.707 - 15), f"{lab:.0f}", font=F_SMALL, fill=GRID)
         d.line([cx - 4, cy, cx + 4, cy], fill=WHITE)
@@ -156,10 +216,9 @@ class Scope:
             d.polygon([(x, y - 5), (x + 4, y + 4), (x - 4, y + 4)], outline=col, fill=None)
 
     def render(self, away=None):
-        img = Image.new("RGB", (W, H), BLACK)
+        img = self.base.copy()                # base map, rings and compass
         d = ImageDraw.Draw(img)
         d.fontmode = "1"                      # crisp, un-antialiased like HamClock
-        self.frame(d)
         now = self.last.get("now", time.time())
         acs = self.last.get("aircraft", [])
         placed, labels = [], []
@@ -250,7 +309,8 @@ def push(img, pane, host):
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--pane", type=int, default=2)
-    ap.add_argument("--range-mi", type=float, default=70)
+    ap.add_argument("--range-mi", type=float, default=30)
+    ap.add_argument("--basemap", default=os.path.expanduser("~/influ/model/basemap.json"))
     ap.add_argument("--every", type=float, default=5)
     ap.add_argument("--hamclock", default="127.0.0.1:8070")
     ap.add_argument("--once", help="render one frame to this PNG and exit (no push)")
