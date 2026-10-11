@@ -11,12 +11,15 @@ Sources
                  does; paths drawn when either end is on the map.
   our FT8 log    ~/influ/ft8/auto.jsonl: CQs we sent and QSOs completed since Monday 00:00
                  local time.
+  WSPR.live     regional weak-signal reception reports, one bounded query per 10 min.
 
 Writes, atomically, ~/influ/model/activity.png (transparent layer for HamClock's map box, same
 projection as rangemap.png) and ~/influ/model/ft8week.png (tally for the foot of the left
 column); hcdisplay lays both over the clock.
 """
 import json
+import logging
+from email.utils import parsedate_to_datetime
 import math
 import os
 import socket
@@ -24,6 +27,7 @@ import threading
 import time
 import urllib.error
 import urllib.request
+import urllib.parse
 import xml.etree.ElementTree as ET
 
 import aprslib
@@ -41,6 +45,7 @@ PSK_URL = ("https://retrieve.pskreporter.info/query?callsign={field}&modify=grid
            "&flowStartSeconds=-1800&appcontact=bg8asn")
 PSK_EVERY_S = 300                      # one query per 5 min: PSK Reporter's own limit
 UA = {"User-Agent": "influ-activity/1.0 (BG8ASN)"}
+log = logging.getLogger(__name__)
 
 # HamClock's band colours (get_config.txt), keyed by lower band edge in kHz
 BANDS = [(1800, "160", (131, 0, 0)), (3500, "80", (131, 129, 0)), (5300, "60", (230, 24, 74)),
@@ -130,6 +135,13 @@ class Aprs(threading.Thread):
         super().__init__(daemon=True)
         self.filter = f"r/{lat:.2f}/{lon:.2f}/{APRS_RANGE_KM}"
         self.stations, self.links, self.lock = {}, {}, threading.Lock()
+        self.nodes = {}
+        self.cache = os.path.join(MODEL, "aprs_positions.json")
+        try:
+            with open(self.cache) as f:
+                self.stations = json.load(f)
+        except (OSError, ValueError):
+            pass
 
     def run(self):
         while True:
@@ -143,6 +155,7 @@ class Aprs(threading.Thread):
         with socket.create_connection(APRS_SERVER, timeout=60) as s:
             s.sendall(f"user BG8ASN pass -1 vers influ-activity 1.0 filter {self.filter}\r\n".encode())
             buf = b""
+            last_filter = time.time()
             while True:
                 data = s.recv(4096)
                 if not data:
@@ -151,6 +164,11 @@ class Aprs(threading.Thread):
                 *lines, buf = buf.split(b"\n")
                 for raw in lines:
                     self.take(raw.decode("utf-8", "replace").strip())
+                if time.time() - last_filter >= 60:
+                    missing = self.missing()
+                    extra = " b/" + "/".join(missing) if missing else ""
+                    s.sendall(f"#filter {self.filter}{extra}\r\n".encode())
+                    last_filter = time.time()
 
     def take(self, line):
         if not line or line.startswith("#"):
@@ -162,11 +180,22 @@ class Aprs(threading.Thread):
         hops = rf_hops(p["from"], p.get("path", []))
         now = time.time()
         with self.lock:
+            for hop in hops:
+                if hop:
+                    self.nodes[hop] = now
             for a, b in zip(hops, hops[1:]):
                 if a and b:
                     self.links[a, b] = now
             if "latitude" in p:
                 self.stations[p["from"]] = (p["latitude"], p["longitude"], len(hops) > 1, now)
+
+    def missing(self):
+        """Subscribe to exact calls we saw in a local RF path, never guess an alias's owner."""
+        now = time.time()
+        with self.lock:
+            self.nodes = {k: t for k, t in self.nodes.items() if now - t <= APRS_SHOW_S}
+            return sorted(k for k in self.nodes if k not in self.stations
+                          or now - self.stations[k][3] > 2 * APRS_SHOW_S)[:64]
 
     def recent(self):
         """(stations heard within the hour, positions known for any station, RF links within
@@ -178,10 +207,14 @@ class Aprs(threading.Thread):
             for k in [k for k, t in self.links.items() if now - t > APRS_SHOW_S]:
                 del self.links[k]
             heard = {k: v for k, v in self.stations.items() if now - v[3] <= APRS_SHOW_S}
+            with open(self.cache + ".tmp", "w") as f:
+                json.dump(self.stations, f)
+            os.replace(self.cache + ".tmp", self.cache)
             return heard, dict(self.stations), list(self.links)
 
 
 APRS_ALIASES = ("WIDE", "RELAY", "TRACE", "TCPIP", "TCPXX", "NOGATE", "RFONLY", "GATE", "ECHO")
+RF_Q = ("qAR", "qAO", "qAr", "qAo")
 
 
 def rf_hops(source, path):
@@ -193,13 +226,13 @@ def rf_hops(source, path):
     if any(h.rstrip("*").upper() in ("TCPIP", "TCPXX") for h in path):
         return [source]
     q = next((i for i, hop in enumerate(path) if hop.startswith("qA")), len(path))
-    if q < len(path) and path[q] not in ("qAR", "qAO"):
+    if q < len(path) and path[q] not in RF_Q:
         return [source]
     digis = path[:q]
     last = max((i for i, hop in enumerate(digis) if hop.endswith("*")), default=-1)
     hops = [source] + [None if d.upper().startswith(APRS_ALIASES) else d.rstrip("*")
                        for d in digis[:last + 1]]
-    if q < len(path) - 1 and path[q] in ("qAR", "qAO"):
+    if q < len(path) - 1 and path[q] in RF_Q:
         hops.append(path[q + 1])
     return [h for i, h in enumerate(hops) if i == 0 or h != hops[i - 1]]
 
@@ -213,45 +246,97 @@ class Psk(threading.Thread):
     (at least 30 min)."""
 
     STATE = os.path.join(MODEL, "psk_cache.json")
+    EVERY_S = PSK_EVERY_S
 
     def __init__(self, fields):
         super().__init__(daemon=True)
         self.fields, self.lock = fields, threading.Lock()
         try:
-            self.state = json.load(open(self.STATE))
+            with open(self.STATE) as f:
+                self.state = json.load(f)
         except (OSError, ValueError):
             self.state = {}
         self.state.setdefault("next", 0)                     # earliest time for the next query
         self.state.setdefault("fields", {})                  # field -> {"t": ..., "reports": [...]}
+
+    def fetch(self, field):
+        req = urllib.request.Request(PSK_URL.format(field=field), headers=UA)
+        with urllib.request.urlopen(req, timeout=90) as response:
+            root = ET.fromstring(response.read())
+        return [{k: r.get(k, "") for k in (
+            "senderCallsign", "senderLocator", "receiverCallsign", "receiverLocator",
+            "frequency", "mode")} for r in root.iter("receptionReport")]
+
+    def save_state(self):
+        with open(self.STATE + ".tmp", "w") as f:
+            json.dump(self.state, f)
+        os.replace(self.STATE + ".tmp", self.STATE)
 
     def run(self):
         while True:
             time.sleep(max(0, self.state["next"] - time.time()))
             done = self.state["fields"]
             field = min(self.fields, key=lambda f: done.get(f, {}).get("t", 0))
-            wait = PSK_EVERY_S
+            wait = self.EVERY_S
+            with self.lock:
+                self.state["next"] = time.time() + wait  # a restart during HTTP must not query early
+                self.save_state()
             try:
-                req = urllib.request.Request(PSK_URL.format(field=field), headers=UA)
-                root = ET.fromstring(urllib.request.urlopen(req, timeout=90).read())
-                reports = [{k: r.get(k, "") for k in (
-                    "senderCallsign", "senderLocator", "receiverCallsign", "receiverLocator",
-                    "frequency", "mode")} for r in root.iter("receptionReport")]
+                reports = self.fetch(field)
                 with self.lock:
                     done[field] = {"t": time.time(), "reports": reports}
+                log.info("%s %s: %d reports", type(self).__name__, field, len(reports))
             except urllib.error.HTTPError as e:
                 if e.code == 429:
-                    wait = max(int(e.headers.get("Retry-After") or 0), 1800)
-            except (OSError, ET.ParseError):
-                pass
+                    retry = e.headers.get("Retry-After") or "0"
+                    try:
+                        wait = max(int(retry), 1800)
+                    except ValueError:
+                        wait = 1800
+                        try:
+                            wait = max(wait, parsedate_to_datetime(retry).timestamp() - time.time())
+                        except (TypeError, ValueError, OverflowError):
+                            pass
+                log.warning("%s HTTP %s; retry in %ds", type(self).__name__, e.code, wait)
+            except (OSError, ET.ParseError, ValueError, KeyError) as e:
+                log.warning("%s %s; retry in %ds", type(self).__name__, type(e).__name__, wait)
             with self.lock:
                 self.state["next"] = time.time() + wait
-                json.dump(self.state, open(self.STATE, "w"))
+                self.save_state()
 
     def current(self):
         """Reports from every field fetched within the last 40 min."""
         with self.lock:
             fresh = [v["reports"] for v in self.state["fields"].values() if time.time() - v["t"] < 2400]
         return [r for reports in fresh for r in reports]
+
+
+class Wspr(Psk):
+    """Same cache/refresh loop as PSK, an independent region-limited WSPR source."""
+
+    STATE = os.path.join(MODEL, "wspr_cache.json")
+    EVERY_S = 600
+
+    def __init__(self, m):
+        super().__init__(["region"])
+        corners = [m.latlon(x, y) for x in (0, W / 2, W) for y in (0, H / 2, H)]
+        south, north = min(p[0] for p in corners), max(p[0] for p in corners)
+        west, east = min(p[1] for p in corners), max(p[1] for p in corners)
+        south, west = math.floor(south * 10) / 10, math.floor(west * 10) / 10
+        north, east = math.ceil(north * 10) / 10, math.ceil(east * 10) / 10
+        bounds = [f"({who}_lat BETWEEN {south:.1f} AND {north:.1f} AND "
+                  f"{who}_lon BETWEEN {west:.1f} AND {east:.1f})" for who in ("tx", "rx")]
+        self.query = (
+            "SELECT tx_sign AS senderCallsign, tx_loc AS senderLocator, "
+            "rx_sign AS receiverCallsign, rx_loc AS receiverLocator, frequency, 'WSPR' AS mode "
+            "FROM wspr.rx WHERE time >= now() - INTERVAL 30 MINUTE "
+            "AND band IN (1,3,5,7,10,14,18,21,24,28,50,144,432) AND (" +
+            " OR ".join(bounds) + ") ORDER BY time DESC LIMIT 2000 FORMAT JSON")
+
+    def fetch(self, field):
+        url = "https://db1.wspr.live/?query=" + urllib.parse.quote_plus(self.query)
+        with urllib.request.urlopen(urllib.request.Request(url, headers=UA), timeout=45) as response:
+            return json.load(response)["data"]
 
 
 def ft8_week():
@@ -352,7 +437,8 @@ def draw_activity(m, aprs, reports, qsos):
 
     # legend, bottom right, like HamClock's map labels
     order = {name: i for i, (_, name, _) in enumerate(BANDS)}
-    parts = [(APRS_RF, f"APRS {len(heard)}"), (WHITE, f"FT8/FT4 {len(stations)}")]
+    local_aprs = sum(m.inside(*m.xy(*v[:2])) for v in heard.values())
+    parts = [(APRS_RF, f"APRS {local_aprs}"), (WHITE, f"DIGI {len(stations)}")]
     parts += [(colour, name if name.endswith("cm") else name + "m")
               for name, colour in sorted(drawn, key=lambda b: order.get(b[0], 99))]
     widths = [d.textlength(text, font=F_SMALL) + 18 for _, text in parts]
@@ -388,13 +474,15 @@ def save(img, name):
 
 
 def main():
+    logging.basicConfig(level=logging.INFO, format="%(asctime)s %(message)s")
     m = Map()
-    aprs, psk = Aprs(m.lat0, m.lon0), Psk(m.fields())
+    aprs, psk, wspr = Aprs(m.lat0, m.lon0), Psk(m.fields()), Wspr(m)
     aprs.start()
     psk.start()
+    wspr.start()
     while True:
         cq, qsos, monday = ft8_week()
-        save(draw_activity(m, aprs.recent(), psk.current(), qsos), "activity.png")
+        save(draw_activity(m, aprs.recent(), psk.current() + wspr.current(), qsos), "activity.png")
         save(draw_tally(cq, len(qsos), monday), "ft8week.png")
         time.sleep(30)
 

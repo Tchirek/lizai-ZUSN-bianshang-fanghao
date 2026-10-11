@@ -1,8 +1,9 @@
 import json
+import io
 from pathlib import Path
 import tempfile
 import unittest
-from unittest.mock import patch
+from unittest.mock import Mock, patch
 
 import activity as a
 
@@ -18,6 +19,18 @@ class Map:
 
 
 class Tests(unittest.TestCase):
+    def setUp(self):
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        self.directory = tmp.name
+        p = patch.object(a, 'MODEL', tmp.name)
+        p.start()
+        self.addCleanup(p.stop)
+        for cls, name in ((a.Psk, 'psk.json'), (a.Wspr, 'wspr.json')):
+            p = patch.object(cls, 'STATE', str(Path(tmp.name) / name))
+            p.start()
+            self.addCleanup(p.stop)
+
     def test_rf_hops_and_unknown_repeater_gaps(self):
         self.assertEqual(a.rf_hops('A', ['B', 'C*', 'WIDE2-1', 'qAR', 'I']),
                          ['A', 'B', 'C', 'I'])
@@ -25,6 +38,8 @@ class Tests(unittest.TestCase):
                          ['A', None, 'B', 'I'])
         self.assertEqual(a.rf_hops('A', ['TCPIP*', 'qAC', 'SERVER']), ['A'])
         self.assertEqual(a.rf_hops('A', ['B*', 'qAC', 'SERVER']), ['A'])
+        for q in ('qAr', 'qAo'):
+            self.assertEqual(a.rf_hops('A', ['B*', q, 'I']), ['A', 'B', 'I'])
 
     def test_packets_store_only_known_rf_links_and_expire(self):
         feed = a.Aprs(0, 0)
@@ -39,6 +54,45 @@ class Tests(unittest.TestCase):
             heard, positions, links = feed.recent()
         self.assertEqual((heard, links), ({}, []))
         self.assertIn('A', positions)
+
+    def test_missing_nodes_subscription_and_positions_survive_restart(self):
+        feed = a.Aprs(0, 0)
+        packet = dict(**{'from': 'A'}, path=['B*', 'qAR', 'I'], latitude=100, longitude=100)
+        with patch.object(a.aprslib, 'parse', return_value=packet), patch.object(a.time, 'time', return_value=100):
+            feed.take('packet')
+            self.assertEqual(feed.missing(), ['B', 'I'])
+            feed.recent()
+            restarted = a.Aprs(0, 0)
+            self.assertEqual(restarted.recent()[0]['A'][:2], [100, 100])
+        with patch.object(a.time, 'time', return_value=100 + a.APRS_SHOW_S + 1):
+            self.assertEqual(feed.missing(), [])
+
+    def test_wspr_bounded_query_and_report_format(self):
+        with patch.object(a.Wspr, 'STATE', str(Path(self.directory) / 'wspr.json')):
+            feed = a.Wspr(Mock(latlon=lambda x,y: (30 + y/200, 100 + x/200)))
+        self.assertIn('INTERVAL 30 MINUTE', feed.query)
+        self.assertIn('band IN', feed.query)
+        self.assertIn('LIMIT 2000', feed.query)
+        self.assertIn('tx_lat BETWEEN', feed.query)
+        self.assertIn('rx_lat BETWEEN', feed.query)
+        self.assertEqual(feed.EVERY_S, 600)
+        report = dict(self.report('S', 'R'), mode='WSPR')
+        response = io.BytesIO(json.dumps(dict(data=[report])).encode())
+        with patch.object(a.urllib.request, 'urlopen', return_value=response) as http:
+            self.assertEqual(feed.fetch('region'), [report])
+            self.assertTrue(http.call_args.args[0].full_url.startswith('https://db1.wspr.live/?query='))
+
+    def test_rate_limit_is_persisted_without_immediate_retry(self):
+        path = str(Path(self.directory) / 'psk.json')
+        with patch.object(a.Psk, 'STATE', path):
+            feed = a.Psk(['OM'])
+        feed.STATE = path
+        feed.fetch = Mock(side_effect=a.urllib.error.HTTPError('url', 429, 'limited', {}, None))
+        with patch.object(a.time, 'time', return_value=100), patch.object(a.time, 'sleep', side_effect=[None, StopIteration]):
+            with self.assertRaises(StopIteration):
+                feed.run()
+        self.assertEqual(json.loads(Path(path).read_text())['next'], 1900)
+        feed.fetch.assert_called_once_with('OM')
 
     def report(self, sender, receiver):
         return dict(senderCallsign='S', receiverCallsign='R', senderLocator=sender,
