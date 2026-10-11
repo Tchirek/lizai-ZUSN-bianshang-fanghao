@@ -443,8 +443,7 @@ class LivePsk(threading.Thread):
         return rows
 
 
-def digital_graph(m, reports):
-    """Keep every station and path; show local paths plus two distant direction bundles per station."""
+def digital_paths(m, reports):
     stations, bands, paths = {}, set(), {}
     for r in reports:
         try:
@@ -463,10 +462,15 @@ def digital_graph(m, reports):
                 paths[key] = dict(ends=ends, local=local, calls=calls, band=name, colour=colour)
         except (ValueError, KeyError, TypeError, AttributeError):
             continue
+    return stations, bands, paths
+
+
+def select_paths(stations, bands, paths):
+    """Show local paths plus two distant direction bundles per station, retaining every peer."""
     inside, bundles, degrees = [], {}, {k: set() for k in stations}
     for p in paths.values():
         for i in p["local"]:
-            degrees[p["calls"][i]].add(p["calls"][1 - i])
+            degrees.setdefault(p["calls"][i], set()).add(p["calls"][1 - i])
         if len(p["local"]) == 2:
             inside.append(p)
             continue
@@ -483,6 +487,10 @@ def digital_graph(m, reports):
                                     b["path"]["band"], b["path"]["calls"]))
         chosen += [b["path"] for b in options[:2]]
     return stations, bands, chosen, {k: len(v) for k, v in degrees.items()}, len(paths)
+
+
+def digital_graph(m, reports):
+    return select_paths(*digital_paths(m, reports))
 
 
 def ft8_week():
@@ -629,6 +637,7 @@ def main():
         path = os.path.join(MODEL, "activity.json")
         with open(path + ".tmp", "w") as f:
             json.dump(dict(t=time.time(), reports=reports, aprs=heard[0],
+                           aprs_positions=heard[1], aprs_links=heard[2], qsos=qsos,
                            mqtt_connected=psk.connected, mqtt_received=psk.received), f)
         os.replace(path + ".tmp", path)
         time.sleep(5)
