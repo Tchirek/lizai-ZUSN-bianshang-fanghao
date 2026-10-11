@@ -12,9 +12,10 @@ It keeps a full-size copy of the clock, shows it scaled to the screen with its a
 kept, and sends taps, pointer moves and keys back (set_touch / set_mouse / set_char), so it
 behaves like a HamClock window. Reconnects by itself whenever HamClock restarts.
 
-Over HamClock's world map goes the UV-K5 range map with the live amateur activity, zoomed by
-the wheel or a two-finger scroll and panned by a drag (map_view.py; if it cannot start, the
-pictures build_rangemap.py and activity.py leave in ~/influ/model stand in). Over the foot of
+Over HamClock's world map goes the UV-K5 range map with the live amateur activity (map_view.py;
+if it cannot start, the pictures build_rangemap.py and activity.py leave in ~/influ/model stand
+in). A touchpad pinch or the wheel zooms it, a two-finger scroll or a drag pans it (touchpad
+gestures come from Wayland, gestures.py), and so do the arrow keys, + and - (or PgUp, PgDn). Over the foot of
 the left column goes this week's FT8 tally. Taps, drags and pointer moves over them stay here
 instead of reaching what they cover.
 
@@ -47,6 +48,11 @@ POLL = 0.1                      # s between update requests, as live.html (UPDAT
 JITTER = 5                      # app px a press may move and still count as a tap
 CURSOR_IDLE = 3                 # s before the pointer is hidden
 FPS = 60
+MAP_KEYS = {pygame.K_LEFT: (1, 0), pygame.K_RIGHT: (-1, 0), pygame.K_UP: (0, 1), pygame.K_DOWN: (0, -1)}
+ZOOM_KEYS = {pygame.K_EQUALS: 1, pygame.K_PLUS: 1, pygame.K_KP_PLUS: 1, pygame.K_PAGEUP: 1,
+             pygame.K_MINUS: -1, pygame.K_KP_MINUS: -1, pygame.K_PAGEDOWN: -1}
+KEY_PAN = 700                   # view px a second the arrow keys move the map
+KEY_ZOOM = 3                    # wheel notches a second + and - zoom
 KEYS = {pygame.K_RETURN: "Enter", pygame.K_KP_ENTER: "Enter", pygame.K_TAB: "Tab",
         pygame.K_ESCAPE: "Escape", pygame.K_BACKSPACE: "Backspace", pygame.K_SPACE: "Space",
         pygame.K_LEFT: "ArrowLeft", pygame.K_RIGHT: "ArrowRight",
@@ -261,25 +267,30 @@ def main():
     mirror, screen = Mirror(), Screen()
     fitted = Fitted(screen.view.size)
     overlays = [Overlay(name, box) for name, box in OVERLAYS]
+    k = screen.view.w / APP_W                                       # app px -> frame px
+    box = pygame.Rect(*(round(v * k) for v in MAP_BOX))
+    canvas = gestures = None
     try:
         from map_view import Canvas, W as MAP_W, H as MAP_H
-        canvas = Canvas()
+        canvas = Canvas(box.size)
         overlays = [o for o in overlays if o.box != MAP_BOX]      # it draws the whole map box
-    except (OSError, ValueError, KeyError) as e:
-        print(f"zoomable map unavailable ({e}); showing the map pictures", flush=True)
-        canvas = None
+        from gestures import Gestures
+        gestures = Gestures()
+    except (OSError, ValueError, KeyError, ImportError) as e:
+        print(f"{'touchpad gestures' if canvas else 'zoomable map'} unavailable: {e}", flush=True)
     try:
         inspector = MapPanel()
     except (OSError, ValueError):
         inspector = None
-    k = screen.view.w / APP_W                                       # app px -> frame px
-    box = pygame.Rect(*(round(v * k) for v in MAP_BOX))
     fw, fh = screen.view.size
     strips = [pygame.Rect(0, 0, fw, box.top), pygame.Rect(0, box.bottom, fw, fh - box.bottom),
               pygame.Rect(0, box.top, box.left, box.h), pygame.Rect(box.right, box.top, fw - box.right, box.h)]
 
     def covered(at):
         return (canvas and on_map(at)) or any(o.covers(at) for o in overlays)
+
+    def map_xy(at):
+        return (at[0] - MAP_BOX[0]) * MAP_W / MAP_BOX[2], (at[1] - MAP_BOX[1]) * MAP_H / MAP_BOX[3]
 
     clock, dt = pygame.time.Clock(), 0.0
     pressed = drag = None                # app px of the press; (last window px, dragging?)
@@ -297,12 +308,10 @@ def main():
             if ev.type in (pygame.MOUSEMOTION, pygame.MOUSEBUTTONDOWN, pygame.MOUSEWHEEL, pygame.KEYDOWN):
                 last_input = time.time()
                 pygame.mouse.set_visible(True)
-            if ev.type == pygame.MOUSEWHEEL:
+            if ev.type == pygame.MOUSEWHEEL:              # without Wayland gestures: zoom
                 at = screen.app_xy(pygame.mouse.get_pos())
-                if canvas and on_map(at):
-                    notches = ev.precise_y * (-1 if ev.flipped else 1)
-                    canvas.scroll(notches, ((at[0] - MAP_BOX[0]) * MAP_W / MAP_BOX[2],
-                                            (at[1] - MAP_BOX[1]) * MAP_H / MAP_BOX[3]))
+                if canvas and not gestures and on_map(at):
+                    canvas.scroll(ev.precise_y * (-1 if ev.flipped else 1), map_xy(at))
             elif ev.type == pygame.MOUSEBUTTONDOWN and ev.button in (1, 2, 3):
                 pressed, drag = screen.app_xy(ev.pos), None
                 on_panel = inspector and inspector.box and pressed and \
@@ -327,6 +336,8 @@ def main():
                 pressed = drag = None
             elif ev.type == pygame.WINDOWLEAVE:
                 link.send("set_mouse?x=-1&y=-1")
+            elif ev.type == pygame.KEYDOWN and canvas and (ev.key in MAP_KEYS or ev.key in ZOOM_KEYS):
+                pass                                    # held keys move the map, below
             elif ev.type == pygame.KEYDOWN and (name := key_name(ev)):
                 if name == "Escape" and inspector and inspector.point is not None:
                     inspector.close()
@@ -340,6 +351,29 @@ def main():
                 at = screen.app_xy(ev.pos)
                 at = (int(at[0]), int(at[1])) if at and not covered(at) else (-1, -1)
                 link.send(f"set_mouse?x={at[0]}&y={at[1]}")
+
+        if gestures:
+            for e in gestures.poll():
+                last_input = time.time()
+                at = screen.app_xy(pygame.mouse.get_pos())
+                if not on_map(at):
+                    continue
+                if e[0] == "pinch":                      # fingers spread, and their middle moved
+                    canvas.pinch(e[1], map_xy(at))
+                    canvas.pan(e[2] * MAP_W / box.w, e[3] * MAP_H / box.h)
+                elif e[0] == "scroll":                   # two fingers or the TrackPoint: pan
+                    canvas.pan(-e[1] * MAP_W / box.w, -e[2] * MAP_H / box.h)
+                elif e[0] == "wheel":
+                    canvas.scroll(e[1], map_xy(at))
+        if canvas:
+            held = pygame.key.get_pressed()
+            vx = sum(v[0] for key, v in MAP_KEYS.items() if held[key])
+            vy = sum(v[1] for key, v in MAP_KEYS.items() if held[key])
+            zoom = sum(v for key, v in ZOOM_KEYS.items() if held[key])
+            if vx or vy:
+                canvas.pan(vx * KEY_PAN * dt, vy * KEY_PAN * dt)
+            if zoom:
+                canvas.scroll(max(-1, min(1, zoom)) * KEY_ZOOM * dt, (MAP_W / 2, MAP_H / 2))
 
         while not frames.empty():
             changed = mirror.apply(*frames.get())
