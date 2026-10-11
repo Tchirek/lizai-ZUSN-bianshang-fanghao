@@ -17,6 +17,8 @@ FREQUENCIES = (144.174, 144.640, 145.025, 435.000)
 HEIGHTS = (10, 20, 40, 80)
 PW, PH = 320, 248
 GREY = (139, 141, 139)
+PROFILE_TILES = 36            # elevation tiles one popup path may fetch
+REDRAW_S = 10                 # the popup's station list follows activity.json this often
 
 
 def solar_elevation(lat, lon, when):
@@ -34,11 +36,14 @@ def solar_elevation(lat, lon, when):
     return np.degrees(np.arcsin(np.clip(np.sin(lat) * math.sin(decl) + np.cos(lat) * math.cos(decl) * np.cos(ha), -1, 1)))
 
 
-def night_layer(m, when=None):
+def night_layer(m, when=None, hud=True):
     when = time.time() if when is None else when
     y, x = np.mgrid[0:a.H:4, 0:a.W:4]
-    dx, dy = (x - a.W / 2) * m.km_per_px, (y - a.H / 2) * m.km_per_px
-    lat, lon = terrain.destination(m.lat0, m.lon0, np.degrees(np.arctan2(dx, -dy)), np.hypot(dx, dy))
+    if hasattr(m, 'grid_latlon'):
+        lat, lon = m.grid_latlon(x, y)
+    else:
+        dx, dy = (x - a.W / 2) * m.km_per_px, (y - a.H / 2) * m.km_per_px
+        lat, lon = terrain.destination(m.lat0, m.lon0, np.degrees(np.arctan2(dx, -dy)), np.hypot(dx, dy))
     alt = solar_elevation(lat, lon, when)
     rgba = np.zeros(alt.shape + (4,), dtype=np.uint8)
     rgba[..., :3] = (2, 12, 30)
@@ -49,6 +54,8 @@ def night_layer(m, when=None):
     edge[:, 1:] |= night[:, 1:] != night[:, :-1]
     rgba[edge] = (170, 175, 190, 130)
     img = Image.fromarray(rgba).resize((a.W, a.H), Image.Resampling.BILINEAR)
+    if not hud:
+        return img
     d = ImageDraw.Draw(img)
     text = f"SUN {float(solar_elevation(m.lat0, m.lon0, when)):+.0f} deg"
     tw = d.textlength(text, font=a.F_SMALL)
@@ -59,19 +66,39 @@ def night_layer(m, when=None):
 
 class CachedDEM(terrain.DEM):
     @staticmethod
-    def tile(tx, ty):
-        path = os.path.join(terrain.MODEL, 'dem', f'{terrain.DEM_ZOOM}_{tx}_{ty}.png')
+    def tile(tx, ty, zoom=terrain.DEM_ZOOM):
+        path = os.path.join(terrain.MODEL, 'dem', f'{zoom}_{tx}_{ty}.png')
         if not os.path.exists(path):
             raise OSError('terrain tile not cached')
-        return terrain.DEM.tile(tx, ty)
+        return terrain.DEM.tile(tx, ty, zoom)
+
+
+def profile_zoom(m, south, west, north, east):
+    """Terrain zoom for a popup path: as fine as the map is zoomed (8 + log2 zoom, at most 12,
+    ~33 m), but no finer than lets the path's box fit in PROFILE_TILES tiles."""
+    zoom = min(12, terrain.DEM_ZOOM + math.ceil(math.log2(getattr(m, 'zoom', 1))))
+    while zoom > terrain.DEM_ZOOM:
+        x0, y0 = terrain.merc_px(north, west, zoom)
+        x1, y1 = terrain.merc_px(south, east, zoom)
+        if (int(x1 // 256) - int(x0 // 256) + 1) * (int(y1 // 256) - int(y0 // 256) + 1) <= PROFILE_TILES:
+            break
+        zoom -= 1
+    return zoom
 
 
 def path_profile(m, lat, lon):
     distance, bearing = (float(v) for v in terrain.polar(m.lat0, m.lon0, lat, lon))
-    d = np.linspace(0, max(distance, .001), max(3, int(distance / .25) + 1))
+    lats, lons = terrain.destination(m.lat0, m.lon0, bearing, np.linspace(0, distance, 50))
+    bounds = (float(lats.min() - .02), float(lons.min() - .02), float(lats.max() + .02), float(lons.max() + .02))
+    zoom = profile_zoom(m, *bounds)
+    step = .25 / 2 ** (zoom - terrain.DEM_ZOOM)          # about one sample a terrain pixel
+    d = np.linspace(0, max(distance, .001), max(3, int(distance / step) + 1))
     lats, lons = terrain.destination(m.lat0, m.lon0, bearing, d)
-    dem = CachedDEM(float(lats.min() - .02), float(lons.min() - .02),
-                    float(lats.max() + .02), float(lons.max() + .02))
+    try:
+        dem = (CachedDEM if zoom == terrain.DEM_ZOOM else terrain.DEM)(*bounds, zoom=zoom)
+    except (OSError, SyntaxError):                       # finer tiles unreachable: cached ones
+        zoom = terrain.DEM_ZOOM
+        dem = CachedDEM(*bounds)
     ground = dem(lats, lons)
     with open(os.path.join(a.MODEL, 'rangemap.json')) as f:
         info = json.load(f)
@@ -90,7 +117,8 @@ def path_profile(m, lat, lon):
     return dict(distance=distance, bearing=bearing, d=d, ground=effective, ray=ray,
                 clearance=float((ray - effective)[1:-1].min()), status=status, our_agl=our_agl,
                 fspl=[32.45 + 20 * math.log10(f) + 20 * math.log10(max(distance, .001))
-                      for f in FREQUENCIES])
+                      for f in FREQUENCIES],
+                dem_m=156543.03 * math.cos(math.radians(m.lat0)) / 2 ** zoom)
 
 
 def nearby(m, x, y):
@@ -165,22 +193,28 @@ def panel_image(m, point, profile=None, error=None):
         text = ' '.join(shown) + (f' +{len(calls)-len(shown)}' if len(shown)<len(calls) else '')
         d.text((8, 216), text, font=f, fill=a.WHITE)
     our = profile['our_agl'] if profile else 16
-    d.text((8, PH - 17), f'DE {our:.0f}m / DX columns AGL  k=4/3  F1 60%', font=a.font(11, False), fill=GREY)
+    resolution = f'  DEM {profile["dem_m"]:.0f}m' if profile else ''
+    d.text((8, PH - 17), f'DE {our:.0f}m DX AGL k=4/3 F1 60%{resolution}', font=a.font(11, False), fill=GREY)
     return img
 
 
 class MapPanel:
+    """The popup for a tapped map point; it stays on that place as the map zooms and pans
+    (whoever draws the map keeps `m` set to its current view)."""
+
     def __init__(self):
         self.m = a.Map()
         self.pool = ThreadPoolExecutor(max_workers=1)
-        self.point, self.future, self.profile, self.error = None, None, None, None
-        self.box = None
+        self.point = self.target = self.future = self.profile = self.error = None
+        self.box = self.surface = None
+        self.drawn_at = 0
 
     def open(self, point):
         if self.future:
             self.future.cancel()
-        self.point, self.profile, self.error = point, None, None
-        self.future = self.pool.submit(path_profile, self.m, *self.m.latlon(*point))
+        self.point, self.profile, self.error, self.surface = point, None, None, None
+        self.target = self.m.latlon(*point)
+        self.future = self.pool.submit(path_profile, self.m, *self.target)
 
     def close(self):
         self.point, self.box = None, None
@@ -204,21 +238,30 @@ class MapPanel:
         import pygame
         if self.point is None:
             return
+        self.point = self.m.xy(*self.target)
         if self.future and self.future.done():
             try:
                 self.profile = self.future.result()
-            except (OSError, ValueError, KeyError):
+            except Exception:                    # tiles unreachable, broken tile, ...
                 self.error = 'Terrain unavailable'
-            self.future = None
-        img = panel_image(self.m, self.point, self.profile, self.error)
-        pic = pygame.image.frombytes(img.tobytes(), img.size, 'RGB')
+            self.future, self.surface = None, None
         mx, my, mw, mh = map_box
+        pw, ph = round(PW * mw / a.W), round(PH * mh / a.H)     # scaled as the map box is
+        if self.surface is None or time.monotonic() - self.drawn_at > REDRAW_S:
+            img = panel_image(self.m, self.point, self.profile, self.error)
+            pic = pygame.image.frombytes(img.tobytes(), img.size, 'RGB')
+            self.surface = pic if (pw, ph) == (PW, PH) else pygame.transform.smoothscale(pic, (pw, ph))
+            self.drawn_at = time.monotonic()
         x = mx + self.point[0] * mw / a.W
         y = my + self.point[1] * mh / a.H
-        left = min(max(mx, x + 12), mx + mw - PW)
-        top = min(max(my, y + 12), my + mh - PH)
-        self.box = pygame.Rect(round(left), round(top), PW, PH)
-        pygame.draw.line(frame, (230, 230, 180), (mx + mw / 2, my + mh / 2), (x, y), 1)
+        left = min(max(mx, x + 12), mx + mw - pw)
+        top = min(max(my, y + 12), my + mh - ph)
+        self.box = pygame.Rect(round(left), round(top), pw, ph)
+        de = self.m.xy(self.m.lat0, self.m.lon0)
+        clip = frame.get_clip()
+        frame.set_clip(pygame.Rect(map_box))
+        pygame.draw.line(frame, (230, 230, 180), (mx + de[0] * mw / a.W, my + de[1] * mh / a.H), (x, y), 1)
         pygame.draw.line(frame, (255, 255, 255), (x - 5, y), (x + 5, y), 1)
         pygame.draw.line(frame, (255, 255, 255), (x, y - 5), (x, y + 5), 1)
-        frame.blit(pic, self.box)
+        frame.blit(self.surface, self.box)
+        frame.set_clip(clip)

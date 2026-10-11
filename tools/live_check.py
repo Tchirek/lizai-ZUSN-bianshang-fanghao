@@ -21,7 +21,7 @@ sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), ".."
 import pygame                                    # noqa: E402
 from PIL import Image, ImageChops                # noqa: E402
 
-from hcdisplay import Link, Mirror               # noqa: E402
+from hcdisplay import Link, Mirror, decode       # noqa: E402
 
 MAP = (540, 300, 1600, 950)                      # x0, y0, x1, y1 checked: the map (1600x960 px)
 
@@ -45,7 +45,7 @@ def main():
     a = ap.parse_args()
     pygame.init()
     frames = queue.Queue()
-    Link(frames, url="ws://127.0.0.1:8072/live-ws").start()
+    Link(frames, url="ws://127.0.0.1:8072/live-ws", raw=True).start()
     mirror = Mirror()
     t0 = nxt = time.time()
     n_frames = n_full = 0
@@ -60,7 +60,8 @@ def main():
                 if not ok:
                     print(f"{time.time() - t0:6.1f}s BAD FRAME n,blocks,w,h={info} hdr={len(f[1])}B",
                           flush=True)
-            mirror.apply(*f)
+            header, png = (None, f[1]) if f[0] == "full" else f[1:]
+            mirror.apply(*decode(header, png))
             n_frames += 1
         if time.time() >= nxt and mirror.image:
             nxt = time.time() + a.every
