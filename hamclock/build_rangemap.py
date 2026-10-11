@@ -304,8 +304,10 @@ def main():
     fx, fy = (v[0] for v in xy([flat], [flon]))
     draw.polygon([(fx, fy - 7), (fx + 6, fy + 5), (fx - 6, fy + 5)], fill=SEEN, outline=BLACK)
     note = f"{reach:.0f} km {az[i_max]:.0f}°  {peak:.0f} m"
-    draw.text((fx + 9, fy - 8) if fx < W - 160 else (fx - 9 - draw.textlength(note, font=f_label), fy - 8),
-              note, font=f_label, fill=SEEN)
+    nx = fx + 9 if fx < W - 160 else fx - 9 - draw.textlength(note, font=f_label)
+    draw.text((nx, fy - 8), note, font=f_label, fill=SEEN)
+    taken.append((nx, fy - 8, nx + draw.textlength(note, font=f_label), fy + 10))
+    taken.append((W / 2 - 10, H / 2 - 10, W / 2 + 10, H / 2 + 10))      # DE marker
     draw.ellipse([W / 2 - 9, H / 2 - 9, W / 2 + 9, H / 2 + 9], outline=DE_GREEN, width=4)
     draw.ellipse([W / 2 - 3, H / 2 - 3, W / 2 + 3, H / 2 + 3], fill=BLACK)
 
@@ -323,7 +325,8 @@ def main():
     summary = {"reach_km": reach, "bearing": float(az[i_max]), "far_lat": float(flat),
                "far_lon": float(flon), "far_elev_m": peak, "our_asl_m": h_obs,
                "our_agl_m": a.our_agl, "their_agl_m": a.their_agl, "km_per_px": km_per_px,
-               "visible_km2": float(seen.sum() * km_per_px ** 2)}
+               "visible_km2": float(seen.sum() * km_per_px ** 2),
+               "labels": [[round(v) for v in b] for b in taken]}     # for layers drawn on top
     json.dump(summary, open(os.path.join(MODEL, "rangemap.json"), "w"), indent=1)
     print(json.dumps(summary, indent=1))
 

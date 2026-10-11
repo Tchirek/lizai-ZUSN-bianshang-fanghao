@@ -1,0 +1,12 @@
+[Unit]
+Description=Live amateur activity layer and FT8 week tally for the HamClock window
+After=network-online.target
+
+[Service]
+WorkingDirectory=%h/influ/hamclock
+ExecStart=%h/influ/.venv/bin/python activity.py
+Restart=always
+RestartSec=30
+
+[Install]
+WantedBy=default.target
