@@ -11,6 +11,9 @@ live protocol its live.html page uses, on ws://127.0.0.1:8071/live-ws:
 It keeps a full-size copy of the clock, shows it scaled to the screen with its aspect ratio
 kept, and sends taps, pointer moves and keys back (set_touch / set_mouse / set_char), so it
 behaves like a HamClock window. Reconnects by itself whenever HamClock restarts.
+
+HamClock's world map is covered with the UV-K5 range map (build_rangemap.py) when one exists;
+taps and pointer moves over it stay here instead of picking places on the hidden world map.
 """
 import io
 import os
@@ -20,11 +23,16 @@ import time
 
 os.environ.setdefault("SDL_VIDEODRIVER", "wayland,x11")
 os.environ.setdefault("PYGAME_HIDE_SUPPORT_PROMPT", "1")
+# app id / WM class: lets KDE find influ-hamclock.desktop and its icon
+os.environ.setdefault("SDL_VIDEO_WAYLAND_WMCLASS", "influ-hamclock")
+os.environ.setdefault("SDL_VIDEO_X11_WMCLASS", "influ-hamclock")
 import pygame                                    # noqa: E402
 import websocket                                 # noqa: E402
 
 URL = "ws://127.0.0.1:8071/live-ws"
 APP_W, APP_H = 800, 480         # HamClock's own coordinates for touch and mouse
+MAP_BOX = (139, 149, 660, 330)  # HamClock's map_b in those coordinates
+RANGE_MAP = os.path.expanduser("~/influ/model/rangemap.png")
 POLL = 0.1                      # s between update requests, as live.html (UPDATE_MS)
 JITTER = 5                      # app px a press may move and still count as a tap
 CURSOR_IDLE = 3                 # s before the pointer is hidden
@@ -112,8 +120,39 @@ class Mirror:
             sx += w
 
 
+class Overlay:
+    """The range map, reloaded whenever its file changes."""
+
+    def __init__(self, path=RANGE_MAP):
+        self.path, self.mtime, self.image = path, None, None
+
+    def refresh(self):
+        """Reload if the file changed; True when the picture changed."""
+        try:
+            mtime = os.path.getmtime(self.path)
+        except OSError:
+            mtime = None
+        if mtime == self.mtime:
+            return False
+        self.mtime = mtime
+        self.image = pygame.image.load(self.path) if mtime else None
+        return True
+
+    def onto(self, clock):
+        """The clock with HamClock's map box covered (the mirror itself stays untouched)."""
+        if not self.image:
+            return clock
+        k = clock.get_width() / APP_W
+        box = pygame.Rect(*(round(v * k) for v in MAP_BOX))
+        frame = clock.copy()
+        pic = self.image if self.image.get_size() == box.size else \
+            pygame.transform.smoothscale(self.image, box.size)
+        frame.blit(pic, box)
+        return frame
+
+
 class Screen:
-    """The full-screen window: the mirror scaled to fit, centred, aspect ratio kept."""
+    """The full-screen window: the clock scaled to fit, centred, aspect ratio kept."""
 
     def __init__(self):
         pygame.display.init()
@@ -131,12 +170,17 @@ class Screen:
         self.surface.blit(pygame.transform.smoothscale(image, self.view.size), self.view)
         pygame.display.flip()
 
-    def app_xy(self, pos):
-        """Screen position -> HamClock coordinates, or None outside the clock."""
+    def app_xy(self, pos, covered=False):
+        """Screen position -> HamClock coordinates; None outside the clock, or over the map
+        box while it is covered by the range map."""
         if not self.view or not self.view.collidepoint(pos):
             return None
-        return ((pos[0] - self.view.x) * APP_W // self.view.w,
-                (pos[1] - self.view.y) * APP_H // self.view.h)
+        at = ((pos[0] - self.view.x) * APP_W // self.view.w,
+              (pos[1] - self.view.y) * APP_H // self.view.h)
+        x, y, w, h = MAP_BOX
+        if covered and x <= at[0] < x + w and y <= at[1] < y + h:
+            return None
+        return at
 
 
 def key_name(ev):
@@ -150,10 +194,14 @@ def main():
     frames = queue.Queue()
     link = Link(frames)
     link.start()
-    mirror, screen = Mirror(), Screen()
-    pressed, last_move, last_input = None, 0.0, time.time()
+    mirror, screen, overlay = Mirror(), Screen(), Overlay()
+    pressed, last_move, last_input, last_check = None, 0.0, time.time(), 0.0
     while True:
         changed = False
+        if time.time() - last_check > 5:
+            last_check = time.time()
+            changed = overlay.refresh()
+        covered = overlay.image is not None
         for ev in pygame.event.get():
             if ev.type == pygame.QUIT:
                 return
@@ -163,9 +211,9 @@ def main():
                 last_input = time.time()
                 pygame.mouse.set_visible(True)
             if ev.type == pygame.MOUSEBUTTONDOWN and ev.button in (1, 2, 3):
-                pressed = screen.app_xy(ev.pos)
+                pressed = screen.app_xy(ev.pos, covered)
             elif ev.type == pygame.MOUSEBUTTONUP and ev.button in (1, 2, 3) and pressed:
-                at = screen.app_xy(ev.pos)
+                at = screen.app_xy(ev.pos, covered)
                 if at and abs(at[0] - pressed[0]) <= JITTER and abs(at[1] - pressed[1]) <= JITTER:
                     ctrl = pygame.key.get_mods() & pygame.KMOD_CTRL
                     button = 1 if ev.button == 2 or (ev.button == 1 and ctrl) else 0
@@ -173,7 +221,7 @@ def main():
                 pressed = None
             elif ev.type == pygame.MOUSEMOTION and time.time() - last_move > POLL:
                 last_move = time.time()
-                at = screen.app_xy(ev.pos) or (-1, -1)
+                at = screen.app_xy(ev.pos, covered) or (-1, -1)
                 link.send(f"set_mouse?x={at[0]}&y={at[1]}")
             elif ev.type == pygame.WINDOWLEAVE:
                 link.send("set_mouse?x=-1&y=-1")
@@ -186,7 +234,7 @@ def main():
             mirror.apply(*frames.get())
             changed = True
         if changed and mirror.image:
-            screen.draw(mirror.image)
+            screen.draw(overlay.onto(mirror.image))
         if time.time() - last_input > CURSOR_IDLE:
             pygame.mouse.set_visible(False)
         time.sleep(0.02)
