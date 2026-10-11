@@ -1,7 +1,6 @@
 import os
 os.environ['SDL_VIDEODRIVER'] = 'dummy'
 import json
-import math
 from datetime import datetime, timezone
 from pathlib import Path
 from concurrent.futures import Future
@@ -36,13 +35,13 @@ class Tests(unittest.TestCase):
         self.assertEqual(p.night_layer(self.m, noon).getpixel((a.W//2, a.H//2))[3], 0)
 
     def test_flat_short_path_clear_and_ridge_blocks_every_frequency(self):
-        flat = lambda lat,lon: np.zeros_like(lat)
-        with patch.object(p, 'CachedDEM', return_value=flat):
+        flat = lambda lat,lon: (np.zeros_like(lat), 12)
+        with patch.object(p, 'heights', flat):
             profile = p.path_profile(self.m, 0, .006)
         self.assertTrue(all(cell == 'OK' for row in profile['status'] for cell in row))
         def ridge(lat, lon):
-            return np.where((lon > .004) & (lon < .006), 500, 0)
-        with patch.object(p, 'CachedDEM', return_value=ridge):
+            return np.where((lon > .004) & (lon < .006), 500, 0), 12
+        with patch.object(p, 'heights', ridge):
             blocked = p.path_profile(self.m, 0, .01)
         self.assertTrue(all(cell == 'BLK' for row in blocked['status'] for cell in row))
         self.assertLess(blocked['clearance'], -400)

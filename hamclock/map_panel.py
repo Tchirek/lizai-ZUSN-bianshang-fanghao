@@ -12,12 +12,12 @@ from PIL import Image, ImageDraw
 
 import activity as a
 import build_rangemap as terrain
+import build_tiles as tiles
 
 FREQUENCIES = (144.174, 144.640, 145.025, 435.000)
 HEIGHTS = (10, 20, 40, 80)
 PW, PH = 320, 248
 GREY = (139, 141, 139)
-PROFILE_TILES = 36            # elevation tiles one popup path may fetch
 REDRAW_S = 10                 # the popup's station list follows activity.json this often
 
 
@@ -36,14 +36,9 @@ def solar_elevation(lat, lon, when):
     return np.degrees(np.arcsin(np.clip(np.sin(lat) * math.sin(decl) + np.cos(lat) * math.cos(decl) * np.cos(ha), -1, 1)))
 
 
-def night_layer(m, when=None, hud=True):
-    when = time.time() if when is None else when
-    y, x = np.mgrid[0:a.H:4, 0:a.W:4]
-    if hasattr(m, 'grid_latlon'):
-        lat, lon = m.grid_latlon(x, y)
-    else:
-        dx, dy = (x - a.W / 2) * m.km_per_px, (y - a.H / 2) * m.km_per_px
-        lat, lon = terrain.destination(m.lat0, m.lon0, np.degrees(np.arctan2(dx, -dy)), np.hypot(dx, dy))
+def night_rgba(lat, lon, when):
+    """Night over a grid of lat/lon: a light veil, full 6 degrees below the horizon, and a pale
+    line along the terminator; RGBA."""
     alt = solar_elevation(lat, lon, when)
     rgba = np.zeros(alt.shape + (4,), dtype=np.uint8)
     rgba[..., :3] = (2, 12, 30)
@@ -53,6 +48,18 @@ def night_layer(m, when=None, hud=True):
     edge[1:] |= night[1:] != night[:-1]
     edge[:, 1:] |= night[:, 1:] != night[:, :-1]
     rgba[edge] = (170, 175, 190, 130)
+    return rgba
+
+
+def night_layer(m, when=None, hud=True):
+    when = time.time() if when is None else when
+    y, x = np.mgrid[0:a.H:4, 0:a.W:4]
+    if hasattr(m, 'grid_latlon'):
+        lat, lon = m.grid_latlon(x, y)
+    else:
+        dx, dy = (x - a.W / 2) * m.km_per_px, (y - a.H / 2) * m.km_per_px
+        lat, lon = terrain.destination(m.lat0, m.lon0, np.degrees(np.arctan2(dx, -dy)), np.hypot(dx, dy))
+    rgba = night_rgba(lat, lon, when)
     img = Image.fromarray(rgba).resize((a.W, a.H), Image.Resampling.BILINEAR)
     if not hud:
         return img
@@ -73,33 +80,21 @@ class CachedDEM(terrain.DEM):
         return terrain.DEM.tile(tx, ty, zoom)
 
 
-def profile_zoom(m, south, west, north, east):
-    """Terrain zoom for a popup path: as fine as the map is zoomed (8 + log2 zoom, at most 12,
-    ~33 m), but no finer than lets the path's box fit in PROFILE_TILES tiles."""
-    zoom = min(12, terrain.DEM_ZOOM + math.ceil(math.log2(getattr(m, 'zoom', 1))))
-    while zoom > terrain.DEM_ZOOM:
-        x0, y0 = terrain.merc_px(north, west, zoom)
-        x1, y1 = terrain.merc_px(south, east, zoom)
-        if (int(x1 // 256) - int(x0 // 256) + 1) * (int(y1 // 256) - int(y0 // 256) + 1) <= PROFILE_TILES:
-            break
-        zoom -= 1
-    return zoom
+def heights(lats, lons):
+    """Terrain along a path: the finest local elevation tiles (~33 m), else the map's own
+    (~530 m)."""
+    try:
+        return tiles.elevations(lats, lons, 12), 12
+    except (OSError, SyntaxError):
+        bounds = (float(lats.min() - .02), float(lons.min() - .02), float(lats.max() + .02), float(lons.max() + .02))
+        return CachedDEM(*bounds)(lats, lons), terrain.DEM_ZOOM
 
 
 def path_profile(m, lat, lon):
     distance, bearing = (float(v) for v in terrain.polar(m.lat0, m.lon0, lat, lon))
-    lats, lons = terrain.destination(m.lat0, m.lon0, bearing, np.linspace(0, distance, 50))
-    bounds = (float(lats.min() - .02), float(lons.min() - .02), float(lats.max() + .02), float(lons.max() + .02))
-    zoom = profile_zoom(m, *bounds)
-    step = .25 / 2 ** (zoom - terrain.DEM_ZOOM)          # about one sample a terrain pixel
-    d = np.linspace(0, max(distance, .001), max(3, int(distance / step) + 1))
+    d = np.linspace(0, max(distance, .001), max(3, int(distance / .03) + 1))   # 30 m steps
     lats, lons = terrain.destination(m.lat0, m.lon0, bearing, d)
-    try:
-        dem = (CachedDEM if zoom == terrain.DEM_ZOOM else terrain.DEM)(*bounds, zoom=zoom)
-    except (OSError, SyntaxError):                       # finer tiles unreachable: cached ones
-        zoom = terrain.DEM_ZOOM
-        dem = CachedDEM(*bounds)
-    ground = dem(lats, lons)
+    ground, zoom = heights(lats, lons)
     with open(os.path.join(a.MODEL, 'rangemap.json')) as f:
         info = json.load(f)
     our_agl = info['our_agl_m']
