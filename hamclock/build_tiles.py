@@ -3,9 +3,13 @@
 
 dem     every Terrarium elevation tile (zoom 8..12, ~530 m down to ~33 m) under the range map,
         into ~/influ/model/dem/ beside the ones build_rangemap.py cached: ~14,500 tiles, ~1 GB.
-campuses  every higher education campus under the map from OpenStreetMap (amenity university
-        or college, less schools named as such: outlines, else a point), fetched in cells,
+campuses  every higher education campus under the map from OpenStreetMap, live (amenity
+        university or college; amenity school or education land named as a university or
+        college; less schools named as such: outlines, else a point), fetched in cells,
         nearest first, as busy servers allow, into ~/influ/model/campuses.json.
+airports  every aerodrome under the map from OpenStreetMap, live, by its code (ICAO, else
+        IATA), and every runway (centre line and width, or outline), the same way, into
+        ~/influ/model/airports.json.
 render  the ground as build_rangemap.py draws it (relief, line-of-sight coverage) as a tile
         pyramid in the map's own projection: level L is the W x H base map at L times its
         scale, cut into 256 px tiles, ~/influ/model/tiles/L/col_row.png. The map window only
@@ -14,13 +18,14 @@ render  the ground as build_rangemap.py draws it (relief, line-of-sight coverage
 Both steps skip what is already there; rerun render (with --force) after build_rangemap.py,
 which redoes the viewshed. Tiles past the map's edge repeat the edge.
 
-usage: build_tiles.py [dem] [campuses] [render] [--workers 3] [--force]
+usage: build_tiles.py [dem] [campuses] [airports] [render] [--workers 3] [--force]
 """
 import argparse
 import io
 import json
 import math
 import os
+import re
 import sys
 import time
 import urllib.parse
@@ -121,10 +126,33 @@ def rings(ways):
 
 MIRRORS = terrain.OVERPASS + ["https://maps.mail.ru/osm/tools/overpass/api/interpreter",
                               "https://overpass.openstreetmap.fr/api/interpreter"]
-CELLS = os.path.join(a.MODEL, "campus_cells")
-# amenity=college also tags schools that are not higher education; their names give them away
-NOT_HIGHER = ("小学", "中学", "幼儿园", "党校", "社会主义学院", "技工学校", "技校", "进修", "培训", "中专",
-              "中等专业", "职业高中", "职业中学")
+CELLS = os.path.join(a.MODEL, "campus_cells2")
+OLD_AIRPORT_CELLS = os.path.join(a.MODEL, "airport_cells")
+AIRPORT_CELLS = os.path.join(a.MODEL, "airport_cells2")
+# "out geom", not "out tags geom": the latter leaves out a relation's members, and big airports
+# (ZUUU) and some campuses are multipolygon relations
+AIRPORT_QUERY = """[out:json][timeout:180];
+(nwr["aeroway"="aerodrome"]({box});
+ way["aeroway"="runway"]({box}););
+out geom;"""
+RELATION_CELLS = os.path.join(a.MODEL, "campus_relations")
+RELATION_QUERY = """[out:json][timeout:180];
+(rel["amenity"~"^(university|college)$"]({box});
+ rel["amenity"="school"]["name"~"大学|学院|高等专科|高专"]({box});
+ rel["landuse"="education"]["name"~"大学|学院|高等专科|高专"]({box}););
+out geom;"""
+OLD_CELLS = os.path.join(a.MODEL, "campus_cells")     # the first query's, until a cell is redone
+CAMPUS_QUERY = """[out:json][timeout:180];
+(nwr["amenity"~"^(university|college)$"]({box});
+ nwr["amenity"="school"]["name"~"大学|学院|高等专科|高专"]({box});
+ wr["landuse"="education"]["name"~"大学|学院|高等专科|高专"]({box}););
+out geom;"""
+# Higher education by name, for campuses tagged only school or education land (in Suining
+# 四川职业技术学院 is amenity=school): a university, college or 高专, maybe with its campus
+HIGHER = re.compile(r"(大学|学院|高等专科学校|高专)([（(][^）)]*[）)]|.{0,6}(校区|分院|分校))?$")
+# university and college tags also cover schools that are not higher education; so do names
+NOT_HIGHER = ("小学", "中学", "幼儿园", "附属", "附中", "实验学校", "党校", "干部", "社会主义学院", "老年",
+              "技工学校", "技校", "技师学院", "检察官学院", "进修", "培训", "中专", "中等专业", "职业高中", "职业中学")
 
 
 def overpass(query):
@@ -150,61 +178,161 @@ def campus_cells():
         yield s, w, f"{max(s, south):.3f},{max(w, west):.3f},{min(s + 2, north):.3f},{min(w + 2, east):.3f}"
 
 
-def campuses(rounds=30):
-    """Fetch the cells not yet kept (round after round while the servers are busy), writing
-    campuses.json from what is kept after each new cell."""
-    os.makedirs(CELLS, exist_ok=True)
+def fetch_cells(folder, query, write, what, rounds=30):
+    """Fetch the cells of `query` not yet kept in `folder` (round after round while the
+    servers are busy), calling write() after each new cell."""
+    os.makedirs(folder, exist_ok=True)
     for attempt in range(rounds):
         missing = 0
         for s, w, box in campus_cells():
-            path = os.path.join(CELLS, f"{s}_{w}.json")
+            path = os.path.join(folder, f"{s}_{w}.json")
             if os.path.exists(path):
                 continue
             try:
-                found = overpass(f"""[out:json][timeout:180];
-nwr["amenity"~"^(university|college)$"]({box});
-out tags geom;""")
+                found = overpass(query.replace("{box}", box))
             except OSError:
                 missing += 1
                 continue
             with open(path + ".tmp", "w") as f:
                 json.dump(found, f)
             os.replace(path + ".tmp", path)
-            write_campuses()
-        print(f"campuses: round {attempt + 1}, {missing} cells to go", flush=True)
+            write()
+        print(f"{what}: round {attempt + 1}, {missing} cells to go", flush=True)
         if not missing:
             return True
         time.sleep(min(600, 60 * (attempt + 1)))
     return False
 
 
-def write_campuses():
-    """campuses.json from the kept cells: outlines (multipolygon ways joined into rings) with
-    a middle for the name, else a point."""
+def campuses(rounds=30):
+    """The campus cells, then their relations again in full (cells fetched before the query
+    kept members have relations without them)."""
+    return (fetch_cells(CELLS, CAMPUS_QUERY, write_campuses, "campuses", rounds)
+            and fetch_cells(RELATION_CELLS, RELATION_QUERY, write_campuses, "campus relations", rounds))
+
+
+def airports(rounds=30):
+    return fetch_cells(AIRPORT_CELLS, AIRPORT_QUERY, write_airports, "airports", rounds)
+
+
+def kept(*folders):
+    """OSM elements of the kept cells by (type, id); a cell in a later folder wins."""
+    files = {}
+    for folder in folders:
+        if os.path.isdir(folder):
+            files.update({name: os.path.join(folder, name) for name in os.listdir(folder) if name.endswith(".json")})
     found = {}
-    for name in os.listdir(CELLS):
-        if name.endswith(".json"):
-            with open(os.path.join(CELLS, name)) as f:
-                found.update({(e["type"], e["id"]): e for e in json.load(f)})
+    for path in files.values():
+        with open(path) as f:
+            found.update({(e["type"], e["id"]): e for e in json.load(f)})
+    return found
+
+
+def outer_rings(e):
+    """The closed rings of a way or multipolygon's outer ways (lat, lon)."""
+    if e["type"] == "way":
+        ways = [[(g["lat"], g["lon"]) for g in e.get("geometry", []) if g]]
+    else:
+        ways = [[(g["lat"], g["lon"]) for g in m.get("geometry", []) if g]
+                for m in e.get("members", []) if m.get("type") == "way" and m.get("role", "outer") in ("outer", "")]
+    return [r for r in rings(ways) if len(r) > 2]
+
+
+def write_airports():
+    """airports.json: each aerodrome's code (ICAO, else IATA; empty for a field with neither)
+    and name (English if given) at its middle; every runway as its centre line (or outline if mapped as an area)
+    with its width in metres (45 when untold)."""
+    airports, runways = {}, []
+    for e in kept(OLD_AIRPORT_CELLS, AIRPORT_CELLS).values():
+        tags = e.get("tags", {})
+        if tags.get("aeroway") == "aerodrome":
+            icao, iata = tags.get("icao", "").strip().upper(), tags.get("iata", "").strip().upper()
+            code = icao if re.fullmatch("[A-Z]{4}", icao) else iata if re.fullmatch("[A-Z]{3}", iata) else ""
+            if e["type"] == "node":
+                point, size = [e["lat"], e["lon"]], 0
+            elif found := outer_rings(e):
+                ring = max(found, key=lambda r: abs(area(r)))
+                point, size = middle(ring), abs(area(ring))
+            else:
+                continue
+            # one per code: OSM has some old fields under the code of their successor too
+            key = code or (e["type"], e["id"])
+            if key not in airports or size > airports[key]["size"]:
+                airports[key] = dict(code=code, name=tags.get("name:en") or tags.get("name", ""), point=point, size=size)
+        elif tags.get("aeroway") == "runway" and e["type"] == "way":
+            line = [[g["lat"], g["lon"]] for g in e.get("geometry", []) if g]
+            width = re.match(r"\s*([0-9.]+)", tags.get("width", ""))
+            if len(line) > 1:
+                runways.append(dict(ref=tags.get("ref", ""), line=line, width=float(width.group(1)) if width else 45.0,
+                                    area=line[0] == line[-1] and tags.get("area") == "yes"))
+    with open(os.path.join(a.MODEL, "airports.json.tmp"), "w") as f:
+        airports = [dict(code=x["code"], name=x["name"], point=x["point"]) for x in airports.values()]
+        json.dump(dict(airports=airports, runways=runways), f, ensure_ascii=False)
+    os.replace(os.path.join(a.MODEL, "airports.json.tmp"), os.path.join(a.MODEL, "airports.json"))
+    print(f"airports: {len(airports)} ({sum(bool(x['code']) for x in airports)} with a code), {len(runways)} runways",
+          flush=True)
+
+
+def area(ring):
+    """Signed shoelace area of a lat/lon ring (square degrees)."""
+    y, x = np.array(ring, dtype=float).T
+    return float((x * np.roll(y, -1) - np.roll(x, -1) * y).sum() / 2)
+
+
+def middle(ring):
+    """Area centroid of a lat/lon ring, for its name (the vertex mean if it has no area)."""
+    y, x = np.array(ring, dtype=float).T
+    cross = x * np.roll(y, -1) - np.roll(x, -1) * y
+    area = cross.sum() / 2
+    if abs(area) < 1e-12:
+        return [float(y.mean()), float(x.mean())]
+    return [float(((y + np.roll(y, -1)) * cross).sum() / (6 * area)),
+            float(((x + np.roll(x, -1)) * cross).sum() / (6 * area))]
+
+
+def inside_ring(point, ring):
+    """Ray casting: is the lat/lon point inside the ring?"""
+    y, x = np.array(ring, dtype=float).T
+    py, px = point
+    crosses = ((y > py) != (np.roll(y, -1) > py)) &         (px < (np.roll(x, -1) - x) * (py - y) / np.where(np.roll(y, -1) == y, 1e-12, np.roll(y, -1) - y) + x)
+    return bool(crosses.sum() % 2)
+
+
+def nested(campuses):
+    """Indices of campuses whose middle lies within a larger campus's outline: a school or
+    department mapped inside a campus is part of it."""
+    outlines = [(i, c["rings"][0], abs(area(c["rings"][0]))) for i, c in enumerate(campuses) if c["rings"]]
+    size = {i: s for i, _, s in outlines}
+    boxes = {i: (np.min(r, 0), np.max(r, 0)) for i, r, _ in outlines}
+    found = set()
+    for i, c in enumerate(campuses):
+        (lat, lon) = c["point"]
+        for j, ring, s in outlines:
+            (south, west), (north, east) = boxes[j]
+            if j != i and s > size.get(i, 0) and south <= lat <= north and west <= lon <= east                     and inside_ring(c["point"], ring):
+                found.add(i)
+                break
+    return found
+
+
+def write_campuses():
+    """campuses.json from the kept cells (each from the latest query that has it): outlines
+    (multipolygon ways joined into rings) with their middle for the name, else a point."""
     out = []
-    for e in found.values():
+    for e in kept(OLD_CELLS, CELLS, RELATION_CELLS).values():
         tags = e.get("tags", {})
         name = tags.get("name:zh") or tags.get("name") or tags.get("name:en") or ""
         if any(word in name for word in NOT_HIGHER):
             continue
+        if tags.get("amenity") not in ("university", "college") and not HIGHER.search(name):
+            continue
         if e["type"] == "node":
             out.append(dict(name=name, rings=[], point=[e["lat"], e["lon"]]))
-            continue
-        if e["type"] == "way":
-            ways = [[(g["lat"], g["lon"]) for g in e.get("geometry", []) if g]]
-        else:
-            ways = [[(g["lat"], g["lon"]) for g in m.get("geometry", []) if g]
-                    for m in e.get("members", []) if m.get("type") == "way" and m.get("role", "outer") in ("outer", "")]
-        found_rings = [r for r in rings(ways) if len(r) > 2]
-        if found_rings:
-            ring = max(found_rings, key=len)
-            point = [sum(p[0] for p in ring) / len(ring), sum(p[1] for p in ring) / len(ring)]
-            out.append(dict(name=name, rings=[[list(p) for p in r] for r in found_rings], point=point))
+        elif found := outer_rings(e):
+            out.append(dict(name=name, rings=[[list(p) for p in r] for r in found],
+                            point=middle(max(found, key=lambda r: abs(area(r))))))
+    inner = nested(out)
+    out = [c for i, c in enumerate(out) if i not in inner]
     with open(os.path.join(a.MODEL, "campuses.json.tmp"), "w") as f:
         json.dump(out, f, ensure_ascii=False)
     os.replace(os.path.join(a.MODEL, "campuses.json.tmp"), os.path.join(a.MODEL, "campuses.json"))
@@ -312,7 +440,7 @@ def render(workers, force):
 
 def main():
     ap = argparse.ArgumentParser()
-    ap.add_argument("steps", nargs="*", default=["dem", "campuses", "render"])
+    ap.add_argument("steps", nargs="*", default=["dem", "campuses", "airports", "render"])
     ap.add_argument("--workers", type=int, default=3)
     ap.add_argument("--force", action="store_true")
     args = ap.parse_args()
@@ -320,6 +448,8 @@ def main():
         sys.exit("some elevation tiles failed; run again")
     if "campuses" in args.steps and not campuses():
         print("some campus cells are still missing; run campuses again later", flush=True)
+    if "airports" in args.steps and not airports():
+        print("some airport cells are still missing; run airports again later", flush=True)
     if "render" in args.steps:
         render(args.workers, args.force)
 
