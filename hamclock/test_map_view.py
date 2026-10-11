@@ -2,6 +2,7 @@ import os
 os.environ['SDL_VIDEODRIVER'] = 'dummy'
 os.environ['PYGAME_HIDE_SUPPORT_PROMPT'] = '1'
 from collections import OrderedDict
+import io
 import json
 import math
 import tempfile
@@ -33,8 +34,9 @@ def blank_scene(m, scale=1.0):
     s = object.__new__(v.Scene)
     s.base, s.scale, s.glyphs, s.layer, s.budget = m, scale, OrderedDict(), None, math.inf
     s.data, s.future, s.mtime, s.checked = None, None, None, 0
-    s.rivers = {level: (np.empty((0, 2)), np.zeros(1, int)) for level in (1, 2, 4, 8, 16, 32)}
-    s.grid, s.marks = np.empty((0, 50, 2)), {}
+    s.rivers, s.marks, s.admin = v.Lines([]), {}, {}
+    s.grid = [(v.Lines([]), (v.GRID_SUB, 1)), (v.Lines([]), (v.GRID_SQUARE, 1)), (v.Lines([]), (v.GRID_FIELD, 2))]
+    s.squares = s.subsquares = (np.empty(0, int), np.empty(0, int), np.empty((0, 2)))
     return s
 
 
@@ -204,7 +206,7 @@ class LabelTests(unittest.TestCase):
     def boxes(self, items, sizes, spots, li):
         z = v.LABEL_ZOOMS[li]
         out = []
-        for (text, (x, y), _, _), (tw, th), k in zip(items, sizes, spots[:, li]):
+        for (text, (x, y), *_), (tw, th), k in zip(items, sizes, spots[:, li]):
             if k >= 0:
                 dx, dy = v.spot(int(k), tw)
                 out.append((x * z + dx - 1, y * z + dy, x * z + dx + tw + 1, y * z + dy + th + 2))
@@ -212,8 +214,8 @@ class LabelTests(unittest.TestCase):
 
     def test_labels_never_overlap_keep_their_side_and_only_appear_with_zoom(self):
         rng = np.random.default_rng(3)
-        items = [(f'P{i}', tuple(rng.uniform(50, [v.W - 50, v.H - 50])), 13, 1) for i in range(400)]
-        items.append(('LATE', (700.0, 300.0), 13, 8))
+        items = [(f'P{i}', tuple(rng.uniform(50, [v.W - 50, v.H - 50])), 13, 1, math.inf) for i in range(400)]
+        items.append(('LATE', (700.0, 300.0), 13, 8, math.inf))
         sizes, spots = v.place_labels(items, .8)
         for li in range(len(v.LABEL_ZOOMS)):
             b = self.boxes(items, sizes, spots, li)
@@ -230,8 +232,62 @@ class LabelTests(unittest.TestCase):
         self.assertTrue(np.all(late[:6] == -1) and late[6] >= 0)  # from zoom 8 on only
 
     def test_a_label_right_by_our_marker_still_finds_a_spot(self):
-        sizes, spots = v.place_labels([('四川师范大学遂宁校区', (v.W / 2 + .3, v.H / 2 - .2), 15, 1)], .8)
+        sizes, spots = v.place_labels([('四川师范大学遂宁校区', (v.W / 2 + .3, v.H / 2 - .2), 15, 1, math.inf)], .8)
         self.assertTrue(np.all(spots[0] >= 4))                    # further out, at every zoom
+
+    def test_a_town_name_moves_onto_its_point_once_zoomed_in(self):
+        sizes, spots = v.place_labels([('Pengxi', (500.0, 200.0), 14, 1, v.CITY_ZOOM)], .8)
+        steps = np.array(v.LABEL_ZOOMS)
+        self.assertTrue(np.all(spots[0][steps < v.CITY_ZOOM] < 8))
+        self.assertTrue(np.all(spots[0][steps >= v.CITY_ZOOM] == 8))
+        sizes, spots = v.place_labels([('Suining', (v.W / 2 + 1, v.H / 2), 14, 1, v.CITY_ZOOM)], .8)
+        self.assertTrue(np.all(spots[0] >= 0))                    # over our marker: beside it
+
+
+class GridTests(unittest.TestCase):
+    def setUp(self):
+        pygame.display.init()
+        pygame.display.set_mode((1, 1))
+        pygame.freetype.init()
+        self.m = base()
+        self.scene = blank_scene(self.m)
+        with patch('builtins.open', side_effect=lambda *args, **kw: io.StringIO('{"places": [], "lines": []}')):
+            real = v.Scene(self.m, 1.0)                           # its grid, without the OSM file
+        self.scene.grid, self.scene.squares, self.scene.subsquares = real.grid, real.squares, real.subsquares
+
+    def names(self, view):
+        self.scene.layer = pygame.Surface((v.W, v.H), pygame.SRCALPHA)
+        return {text: at for text, _, _, at in self.scene.draw_grid(view, 1.0)}
+
+    def test_squares_are_named_and_our_square_is_om20(self):
+        self.assertEqual(v.square_name(52, 30), 'OM20')               # 104-106 E, 30-31 N
+        self.assertEqual(v.square_name(51, 29), 'OL19')
+        names = self.names(v.View(self.m))
+        self.assertIn('OM20', names)
+        self.assertIn('OL19', names)
+
+    def test_zoomed_in_the_square_is_named_at_the_view_top_left_with_subsquares(self):
+        view = v.View(self.m, 20, v.clamp((v.W / 2, v.H / 2), 20))   # about us, inside OM20
+        names = self.names(view)
+        self.assertEqual(names['OM20'], (7, 5))                      # held in the corner
+        self.assertIn('tn', names)                                   # our subsquare: OM20tn
+        self.assertTrue(all(len(t) in (2, 4) for t in names))
+
+    def test_dashes_keep_their_places_on_the_line_as_the_view_pans(self):
+        line = v.Lines([np.array([(500.0, 330.0), (800.0, 330.0)])])
+
+        def dash_starts(view):
+            """Where dashes start, in px from the line's own start."""
+            layer = pygame.Surface((v.W, v.H), pygame.SRCALPHA)
+            line.draw(layer, view, 1.0, (255, 255, 255, 255), 1, (7, 4))
+            row = pygame.surfarray.pixels_alpha(layer)[:, round(view.project((0, 330))[1])] > 0
+            return np.flatnonzero(np.diff(np.r_[False, row].astype(int)) == 1) - view.project((500, 0))[0]
+
+        for centre in ((600, 330), (630.3, 330), (655.7, 330)):
+            starts = dash_starts(v.View(self.m, 2, centre))
+            starts = starts[starts > 1]                              # not cut by the view's edge
+            self.assertGreater(len(starts), 20)
+            self.assertLess(np.abs((starts + .5) % 11 - .5).max(), 1.01, centre)   # every 11 px
 
 
 class SceneTests(unittest.TestCase):
@@ -260,7 +316,7 @@ class SceneTests(unittest.TestCase):
         self.scene.take(d)
         frame = pygame.Surface((v.W, v.H))
         self.scene.draw(frame, v.View(self.m), 33)
-        self.assertEqual(frame.get_at((601, 300))[:3], v.RUNWAY)
+        self.assertNotEqual(frame.get_at((601, 300))[:3], v.RUNWAY)              # a speck: left out
         self.assertIn(v.AIRPORT, [frame.get_at((x, 300))[:3] for x in range(702, 707)])   # the ring
         frame.fill((0, 0, 0))
         view = v.View(self.m, 16, (601.5, 300))
@@ -273,6 +329,25 @@ class SceneTests(unittest.TestCase):
         self.scene.draw(frame, view, 33)
         x, y = view.project((700, 300))
         self.assertNotIn(v.AIRPORT, [frame.get_at((int(x) + dx, int(y)))[:3] for dx in range(2, 7)])  # no ring
+
+    def test_province_lines_give_way_to_city_and_county_outlines_and_town_dots_go(self):
+        self.scene.admin = {4: v.Lines([np.array([(600.0, 250.0), (600.0, 400.0)])]),
+                            6: v.Lines([np.array([(640.0, 250.0), (640.0, 400.0)])])}    # clear of the grid
+        d = scene_data()
+        d['places'] = np.array([(650.0, 330.0)])
+        self.scene.take(d)
+        frame = pygame.Surface((v.W, v.H))
+        self.scene.draw(frame, v.View(self.m), 33)
+        lit = lambda x: max(frame.get_at((x, y)).r for y in range(290, 320))
+        self.assertGreater(lit(600), 100)                         # a province border
+        self.assertEqual(lit(640), 0)                             # no county lines yet
+        self.assertGreater(max(frame.get_at((650 + dx, 330 + dy)).r for dx in (-1, 0, 1) for dy in (-1, 0, 1)), 100)
+        frame.fill((0, 0, 0))
+        view = v.View(self.m, v.CITY_ZOOM, (650, 330))
+        self.scene.draw(frame, view, 33)
+        x_county = round(view.project((640, 0))[0])
+        self.assertGreater(max(frame.get_at((x_county, y)).r for y in range(200, 300)), 30)
+        self.assertEqual(max(frame.get_at((v.W // 2 + dx, v.H // 2 + dy)).r for dx in (-1, 0, 1) for dy in (-1, 0, 1)), 0)
 
     def test_campuses_only_show_from_their_zoom(self):
         ring = np.array([(640.0, 320.0), (680.0, 320.0), (680.0, 340.0), (640.0, 340.0)])

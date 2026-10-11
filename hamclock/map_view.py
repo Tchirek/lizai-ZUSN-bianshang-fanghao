@@ -55,6 +55,16 @@ FONTS = {"latin": ("/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf", 0),
 CITY, TOWN, GREY, CAMPUS = (230, 230, 230), (150, 150, 150), (139, 141, 139), (255, 130, 210)
 AIRPORT, RUNWAY = (150, 175, 255), (205, 205, 210)
 RING_ZOOM = 6                 # below this zoom an airport also gets a ring: its runways are specks
+CITY_ZOOM = 4                 # from this zoom province borders give way to city and county
+                              # outlines, and towns lose their dots (their names stay, centred)
+SUB_ZOOM = 12                 # Maidenhead subsquares (5' x 2.5') show from this zoom on
+# translucent lines: colour (RGBA), physical px width, dashes (on, off, ... px) or solid
+GRID_FIELD, GRID_SQUARE, GRID_SUB = (175, 180, 255, 170), (175, 180, 255, 90), (175, 180, 255, 45)
+GRID_TEXT, GRID_SUB_TEXT = (185, 190, 255), (145, 150, 210)
+PROVINCE = (255, 255, 255, 190), 2, (9, 3, 2, 3)             # dash-dot, as on printed maps
+PREFECTURE = (255, 255, 255, 150), 2, (7, 4)
+COUNTY = (255, 255, 255, 70), 1, None
+RING = (190, 190, 190, 90)
 log = logging.getLogger(__name__)
 
 
@@ -206,20 +216,21 @@ def text_size(text, size, scale):
     return (r.width + 2) / scale, (r.height + 2) / scale
 
 
-def spot(k, tw):
+def spot(k, tw, th=0):
     """Label offset from its point (view px): right, left, above, below; then the same again
-    further out, for a point crowded close (as a campus around us is by our own marker)."""
+    further out, for a point crowded close (as a campus around us is by our own marker); 8,
+    centred on it (a town's name once its dot is gone)."""
     return ((7, -7), (-tw - 7, -7), (-tw / 2, -22), (-tw / 2, 7),
-            (18, -7), (-tw - 18, -7), (-tw / 2, -33), (-tw / 2, 18))[k]
+            (18, -7), (-tw - 18, -7), (-tw / 2, -33), (-tw / 2, 18), (-tw / 2, -th / 2))[k]
 
 
 def place_labels(items, scale):
-    """For labels in priority order, each (text, base xy, size, from zoom): their sizes (view
-    px) and, per LABEL_ZOOMS step, the spot each takes (0..7) or -1. At each step a label
-    keeps its earlier spot if that is still clear, else takes the first clear one, else waits;
-    nothing overlaps, and no label leaves the map."""
+    """For labels in priority order, each (text, base xy, size, from zoom, centred from zoom):
+    their sizes (view px) and, per LABEL_ZOOMS step, the spot each takes (0..8) or -1. At each
+    step a label keeps its earlier spot if that is still clear, else takes the first clear one,
+    else waits; nothing overlaps, and no label leaves the map."""
     pygame.freetype.init()
-    sizes = [text_size(text, size, scale) for text, _, size, _ in items]
+    sizes = [text_size(text, size, scale) for text, _, size, *_ in items]
     spots = np.full((len(items), len(LABEL_ZOOMS)), -1, np.int8)
     cell = 128
     for li, z in enumerate(LABEL_ZOOMS):
@@ -239,12 +250,15 @@ def place_labels(items, scale):
                     grid.setdefault((cx, cy), []).append(box)
 
         take((W / 2 * z - 11, H / 2 * z - 11, W / 2 * z + 11, H / 2 * z + 11))        # us
-        for i, ((text, (x, y), size, start), (tw, th)) in enumerate(zip(items, sizes)):
+        for i, ((text, (x, y), size, start, centred), (tw, th)) in enumerate(zip(items, sizes)):
             if z < start * 0.999:
                 continue
             before = int(spots[i, li - 1]) if li else -1
-            for k in ([before] if before >= 0 else []) + [k for k in range(8) if k != before]:
-                dx, dy = spot(k, tw)
+            order = ([before] if 0 <= before < 8 else []) + [k for k in range(8) if k != before]
+            if z >= centred * 0.999:                     # centred if it can be, else beside
+                order = [8] + order
+            for k in order:
+                dx, dy = spot(k, tw, th)
                 box = (x * z + dx - 1, y * z + dy, x * z + dx + tw + 1, y * z + dy + th + 2)
                 if box[0] >= 0 and box[1] >= 0 and box[2] <= W * z and box[3] <= H * z and free(box):
                     take(box)
@@ -306,6 +320,7 @@ def static_scene(base):
                    for r in found["runways"]]
     _static.clear()
     _static.update(key=key, place_names=[p["name"] for p in places], place_xy=xy,
+                   place_city=[rank.get(p.get("capital", ""), 4) <= 2 for p in places],   # prefecture seat or up
                    airports=airports, runways=runways,
                    place_km=np.hypot(*(xy - (W / 2, H / 2)).T) * base.km_per_px,
                    name_km=info["reach_km"] * 1.1, campuses=campuses,
@@ -328,31 +343,37 @@ def load_scene(base, scale):
     senders_first = sorted(stations.items(), key=lambda kv: not kv[1][3])
     items, kinds = [], []                      # labels in priority order, and what each labels
     for call, xy in qsos:
-        items.append((call, xy, 13, 1))
+        items.append((call, xy, 13, 1, math.inf))
         kinds.append(("qso", a.WHITE))
     for call, (x, y, colour, sent) in senders_first:
-        items.append((call + (f" +{degrees[call]}" if degrees.get(call, 0) > 2 else ""), (x, y), 13, 1))
+        items.append((call + (f" +{degrees[call]}" if degrees.get(call, 0) > 2 else ""), (x, y), 13, 1, math.inf))
         kinds.append(("station", a.WHITE if sent else a.DIM))
     for x in static["airports"]:
         if x["text"]:
-            items.append((x["text"], x["point"], 13, 1))
+            items.append((x["text"], x["point"], 13, 1, math.inf))
             kinds.append(("airport", AIRPORT))
+
+    def places(cities):
+        # on the whole map only places within our reach are named, as on build_rangemap.py's
+        for i, (name, xy, km, city) in enumerate(zip(static["place_names"], static["place_xy"],
+                                                     static["place_km"], static["place_city"])):
+            if city == cities:
+                items.append((name, tuple(xy), 14, 1 if km <= static["name_km"] else 2, CITY_ZOOM))
+                kinds.append(("place", CITY, i))
+    places(True)                               # cities come before APRS calls, towns after all
     for call, xy, rf in aprs:
         if 0 <= xy[0] < W and 0 <= xy[1] < H:
-            items.append((call, xy, 13, 1))
+            items.append((call, xy, 13, 1, math.inf))
             kinds.append(("aprs", a.APRS_RF if rf else a.APRS_NET))
-    items.append((static["far"][1], static["far"][0], 13, 1))
+    items.append((static["far"][1], static["far"][0], 13, 1, math.inf))
     kinds.append(("far", terrain.SEEN))
     for c in static["campuses"]:
         if c["name"]:
-            items.append((c["name"], c["point"], 15, CAMPUS_ZOOM))
+            items.append((c["name"], c["point"], 15, CAMPUS_ZOOM, math.inf))
             kinds.append(("campus", CAMPUS))
-    for i, (name, xy, km) in enumerate(zip(static["place_names"], static["place_xy"], static["place_km"])):
-        # on the whole map only places within our reach are named, as on build_rangemap.py's
-        items.append((name, tuple(xy), 14, 1 if km <= static["name_km"] else 2))
-        kinds.append(("place", CITY, i))
+    places(False)
     sizes, spots = place_labels(items, scale)
-    return dict(
+    return arrays(dict(
         stations=[((x, y), colour) for _, (x, y, colour, _) in senders_first],
         lines=[(p["ends"], p["colour"], 155 if len(p["local"]) == 2 else 48) for p in chosen],
         total=total, bands=dict(bands), aprs=[(xy, rf) for _, xy, rf in aprs],
@@ -360,8 +381,56 @@ def load_scene(base, scale):
                for x, y in data.get("aprs_links", []) if x in positions and y in positions],
         qsos=[xy for _, xy in qsos], places=static["place_xy"], campuses=static["campuses"],
         airports=[x["point"] for x in static["airports"]], runways=static["runways"],
-        far=static["far"][0], labels=[(text, xy, size) for text, xy, size, _ in items],
-        kinds=kinds, sizes=sizes, spots=spots)
+        far=static["far"][0], labels=[(text, xy, size) for text, xy, size, *_ in items],
+        kinds=kinds, sizes=sizes, spots=spots))
+
+
+def base_xy(base, lat, lon):
+    """activity.Map.xy for arrays of lat/lon: (..., 2) base px."""
+    km, bearing = terrain.polar(base.lat0, base.lon0, lat, lon)
+    r, b = km / base.km_per_px, np.radians(bearing)
+    return np.stack([W / 2 + r * np.sin(b), H / 2 - r * np.cos(b)], axis=-1)
+
+
+def load_admin(base):
+    """admin.json as Lines per admin level (4 province, 5 prefecture, 6 county), its boundary
+    ways joined end to end: fewer, longer lines draw faster."""
+    with open(os.path.join(a.MODEL, "admin.json")) as f:
+        found = json.load(f)["lines"]
+    by_level = {}
+    for line in found:
+        by_level.setdefault(line["level"], []).append([tuple(p) for p in line["p"]])
+    out = {}
+    for level, ways in by_level.items():
+        chains = [np.array(c, dtype=float) for c in tiles.rings(ways)]
+        out[level] = Lines([base_xy(base, c[:, 0], c[:, 1]) for c in chains], cell=2)   # 1-2 px lines
+    return out
+
+
+def arrays(d):
+    """A scene's points as arrays, for projecting all at once (worked out in the worker, so
+    taking a new scene costs a frame nothing)."""
+    def points(rows):
+        return np.array(rows, dtype=float).reshape(-1, 2)
+
+    d["station_xy"] = points([xy for xy, _ in d["stations"]])
+    d["line_ends"] = np.array([ends for ends, _, _ in d["lines"]], dtype=float).reshape(-1, 2, 2)
+    d["aprs_xy"] = points([xy for xy, _ in d["aprs"]])
+    d["aprs_rf"] = np.array([rf for _, rf in d["aprs"]], dtype=bool)
+    d["link_ends"] = np.array(d["links"], dtype=float).reshape(-1, 2, 2)
+    d["qso_xy"] = points(d["qsos"])
+    d["label_xy"] = points([xy for _, xy, _ in d["labels"]])
+    d["airport_xy"] = points(d.get("airports", []))
+    d["runway_box"] = np.array([(*r["line"].min(0), *r["line"].max(0)) for r in d.get("runways", [])]).reshape(-1, 4)
+    d["label_campus"] = np.array([kind[0] == "campus" for kind in d["kinds"]], dtype=bool)
+    boxes = [np.vstack(c["rings"]) if c["rings"] else np.array([c["point"]]) for c in d["campuses"]]
+    d["campus_box"] = np.array([(*b.min(0), *b.max(0)) for b in boxes]).reshape(-1, 4)
+    labelled = np.zeros((len(d["places"]), len(LABEL_ZOOMS)), bool)
+    for i, kind in enumerate(d["kinds"]):
+        if kind[0] == "place":
+            labelled[kind[2]] = d["spots"][i] >= 0
+    d["place_labelled"] = labelled
+    return d
 
 
 # ------------------------------------------------- picture worker: the ground ----
@@ -448,6 +517,99 @@ def thin(points, zoom):
     return points[keep]
 
 
+def on_dash(t, pattern):
+    """Which distances `t` (px) along a line fall on a dash of `pattern` (on, off, ... px)."""
+    phase, on, edge = t % sum(pattern), np.zeros(len(t), bool), 0
+    for k, length in enumerate(pattern):
+        if k % 2 == 0:
+            on |= (phase >= edge) & (phase < edge + length)
+        edge += length
+    return on
+
+
+def stamp_dashes(surface, xy, along, segments, colour, width, pattern):
+    """Dashed lines as pixels, all at once: every pixel step along each segment (from point i
+    to i + 1 of `xy`, px) whose distance along its line (`along`, px, measured from the line's
+    start, so the dashes keep their places as the view pans) falls on a dash, set to `colour`
+    (RGBA) in `surface`, 1 or 2 px wide."""
+    a0, a1 = along[segments], along[segments + 1]
+    t0 = np.ceil(a0)
+    n = np.maximum(0, np.ceil(a1) - t0).astype(int)
+    if not n.sum():
+        return
+    which = np.repeat(np.arange(len(segments)), n)
+    t = t0[which] + (np.arange(len(which)) - np.repeat(np.cumsum(n) - n, n))
+    on = on_dash(t, pattern)
+    which, t = which[on], t[on]
+    f = ((t - a0[which]) / (a1 - a0)[which])[:, None]
+    p0, p1 = xy[segments[which]], xy[segments[which] + 1]
+    px, py = np.round(p0 + f * (p1 - p0)).astype(int).T
+    w, h = surface.get_size()
+    pixels, value = pygame.surfarray.pixels2d(surface), surface.map_rgb(colour) & 0xFFFFFFFF   # one write a pixel
+    for dx, dy in ((0, 0), (1, 0), (0, 1), (1, 1))[:1 if width < 2 else 4]:
+        x, y = px + dx, py + dy
+        ok = (x >= 0) & (x < w) & (y >= 0) & (y < h)
+        pixels[x[ok], y[ok]] = value
+    del pixels                                           # unlock the surface
+
+
+class Lines:
+    """Polylines in base px, kept per zoom level thinned for it (a point every `cell` view px),
+    cut into pieces of at most PIECE points with their bounding boxes (so a view only touches
+    the pieces it shows), each point knowing its distance along its whole line (so dashes run
+    on across pieces)."""
+    PIECE = 48
+
+    def __init__(self, lines, cell=1):
+        self.levels = {}
+        for level in (1, 2, 4, 8, 16, 32):
+            pieces, along, owner = [], [], []
+            for n, line in enumerate(lines):
+                p = thin(line, level / cell)
+                if len(p) < 2:
+                    continue
+                d = np.r_[0, np.cumsum(np.hypot(*np.diff(p, axis=0).T))]
+                for i in range(0, len(p) - 1, self.PIECE - 1):          # pieces share their ends
+                    pieces.append(p[i:i + self.PIECE])
+                    along.append(d[i:i + self.PIECE])
+                    owner.append(n)
+            points = np.vstack(pieces) if pieces else np.empty((0, 2))
+            starts = np.cumsum([0] + [len(p) for p in pieces])
+            box = np.array([(*p.min(0), *p.max(0)) for p in pieces]).reshape(-1, 4)
+            self.levels[level] = (points, starts, np.concatenate(along) if along else np.empty(0), box,
+                                  np.array(owner, dtype=int))
+
+    def draw(self, surface, view, s, colour, width, pattern=None):
+        """The pieces in view: solid, or dashed by `pattern`."""
+        points, starts, along, box, owner = self.levels[min(32, 2 ** math.ceil(math.log2(view.zoom)))]
+        left, top, right, bottom = view.rect()
+        pad = 2 / view.zoom
+        shown = np.flatnonzero((box[:, 2] >= left - pad) & (box[:, 0] <= right + pad)
+                               & (box[:, 3] >= top - pad) & (box[:, 1] <= bottom + pad))
+        if not len(shown):
+            return
+        first, count = starts[shown], np.diff(starts)[shown]
+        index = np.repeat(first - np.r_[0, np.cumsum(count)[:-1]], count) + np.arange(count.sum())
+        xy = view.points(points[index]) * s
+        ends = np.cumsum(count)
+        if pattern is not None:                          # every segment but those between pieces
+            valid = np.ones(len(xy) - 1, bool)
+            valid[ends[:-1] - 1] = False
+            stamp_dashes(surface, xy, along[index] * view.zoom * s, np.flatnonzero(valid), colour, width, pattern)
+            return
+        # one stroke for each run of pieces that follow on in the same line
+        joined = (np.diff(shown) == 1) & (np.diff(owner[shown]) == 0)
+        breaks = np.flatnonzero(~joined)
+        for i, j in zip(np.r_[0, ends[breaks]].tolist(), np.r_[ends[breaks], ends[-1]].tolist()):
+            pygame.draw.lines(surface, colour, False, xy[i:j].tolist(), width)
+
+
+def square_name(i, j):
+    """The Maidenhead square (e.g. OM20) whose south-west corner is 2 i deg E, j deg N."""
+    lon, lat = i + 90, j + 90                            # squares from 180 W, 90 S
+    return f"{chr(65 + lon // 10)}{chr(65 + lat // 10)}{lon % 10}{lat % 10}"
+
+
 class Scene:
     """Vector layers kept in base px and drawn through a View at fixed physical sizes."""
 
@@ -456,29 +618,34 @@ class Scene:
         self.base, self.scale = base, scale
         self.glyphs = OrderedDict()
         self.data, self.future, self.mtime, self.checked = None, None, None, 0
+        self.admin, self.admin_future, self.admin_mtime = {}, None, None
         self.layer = None
         self.budget = math.inf                # glyphs this frame may still render
         with open(os.path.join(a.MODEL, "rangemap_osm.json")) as f:
             osm = json.load(f)
-        # rivers: OSM ways joined end to end into whole rivers, then per zoom level one array of
-        # every river's points thinned for it
+        # rivers: OSM ways joined end to end into whole rivers
         joined = tiles.rings([ln["p"] for ln in osm["lines"]])
-        lines = [np.array([base.xy(*p) for p in ln]) for ln in joined if len(ln) > 1]
-        self.rivers = {}
-        for level in (1, 2, 4, 8, 16, 32):
-            kept = [thin(p, level) for p in lines]
-            self.rivers[level] = (np.vstack(kept) if kept else np.empty((0, 2)),
-                                  np.cumsum([0] + [len(p) for p in kept]))
-        # Maidenhead squares, 2 x 1 degrees, as HamClock's grid
-        corners = [base.latlon(x, y) for x in (0, W) for y in (0, H)]
-        south, north = min(c[0] for c in corners), max(c[0] for c in corners)
-        west, east = min(c[1] for c in corners), max(c[1] for c in corners)
-        grid = [[base.xy(lat, lon) for lat in np.linspace(south, north, 50)]
-                for lon in range(int(west // 2) * 2, int(east) + 3, 2)]
-        grid += [[base.xy(lat, lon) for lon in np.linspace(west, east, 50)]
-                 for lat in range(math.floor(south), math.ceil(north) + 1)]
-        self.grid = np.array(grid)                       # lines x 50 points x 2
+        self.rivers = Lines([np.array([base.xy(*p) for p in ln]) for ln in joined if len(ln) > 1])
         self.marks = {}
+        # the Maidenhead grid over the whole map: fields (20 x 10 deg), squares (2 x 1) and
+        # subsquares (5' x 2.5') as lines, and the corners their names go by
+        lat, lon = grid_latlon(base, *np.meshgrid(np.linspace(0, W, 40), np.linspace(0, H, 20)))
+        south, north, west, east = lat.min() - .1, lat.max() + .1, lon.min() - .1, lon.max() + .1
+        self.grid = []
+        for dlon, dlat, style in ((1 / 12, 1 / 24, (GRID_SUB, 1)), (2, 1, (GRID_SQUARE, 1)), (20, 10, (GRID_FIELD, 2))):
+            lats = np.linspace(south, north, round((north - south) / .05))
+            lons = np.linspace(west, east, round((east - west) / .05))
+            lines = [base_xy(base, lats, np.full(len(lats), i * dlon))
+                     for i in range(math.ceil(west / dlon), math.floor(east / dlon) + 1)]
+            lines += [base_xy(base, np.full(len(lons), j * dlat), lons)
+                      for j in range(math.ceil(south / dlat), math.floor(north / dlat) + 1)]
+            self.grid.append((Lines(lines, cell=2), style))
+        ii, jj = np.meshgrid(np.arange(math.floor(west / 2), math.floor(east / 2) + 1),
+                             np.arange(math.floor(south), math.floor(north) + 1))
+        self.squares = ii.ravel(), jj.ravel(), base_xy(base, jj.ravel() + 1.0, 2.0 * ii.ravel())
+        ii, jj = np.meshgrid(np.arange(math.floor(west * 12), math.floor(east * 12) + 1),
+                             np.arange(math.floor(south * 24), math.floor(north * 24) + 1))
+        self.subsquares = ii.ravel(), jj.ravel(), base_xy(base, (jj.ravel() + 1) / 24, ii.ravel() / 12)
 
     def poll(self, submit, now):
         """Pick up a scene loaded in the worker, and ask for a reload when activity.json
@@ -501,31 +668,32 @@ class Scene:
             if mtime and mtime != self.mtime:
                 self.mtime = mtime
                 self.future = submit(load_scene, self.base, self.scale)
+        return self.poll_admin(submit) or changed
+
+    def poll_admin(self, submit):
+        """The same for the boundaries, when admin.json changes; True if they did."""
+        changed = False
+        if self.admin_future and self.admin_future.done():
+            try:
+                self.admin = self.admin_future.result()
+                changed = True
+            except Exception as e:
+                log.warning("map boundaries: %s", e)
+                self.admin_mtime = None
+            self.admin_future = None
+        if self.admin_future is None and self.future is None:
+            try:
+                mtime = os.path.getmtime(os.path.join(a.MODEL, "admin.json"))
+            except OSError:
+                mtime = None
+            if mtime and mtime != self.admin_mtime:
+                self.admin_mtime = mtime
+                self.admin_future = submit(load_admin, self.base)
         return changed
 
     def take(self, d):
-        """A loaded scene, its points as arrays for projecting all at once."""
-        def points(rows):
-            return np.array(rows, dtype=float).reshape(-1, 2)
-
-        d["station_xy"] = points([xy for xy, _ in d["stations"]])
-        d["line_ends"] = np.array([ends for ends, _, _ in d["lines"]], dtype=float).reshape(-1, 2, 2)
-        d["aprs_xy"] = points([xy for xy, _ in d["aprs"]])
-        d["aprs_rf"] = np.array([rf for _, rf in d["aprs"]], dtype=bool)
-        d["link_ends"] = np.array(d["links"], dtype=float).reshape(-1, 2, 2)
-        d["qso_xy"] = points(d["qsos"])
-        d["label_xy"] = points([xy for _, xy, _ in d["labels"]])
-        d["airport_xy"] = points(d.get("airports", []))
-        d["runway_box"] = np.array([(*r["line"].min(0), *r["line"].max(0)) for r in d.get("runways", [])]).reshape(-1, 4)
-        d["label_campus"] = np.array([kind[0] == "campus" for kind in d["kinds"]], dtype=bool)
-        boxes = [np.vstack(c["rings"]) if c["rings"] else np.array([c["point"]]) for c in d["campuses"]]
-        d["campus_box"] = np.array([(*b.min(0), *b.max(0)) for b in boxes]).reshape(-1, 4)
-        labelled = np.zeros((len(d["places"]), len(LABEL_ZOOMS)), bool)
-        for i, kind in enumerate(d["kinds"]):
-            if kind[0] == "place":
-                labelled[kind[2]] = d["spots"][i] >= 0
-        d["place_labelled"] = labelled
-        self.data = d
+        """A loaded scene (with its arrays, see arrays())."""
+        self.data = d if "label_xy" in d else arrays(d)
 
     # -------------------------------------------------------------------- text ----
 
@@ -604,39 +772,43 @@ class Scene:
     # -------------------------------------------------------------------- draw ----
 
     def draw(self, surface, view, metres, resting=True):
-        """Draw over the ground on `surface` (the map box at its physical size)."""
+        """Draw over the ground on `surface` (the map box at its physical size): opaque lines,
+        then the translucent ones (rings, grid, boundaries, campuses, paths) blended at once,
+        then the grid's names, markers and labels."""
         s = self.scale
         self.budget = math.inf if resting else NEW_GLYPHS
         if self.layer is None or self.layer.get_size() != surface.get_size():
             self.layer = pygame.Surface(surface.get_size(), pygame.SRCALPHA)
-        self.layer.fill((0, 0, 0, 0))                    # translucent: rings, campuses, paths
-        self.draw_geography(view, surface, s)
-        legend = self.draw_contacts(view, surface, s)
+        self.layer.fill((0, 0, 0, 0))
+        self.draw_ground_lines(view, surface, s)
+        grid_names = self.draw_grid(view, s)
+        self.draw_boundaries(view, s)
+        self.draw_overlays(view, s)
+        surface.blit(self.layer, (0, 0), special_flags=pygame.BLEND_ALPHA_SDL2)
+        surface.blits([(self.glyph(text, colour, size, True), (round(x * s) - 1, round(y * s) - 1))
+                       for text, colour, size, (x, y) in grid_names], False)
+        legend = self.draw_markers(view, surface, s)
         self.draw_labels(view, surface, s)
         self.draw_hud(view, surface, s, metres, legend)
 
-    def draw_geography(self, view, surface, s):
-        # rivers clipped to the view: the runs of points in it, with the segments leaving it,
-        # never running on from one river into the next
-        level = min(32, 2 ** math.ceil(math.log2(view.zoom)))
-        points, starts = self.rivers[level]
-        xy = view.points(points)
-        here = (xy[:, 0] >= -2) & (xy[:, 0] <= W + 2) & (xy[:, 1] >= -2) & (xy[:, 1] <= H + 2)
-        keep = here.copy()
-        keep[1:] |= here[:-1]
-        keep[:-1] |= here[1:]
-        first = np.zeros(len(xy) + 1, bool)
-        first[starts] = True
-        begin = np.flatnonzero(keep & (~np.r_[False, keep[:-1]] | first[:-1]))
-        end = np.flatnonzero(keep & (~np.r_[keep[1:], False] | first[1:])) + 1
-        xy *= s
-        width = max(1, round(2 * s))
-        for i, j in zip(begin.tolist(), end.tolist()):
-            if j - i > 1:
-                pygame.draw.lines(surface, terrain.RIVER, False, xy[i:j].tolist(), width)
-        for line in (view.points(self.grid) * s).tolist():
-            pygame.draw.lines(surface, terrain.GRID, False, line)
-        # range rings about us, spaced ~90-220 view px at any zoom (100 km on the whole map)
+    def draw_ground_lines(self, view, surface, s):
+        """Rivers and runways (to scale, never thinner than 2 px, on a dark edge so they show
+        on any ground); range rings about us, spaced ~90-220 view px at any zoom (100 km on the
+        whole map)."""
+        self.rivers.draw(surface, view, s, terrain.RIVER, max(1, round(2 * s)))
+        d = self.data
+        if d is not None and view.zoom >= RING_ZOOM / 2:      # further out, rings mark airports
+            left, top, right, bottom = view.rect()
+            box = d["runway_box"]
+            for i in np.flatnonzero((box[:, 2] >= left) & (box[:, 0] <= right) & (box[:, 3] >= top) & (box[:, 1] <= bottom)):
+                r = d["runways"][i]
+                pts = (view.points(r["line"]) * s).tolist()
+                if r["area"]:
+                    pygame.draw.polygon(surface, RUNWAY, pts)
+                else:
+                    width = max(2, round(r["width"] / 1000 / view.km_per_px * s))
+                    pygame.draw.lines(surface, (40, 40, 40), False, pts, width + 2)
+                    pygame.draw.lines(surface, RUNWAY, False, pts, width)
         de = view.project((W / 2, H / 2))
         km = math.hypot(de[0] - W / 2, de[1] - H / 2) * view.km_per_px
         span = math.hypot(W, H) / 2 * view.km_per_px
@@ -644,37 +816,49 @@ class Scene:
         power = 10 ** math.floor(math.log10(want))
         step = max(v * power for v in (1, 2, 5) if v * power <= want)
         for r in np.arange(max(step, math.floor((km - span) / step) * step), km + span, step):
-            pygame.draw.circle(self.layer, terrain.RING + (120,), (de[0] * s, de[1] * s),
-                               round(r / view.km_per_px * s), 1)
+            pygame.draw.circle(self.layer, RING, (de[0] * s, de[1] * s), round(r / view.km_per_px * s), 1)
 
-    def draw_contacts(self, view, surface, s):
-        """Runways; campuses and paths, translucent; over them the markers: airports (zoomed
-        out), stations, APRS, our QSOs, campus dots. Returns the legend's (colour, text) parts."""
+    def draw_grid(self, view, s):
+        """The Maidenhead grid on the layer: fields, squares and, zoomed in, subsquares.
+        Returns the names to put over it: each square's at its top left corner, kept in view
+        while the square reaches past the view's top or left (so the square under the top left
+        corner is always named); subsquares' two letters at theirs."""
+        for lines, (colour, width) in self.grid[0 if view.zoom >= SUB_ZOOM else 1:]:
+            lines.draw(self.layer, view, s, colour, width)
+        names, taken = [], []
+        ii, jj, corners = self.squares
+        at = np.maximum(view.points(corners), 3)
+        lat, lon = view.grid_latlon(at[:, 0] + 1, at[:, 1] + 1)        # still in that square?
+        mine = (jj <= lat) & (lat < jj + 1) & (2 * ii <= lon) & (lon < 2 * ii + 2)             & (at[:, 0] <= W - 40) & (at[:, 1] <= H - 18)
+        for i, j, (x, y) in zip(ii[mine].tolist(), jj[mine].tolist(), at[mine].tolist()):
+            names.append((square_name(i, j), GRID_TEXT, 13, (x + 4, y + 2)))
+            taken.append((x, y, x + 46, y + 18))
+        if view.zoom >= SUB_ZOOM:
+            ii, jj, corners = self.subsquares
+            at = view.points(corners)
+            shown = np.flatnonzero((at[:, 0] >= 0) & (at[:, 0] < W - 20) & (at[:, 1] >= 0) & (at[:, 1] < H - 14))
+            for i, j, (x, y) in zip(ii[shown].tolist(), jj[shown].tolist(), at[shown].tolist()):
+                if not any(b[0] - 18 < x < b[2] and b[1] - 14 < y < b[3] for b in taken):
+                    names.append((chr(97 + (i + 2160) % 24) + chr(97 + (j + 2160) % 24), GRID_SUB_TEXT, 11, (x + 3, y + 2)))
+        return names
+
+    def draw_boundaries(self, view, s):
+        """Province borders on the whole map; from CITY_ZOOM on, city (prefecture) and county
+        outlines instead, a province border then showing as the city border it also is."""
+        styles = [(4, PROVINCE)] if view.zoom < CITY_ZOOM else [(6, COUNTY), (5, PREFECTURE), (4, PREFECTURE)]
+        for level, (colour, width, pattern) in styles:
+            if level in self.admin:
+                self.admin[level].draw(self.layer, view, s, colour, width, pattern)
+
+    def draw_overlays(self, view, s):
+        """Campuses (zoomed in) and contact paths on the layer."""
         d = self.data
         if d is None:
-            surface.blit(self.layer, (0, 0), special_flags=pygame.BLEND_ALPHA_SDL2)
-            return []
+            return
         left, top, right, bottom = view.rect()
-        # runways to scale (never thinner than 2 px), on a dark edge so they show on any ground
-        box = d["runway_box"]
-        for i in np.flatnonzero((box[:, 2] >= left) & (box[:, 0] <= right) & (box[:, 3] >= top) & (box[:, 1] <= bottom)):
-            r = d["runways"][i]
-            pts = (view.points(r["line"]) * s).tolist()
-            if r["area"]:
-                pygame.draw.polygon(surface, RUNWAY, pts)
-            else:
-                width = max(2, round(r["width"] / 1000 / view.km_per_px * s))
-                pygame.draw.lines(surface, (40, 40, 40), False, pts, width + 2)
-                pygame.draw.lines(surface, RUNWAY, False, pts, width)
-        if view.zoom < RING_ZOOM:
-            airports = view.points(d["airport_xy"])
-            self.stamp(surface, "ring", AIRPORT, airports[inside(airports)])
-        campuses = []
         if view.zoom >= CAMPUS_ZOOM:
             box = d["campus_box"]
-            campuses = np.flatnonzero((box[:, 2] >= left) & (box[:, 0] <= right)
-                                      & (box[:, 3] >= top) & (box[:, 1] <= bottom))
-            for i in campuses:
+            for i in np.flatnonzero((box[:, 2] >= left) & (box[:, 0] <= right) & (box[:, 3] >= top) & (box[:, 1] <= bottom)):
                 for ring in d["campuses"][i]["rings"]:
                     pts = (view.points(ring) * s).tolist()
                     pygame.draw.polygon(self.layer, CAMPUS + (40,), pts)
@@ -686,14 +870,25 @@ class Scene:
         for (p, q), both in zip(links, inside(links).all(axis=1)):
             pygame.draw.line(self.layer, a.APRS_RF + (175 if both else 48,), (p * s).tolist(), (q * s).tolist())
         de = view.project((W / 2, H / 2))
-        qsos = view.points(d["qso_xy"])
-        for p in qsos:
+        for p in view.points(d["qso_xy"]):
             pygame.draw.line(self.layer, a.WHITE + (230,), (de[0] * s, de[1] * s), (p * s).tolist(),
                              max(1, round(2 * s)))
-        surface.blit(self.layer, (0, 0), special_flags=pygame.BLEND_ALPHA_SDL2)
 
-        dots = [d["campuses"][i]["point"] for i in campuses if not d["campuses"][i]["rings"]]
-        self.stamp(surface, "campus", CAMPUS, view.points(np.array(dots, dtype=float).reshape(-1, 2)))
+    def draw_markers(self, view, surface, s):
+        """Airports (zoomed out), campus points (zoomed in), stations, APRS, our QSOs. Returns
+        the legend's (colour, text) parts."""
+        d = self.data
+        if d is None:
+            return []
+        left, top, right, bottom = view.rect()
+        if view.zoom < RING_ZOOM:
+            airports = view.points(d["airport_xy"])
+            self.stamp(surface, "ring", AIRPORT, airports[inside(airports)])
+        if view.zoom >= CAMPUS_ZOOM:
+            box = d["campus_box"]
+            here = np.flatnonzero((box[:, 2] >= left) & (box[:, 0] <= right) & (box[:, 3] >= top) & (box[:, 1] <= bottom))
+            dots = [d["campuses"][i]["point"] for i in here if not d["campuses"][i]["rings"]]
+            self.stamp(surface, "campus", CAMPUS, view.points(np.array(dots, dtype=float).reshape(-1, 2)))
         st = view.points(d["station_xy"])
         shown_st = np.flatnonzero(inside(st))
         for i in shown_st[::-1]:                                     # senders on top
@@ -703,6 +898,7 @@ class Scene:
         rf = d["aprs_rf"][shown]
         self.stamp(surface, "dot", a.APRS_NET, heard[shown[~rf]])
         self.stamp(surface, "dot", a.APRS_RF, heard[shown[rf]])      # RF heard on top
+        qsos = view.points(d["qso_xy"])
         self.stamp(surface, "square", a.WHITE, qsos[inside(qsos)])
         order = {name: i for i, (_, name, _) in enumerate(a.BANDS)}
         parts = [(a.APRS_RF, f"APRS {len(shown)}"), (a.WHITE, f"DIGI {len(shown_st)}"),
@@ -711,16 +907,17 @@ class Scene:
                         for name, colour in sorted(d["bands"].items(), key=lambda b: order.get(b[0], 99))]
 
     def draw_labels(self, view, surface, s):
-        """Places as squares (named at this zoom) or dots, the farthest point, us; then every
-        label placed for this zoom step."""
+        """Places as squares (named at this zoom) or dots on the whole map, the farthest point,
+        us; then every label placed for this zoom step."""
         d = self.data
         li = max(i for i, z in enumerate(LABEL_ZOOMS) if z <= view.zoom * 1.0001)
         if d is not None:
-            xy = view.points(d["places"])
-            here = inside(xy)
-            named = d["place_labelled"][:, li]
-            self.stamp(surface, "town", TOWN, xy[here & ~named])
-            self.stamp(surface, "city", CITY, xy[here & named])
+            if view.zoom < CITY_ZOOM:                    # zoomed in, towns are their outlines
+                xy = view.points(d["places"])
+                here = inside(xy)
+                named = d["place_labelled"][:, li]
+                self.stamp(surface, "town", TOWN, xy[here & ~named])
+                self.stamp(surface, "city", CITY, xy[here & named])
             x, y = view.project(d["far"])
             if view.inside(x, y):
                 pygame.draw.polygon(surface, terrain.SEEN, [(x * s, (y - 7) * s), ((x + 6) * s, (y + 5) * s),
@@ -734,7 +931,7 @@ class Scene:
         k, (tw, th) = d["spots"][:, li], d["sizes"].T
         at = view.points(d["label_xy"])
         x = at[:, 0] + np.select([k == 0, k == 1, k == 4, k == 5], [7, -tw - 7, 18, -tw - 18], -tw / 2)
-        y = at[:, 1] + np.select([k == 2, k == 3, k == 6, k == 7], [-22, 7, -33, 18], -7)   # as spot()
+        y = at[:, 1] + np.select([k == 2, k == 3, k == 6, k == 7, k == 8], [-22, 7, -33, 18, -th / 2], -7)   # spot()
         shown = (k >= 0) & (x + tw > 0) & (x < W) & (y + th > 0) & (y < H)
         if view.zoom < CAMPUS_ZOOM:
             shown &= ~d["label_campus"]
