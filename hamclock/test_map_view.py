@@ -40,10 +40,10 @@ def blank_scene(m, scale=1.0):
     return s
 
 
-def scene_data(lines=(), campuses=(), labels=(), airports=(), runways=()):
+def scene_data(lines=(), campuses=(), labels=(), airports=(), runways=(), military=()):
     d = dict(stations=[], lines=list(lines), total=len(lines), bands={}, aprs=[], links=[], qsos=[],
              places=np.empty((0, 2)), campuses=list(campuses), far=(-100, -100),
-             airports=list(airports), runways=list(runways),
+             airports=list(airports), runways=list(runways), military=list(military),
              labels=[(text, xy, 13) for text, xy, _ in labels], kinds=[kind for _, _, kind in labels],
              sizes=np.full((len(labels), 2), 30.0), spots=np.zeros((len(labels), len(v.LABEL_ZOOMS)), np.int8))
     return d
@@ -348,6 +348,20 @@ class SceneTests(unittest.TestCase):
         x_county = round(view.project((640, 0))[0])
         self.assertGreater(max(frame.get_at((x_county, y)).r for y in range(200, 300)), 30)
         self.assertEqual(max(frame.get_at((v.W // 2 + dx, v.H // 2 + dy)).r for dx in (-1, 0, 1) for dy in (-1, 0, 1)), 0)
+
+    def test_military_areas_show_from_their_zoom(self):
+        ring = np.array([(640.0, 320.0), (680.0, 320.0), (680.0, 340.0), (640.0, 340.0)])
+        self.scene.take(scene_data(military=[dict(name='', rings=[ring], point=(660.0, 330.0))]))
+        frame = pygame.Surface((v.W, v.H))
+        self.scene.draw(frame, v.View(self.m, 2, (660, 330)), 33)
+        edge = lambda: max(frame.get_at((v.W // 2 + dx, v.H // 2 - 40 * z)).r for dx in range(-5, 6))
+        z = 2
+        self.assertLess(edge(), 60)                                  # not yet
+        frame.fill((0, 0, 0))
+        self.scene.draw(frame, v.View(self.m, v.MILITARY_ZOOM, (660, 330)), 33)
+        z = v.MILITARY_ZOOM
+        self.assertGreater(max(frame.get_at((v.W // 2 + dx, v.H // 2 - 10 * z + dy)).r
+                               for dx in range(-5, 6) for dy in (-1, 0, 1)), 150)
 
     def test_campuses_only_show_from_their_zoom(self):
         ring = np.array([(640.0, 320.0), (680.0, 320.0), (680.0, 340.0), (640.0, 340.0)])

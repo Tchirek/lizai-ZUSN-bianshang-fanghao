@@ -49,6 +49,8 @@ RETRY_S = 30                  # after a failed picture
 MARGIN = 0.5                  # wide pictures reach this many view widths past each side
 LABEL_ZOOMS = tuple(2 ** (k / 2) for k in range(10))       # label placement steps, 1 .. 22.6
 CAMPUS_ZOOM = 8               # campuses (outline, dot, name) show from this zoom on
+MILITARY_ZOOM = 4             # military areas (outline, dot) from this zoom on, named from 6x
+MILITARY = (255, 85, 70)
 NEW_GLYPHS = 12               # labels first rendered in one frame while the view moves
 FONTS = {"latin": ("/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf", 0),
          "cjk": ("/usr/share/fonts/opentype/noto/NotoSansCJK-Bold.ttc", 2)}   # 2: SC
@@ -284,11 +286,25 @@ def airport_label(code, name):
     return " ".join(name.split())
 
 
+def areas(base, path):
+    """Named areas (campuses, military) from build_tiles.py's file: outlines and the point for
+    the name, in base px; those on the map."""
+    out = []
+    if os.path.exists(path):
+        with open(path) as f:
+            for c in json.load(f):
+                rings = [r for r in (np.array([base.xy(*p) for p in ring]) for ring in c["rings"]) if len(r) > 2]
+                point = base.xy(*c["point"])
+                if 0 <= point[0] < W and 0 <= point[1] < H:
+                    out.append(dict(name=c["name"], rings=rings, point=point))
+    return out
+
+
 def static_scene(base):
-    """Places, campuses, airports with their runways, and the farthest point in base px; kept
-    while their files stay."""
+    """Places, campuses, military areas, airports with their runways, and the farthest point
+    in base px; kept while their files stay."""
     paths = [os.path.join(a.MODEL, f) for f in ("rangemap_osm.json", "rangemap.json", "campuses.json",
-                                                 "airports.json")]
+                                                 "airports.json", "military.json")]
     key = tuple(os.path.getmtime(p) if os.path.exists(p) else 0 for p in paths)
     if _static.get("key") == key:
         return _static
@@ -300,14 +316,7 @@ def static_scene(base):
     places = sorted((p for p in osm["places"] if p.get("name")),
                     key=lambda p: (rank.get(p.get("capital", ""), 4), -p.get("pop", 0)))
     xy = np.array([base.xy(p["lat"], p["lon"]) for p in places]).reshape(-1, 2)
-    campuses = []
-    if os.path.exists(paths[2]):
-        with open(paths[2]) as f:
-            for c in json.load(f):
-                rings = [r for r in (np.array([base.xy(*p) for p in ring]) for ring in c["rings"]) if len(r) > 2]
-                point = base.xy(*c["point"])
-                if 0 <= point[0] < W and 0 <= point[1] < H:
-                    campuses.append(dict(name=c["name"], rings=rings, point=point))
+    campuses, military = areas(base, paths[2]), areas(base, paths[4])
     airports, runways = [], []
     if os.path.exists(paths[3]):
         with open(paths[3]) as f:
@@ -323,7 +332,7 @@ def static_scene(base):
                    place_city=[rank.get(p.get("capital", ""), 4) <= 2 for p in places],   # prefecture seat or up
                    airports=airports, runways=runways,
                    place_km=np.hypot(*(xy - (W / 2, H / 2)).T) * base.km_per_px,
-                   name_km=info["reach_km"] * 1.1, campuses=campuses,
+                   name_km=info["reach_km"] * 1.1, campuses=campuses, military=military,
                    far=(base.xy(info["far_lat"], info["far_lon"]),
                         f"{info['reach_km']:.0f} km {info['bearing']:.0f} deg {info['far_elev_m']:.0f} m"))
     return _static
@@ -371,6 +380,10 @@ def load_scene(base, scale):
         if c["name"]:
             items.append((c["name"], c["point"], 15, CAMPUS_ZOOM, math.inf))
             kinds.append(("campus", CAMPUS))
+    for c in static["military"]:
+        if c["name"]:
+            items.append((c["name"], c["point"], 13, 6, math.inf))
+            kinds.append(("military", MILITARY))
     places(False)
     sizes, spots = place_labels(items, scale)
     return arrays(dict(
@@ -380,6 +393,7 @@ def load_scene(base, scale):
         links=[(base.xy(*positions[x][:2]), base.xy(*positions[y][:2]))
                for x, y in data.get("aprs_links", []) if x in positions and y in positions],
         qsos=[xy for _, xy in qsos], places=static["place_xy"], campuses=static["campuses"],
+        military=static["military"],
         airports=[x["point"] for x in static["airports"]], runways=static["runways"],
         far=static["far"][0], labels=[(text, xy, size) for text, xy, size, *_ in items],
         kinds=kinds, sizes=sizes, spots=spots))
@@ -423,8 +437,10 @@ def arrays(d):
     d["airport_xy"] = points(d.get("airports", []))
     d["runway_box"] = np.array([(*r["line"].min(0), *r["line"].max(0)) for r in d.get("runways", [])]).reshape(-1, 4)
     d["label_campus"] = np.array([kind[0] == "campus" for kind in d["kinds"]], dtype=bool)
-    boxes = [np.vstack(c["rings"]) if c["rings"] else np.array([c["point"]]) for c in d["campuses"]]
-    d["campus_box"] = np.array([(*b.min(0), *b.max(0)) for b in boxes]).reshape(-1, 4)
+    for kind in ("campus", "military"):
+        found = d["campuses"] if kind == "campus" else d.get("military", [])
+        boxes = [np.vstack(c["rings"]) if c["rings"] else np.array([c["point"]]) for c in found]
+        d[kind + "_box"] = np.array([(*b.min(0), *b.max(0)) for b in boxes]).reshape(-1, 4)
     labelled = np.zeros((len(d["places"]), len(LABEL_ZOOMS)), bool)
     for i, kind in enumerate(d["kinds"]):
         if kind[0] == "place":
@@ -851,18 +867,20 @@ class Scene:
                 self.admin[level].draw(self.layer, view, s, colour, width, pattern)
 
     def draw_overlays(self, view, s):
-        """Campuses (zoomed in) and contact paths on the layer."""
+        """Military areas and campuses (zoomed in), and contact paths, on the layer."""
         d = self.data
         if d is None:
             return
         left, top, right, bottom = view.rect()
-        if view.zoom >= CAMPUS_ZOOM:
-            box = d["campus_box"]
+        for found, box, colour, zoom in ((d["military"], d["military_box"], MILITARY, MILITARY_ZOOM),
+                                         (d["campuses"], d["campus_box"], CAMPUS, CAMPUS_ZOOM)):
+            if view.zoom < zoom:
+                continue
             for i in np.flatnonzero((box[:, 2] >= left) & (box[:, 0] <= right) & (box[:, 3] >= top) & (box[:, 1] <= bottom)):
-                for ring in d["campuses"][i]["rings"]:
+                for ring in found[i]["rings"]:
                     pts = (view.points(ring) * s).tolist()
-                    pygame.draw.polygon(self.layer, CAMPUS + (40,), pts)
-                    pygame.draw.lines(self.layer, CAMPUS + (210,), True, pts, max(1, round(1.5 * s)))
+                    pygame.draw.polygon(self.layer, colour + (40,), pts)
+                    pygame.draw.lines(self.layer, colour + (210,), True, pts, max(1, round(1.5 * s)))
         ends = view.points(d["line_ends"])
         for (p, q), (_, colour, alpha) in zip(ends, d["lines"]):    # faint: to past the map
             pygame.draw.line(self.layer, colour + (alpha,), (p * s).tolist(), (q * s).tolist())
@@ -884,11 +902,13 @@ class Scene:
         if view.zoom < RING_ZOOM:
             airports = view.points(d["airport_xy"])
             self.stamp(surface, "ring", AIRPORT, airports[inside(airports)])
-        if view.zoom >= CAMPUS_ZOOM:
-            box = d["campus_box"]
+        for found, box, colour, zoom in ((d["military"], d["military_box"], MILITARY, MILITARY_ZOOM),
+                                         (d["campuses"], d["campus_box"], CAMPUS, CAMPUS_ZOOM)):
+            if view.zoom < zoom:
+                continue
             here = np.flatnonzero((box[:, 2] >= left) & (box[:, 0] <= right) & (box[:, 3] >= top) & (box[:, 1] <= bottom))
-            dots = [d["campuses"][i]["point"] for i in here if not d["campuses"][i]["rings"]]
-            self.stamp(surface, "campus", CAMPUS, view.points(np.array(dots, dtype=float).reshape(-1, 2)))
+            dots = [found[i]["point"] for i in here if not found[i]["rings"]]
+            self.stamp(surface, "campus", colour, view.points(np.array(dots, dtype=float).reshape(-1, 2)))
         st = view.points(d["station_xy"])
         shown_st = np.flatnonzero(inside(st))
         for i in shown_st[::-1]:                                     # senders on top
