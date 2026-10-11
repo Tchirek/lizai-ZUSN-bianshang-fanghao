@@ -223,7 +223,7 @@ class Scope:
         acs = self.last.get("aircraft", [])
         placed, labels = [], []
         n_pos = n_nopos = 0
-        for ac in sorted(acs, key=lambda a: a.get("seen", 99)):
+        for ac in sorted(acs, key=lambda a: a["hex"]):      # stable order: labels don't hop
             if ac.get("seen", 99) > 60:
                 continue
             if ac.get("lat") is None or ac.get("seen_pos", 99) > 60:
@@ -281,6 +281,9 @@ class Scope:
             tw = d.textlength(msg, font=F_LABEL)
             d.rectangle([self.cx - tw / 2 - 2, 44, self.cx + tw / 2 + 2, 63], fill=RED)
             d.text((self.cx - tw / 2, 45), msg, font=F_LABEL, fill=WHITE)
+        # the image's last column/row land on HamClock's own pane border: paint them as border
+        d.line([W - 1, 0, W - 1, H - 1], fill=BORDER)
+        d.line([0, H - 1, W - 1, H - 1], fill=BORDER)
         return img
 
 
@@ -298,6 +301,39 @@ def sdr_away():
         return None
 
 
+class PaneWatch:
+    """Follow HamClock's diagnostic log; report when it repainted our pane (or restarted),
+    so the scope can be pushed again at once instead of leaving HamClock's content visible."""
+
+    LOG = os.path.expanduser("~/.hamclock/diagnostic-log.txt")
+
+    def __init__(self, pane):
+        self.marks = (f"Pane {pane} now showing".encode(), b"Setup:",
+                      b"reading local latest_")      # SDO image reload (if SDO is underneath)
+        self.f, self.ino = None, None
+        self.reopen(at_end=True)
+
+    def reopen(self, at_end=False):
+        try:
+            self.f = open(self.LOG, "rb")
+            self.ino = os.fstat(self.f.fileno()).st_ino
+            if at_end:
+                self.f.seek(0, os.SEEK_END)
+        except OSError:
+            self.f = None
+
+    def redrawn(self):
+        try:
+            st = os.stat(self.LOG)
+        except OSError:
+            return False
+        if self.f is None or st.st_ino != self.ino or st.st_size < self.f.tell():
+            self.reopen()                       # HamClock restarted / log rotated
+            return True
+        data = self.f.read()
+        return any(m in data for m in self.marks)
+
+
 def push(img, pane, host):
     b = io.BytesIO()
     img.save(b, "BMP")
@@ -311,7 +347,8 @@ def main():
     ap.add_argument("--pane", type=int, default=2)
     ap.add_argument("--range-mi", type=float, default=30)
     ap.add_argument("--basemap", default=os.path.expanduser("~/influ/model/basemap.json"))
-    ap.add_argument("--every", type=float, default=5)
+    ap.add_argument("--every", type=float, default=5, help="render interval, s")
+    ap.add_argument("--keepalive", type=float, default=15, help="re-push unchanged image, s")
     ap.add_argument("--hamclock", default="127.0.0.1:8070")
     ap.add_argument("--once", help="render one frame to this PNG and exit (no push)")
     a = ap.parse_args()
@@ -322,18 +359,30 @@ def main():
             time.sleep(1)
         sc.render(sdr_away()).save(a.once)
         return
-    nxt = 0
+    watch = PaneWatch(a.pane)
+    last_img, last_push, nxt, again = None, 0.0, 0.0, 0.0
     while True:
         sc.sample()
-        if time.time() >= nxt:
-            try:
-                r = push(sc.render(sdr_away()), a.pane, a.hamclock)
-                if r != "ok":
-                    print("hamclock:", r, flush=True)
-            except OSError as e:
-                print("push failed:", e, flush=True)
-            nxt = time.time() + a.every
-        time.sleep(1)
+        redrawn = watch.redrawn()
+        now = time.time()
+        if redrawn:
+            again = now + 1.5                  # the log line may precede HamClock's actual draw
+        elif again and now >= again:
+            redrawn, again = True, 0.0
+        if now >= nxt or redrawn:
+            img = sc.render(sdr_away())
+            nxt = now + a.every
+            blob = img.tobytes()
+            # push only on change, when HamClock repainted the pane, or as a periodic safety net
+            if blob != last_img or redrawn or now - last_push > a.keepalive:
+                try:
+                    r = push(img, a.pane, a.hamclock)
+                    if r != "ok":
+                        print("hamclock:", r, flush=True)
+                    last_img, last_push = blob, now
+                except OSError as e:
+                    print("push failed:", e, flush=True)
+        time.sleep(0.25 if redrawn else 0.5)
 
 
 if __name__ == "__main__":
