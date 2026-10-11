@@ -1,0 +1,9 @@
+[Unit]
+Description=Run the 1090 MHz gain A/B test 08:00-20:00 (daytime traffic)
+
+[Timer]
+OnCalendar=*-*-* 08:00
+Persistent=false
+
+[Install]
+WantedBy=timers.target

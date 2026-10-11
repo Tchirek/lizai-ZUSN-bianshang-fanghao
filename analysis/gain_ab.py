@@ -28,7 +28,7 @@ def run(a):
     from sdrmuxctl import call
     os.makedirs(os.path.dirname(LOG), exist_ok=True)
     end = time.time() + a.hours * 3600
-    names = list(SETTINGS)
+    names = a.arms.split(",") if a.arms else list(SETTINGS)
     while time.time() < end:
         random.shuffle(names)
         for name in names:
@@ -48,8 +48,11 @@ def report(a):
 
     blocks = pd.read_json(LOG, lines=True)
     blocks = blocks[blocks.set.map(lambda s: s.get("ok", False))].reset_index(drop=True)
+    from influ import events
     msgs, _ = load.beast(blocks.t0.min(), blocks.t1.max())
-    ms = msgs[msgs.icao.notna()]
+    # address/parity frames yield an "ICAO" for any noise burst, and settings with a higher
+    # noise floor produce more of them: count only addresses confirmed by DF11/17/18 CRC
+    ms = msgs[msgs.icao.isin(events.confirmed_icaos(msgs))]
     st = load.stats(blocks.t0.min(), blocks.t1.max())
     rows = []
     for b in blocks.itertuples():
@@ -81,7 +84,8 @@ def main():
     ap.add_argument("cmd", choices=["run", "report"])
     ap.add_argument("--hours", type=float, default=24)
     ap.add_argument("--block-min", type=float, default=10)
-    ap.add_argument("--restore", default="m49.6")
+    ap.add_argument("--restore", default="m49.6+dagc")
+    ap.add_argument("--arms", help="comma-separated subset of " + ",".join(SETTINGS))
     a = ap.parse_args()
     run(a) if a.cmd == "run" else report(a)
 
