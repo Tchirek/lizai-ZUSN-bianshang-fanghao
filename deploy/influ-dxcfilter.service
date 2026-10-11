@@ -1,0 +1,11 @@
+[Unit]
+Description=influ - filtering DX cluster proxy for HamClock (127.0.0.1:7300 -> k1ttt.net:7373)
+After=network-online.target
+
+[Service]
+ExecStart=/usr/bin/python3 %h/influ/tools/dxc_filter.py --listen 127.0.0.1:7300 --upstream k1ttt.net:7373
+Restart=always
+RestartSec=10
+
+[Install]
+WantedBy=default.target
