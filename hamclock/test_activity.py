@@ -26,7 +26,7 @@ class Tests(unittest.TestCase):
         p = patch.object(a, 'MODEL', tmp.name)
         p.start()
         self.addCleanup(p.stop)
-        for cls, name in ((a.Psk, 'psk.json'), (a.Wspr, 'wspr.json')):
+        for cls, name in ((a.Psk, 'psk.json'), (a.Wspr, 'wspr.json'), (a.LivePsk, 'live.json')):
             p = patch.object(cls, 'STATE', str(Path(tmp.name) / name))
             p.start()
             self.addCleanup(p.stop)
@@ -94,6 +94,15 @@ class Tests(unittest.TestCase):
         self.assertEqual(json.loads(Path(path).read_text())['next'], 1900)
         feed.fetch.assert_called_once_with('OM')
 
+    def test_active_ft8_push_suspends_http_queries(self):
+        feed = a.Psk(['OM'])
+        feed.live = Mock(last_psk_received=100)
+        feed.fetch = Mock()
+        with patch.object(a.time, 'time', return_value=110), patch.object(a.time, 'sleep', side_effect=[None, None, StopIteration]):
+            with self.assertRaises(StopIteration):
+                feed.run()
+        feed.fetch.assert_not_called()
+
     def report(self, sender, receiver):
         return dict(senderCallsign='S', receiverCallsign='R', senderLocator=sender,
                     receiverLocator=receiver, frequency='14074000', mode='FT8')
@@ -103,8 +112,8 @@ class Tests(unittest.TestCase):
         report = self.report('S', 'R')
         with patch.object(a, 'locator', side_effect=locations.get):
             im = a.draw_activity(Map(), ({}, {}, []), [report, report, self.report('F', 'R')], [])
-        self.assertEqual(im.getpixel((500, 100)), (255, 250, 0, 170))
-        self.assertEqual(im.getpixel((a.W - 1, 100)), (255, 250, 0, 170))
+        self.assertEqual(im.getpixel((500, 100)), (255, 250, 0, 48))
+        self.assertEqual(im.getpixel((a.W - 1, 100)), (255, 250, 0, 48))
         self.assertEqual(im.getpixel((500, 300)), (0, 0, 0, 0))
 
     def test_missing_partner_position_never_invents_a_line(self):
@@ -117,8 +126,32 @@ class Tests(unittest.TestCase):
         with patch.object(a, 'locator', return_value=(a.H / 2, a.W / 2 + 200)):
             im = a.draw_activity(Map(), ({}, positions, [('A', 'B'), ('A', 'UNKNOWN')]),
                                  [], [('W1ABC', 'FN42')])
-        self.assertEqual(im.getpixel((200, 200)), a.APRS_RF + (200,))
+        self.assertEqual(im.getpixel((200, 200)), a.APRS_RF + (175,))
         self.assertEqual(im.getpixel((int(a.W / 2 + 100), int(a.H / 2))), a.WHITE + (230,))
+
+    def test_dense_paths_preserve_peers_and_limit_off_map_bundles(self):
+        rows = [dict(self.report('S', f'R{i}'), receiverCallsign=f'R{i}') for i in range(100)]
+        locations = {'S': (200, 200), **{f'R{i}': (-100 + i * 10, 2000) for i in range(100)}}
+        with patch.object(a, 'locator', side_effect=locations.get):
+            stations, _, paths, peers, total = a.digital_graph(Map(), rows)
+        self.assertEqual(set(stations), {'S'})
+        self.assertLessEqual(len(paths), 2)
+        self.assertEqual((peers['S'], total), (100, 100))
+
+    def test_live_payload_regional_filter_cache_and_expiry(self):
+        feed = a.LivePsk(Map())
+        msg = dict(sc='S', rc='R', sl='S', rl='R', f=14074000, md='FT8')
+        with patch.object(a, 'locator', side_effect={'S': (100, 100), 'R': (100, 2000)}.get):
+            with patch.object(a.time, 'time', return_value=100):
+                feed.take(json.dumps(msg)); feed.take(json.dumps(msg))
+                self.assertEqual(len(feed.current()), 1)
+                self.assertEqual(feed.received, 2)
+                self.assertEqual(len(a.LivePsk(Map()).current()), 1)
+            with patch.object(a.time, 'time', return_value=1901):
+                self.assertEqual(feed.current(), [])
+        feed.take('bad json')
+        feed.take(json.dumps(dict(msg, f='bad')))
+        self.assertEqual(feed.reports, {})
 
     def test_week_tally_preserves_completed_peers(self):
         with tempfile.TemporaryDirectory() as tmp:

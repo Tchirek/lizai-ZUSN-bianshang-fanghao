@@ -36,7 +36,7 @@ APP_W, APP_H = 800, 480         # HamClock's own coordinates for touch and mouse
 MAP_BOX = (139, 149, 660, 330)  # HamClock's map_b in those coordinates
 TALLY_BOX = (1, 430, 137, 48)   # last 3 DX cluster rows of the left column (rows: 192 + 14 k)
 MODEL = os.path.expanduser("~/influ/model")
-OVERLAYS = [("rangemap.png", MAP_BOX), ("activity.png", MAP_BOX), ("ft8week.png", TALLY_BOX)]
+OVERLAYS = [("rangemap.png", MAP_BOX), ("night.png", MAP_BOX), ("activity.png", MAP_BOX), ("ft8week.png", TALLY_BOX)]
 POLL = 0.1                      # s between update requests, as live.html (UPDATE_MS)
 JITTER = 5                      # app px a press may move and still count as a tap
 CURSOR_IDLE = 3                 # s before the pointer is hidden
@@ -206,11 +206,16 @@ def key_name(ev):
 
 
 def main():
+    from map_panel import MapPanel
     frames = queue.Queue()
     link = Link(frames)
     link.start()
     mirror, screen = Mirror(), Screen()
     overlays = [Overlay(name, box) for name, box in OVERLAYS]
+    try:
+        inspector = MapPanel()
+    except (OSError, ValueError):
+        inspector = None
     pressed, last_move, last_input, last_check = None, 0.0, time.time(), 0.0
     while True:
         changed = False
@@ -226,13 +231,19 @@ def main():
                 last_input = time.time()
                 pygame.mouse.set_visible(True)
             if ev.type == pygame.MOUSEBUTTONDOWN and ev.button in (1, 2, 3):
-                pressed = screen.app_xy(ev.pos, overlays)
+                pressed = screen.app_xy(ev.pos)
             elif ev.type == pygame.MOUSEBUTTONUP and ev.button in (1, 2, 3) and pressed:
-                at = screen.app_xy(ev.pos, overlays)
+                at = screen.app_xy(ev.pos)
                 if at and abs(at[0] - pressed[0]) <= JITTER and abs(at[1] - pressed[1]) <= JITTER:
                     ctrl = pygame.key.get_mods() & pygame.KMOD_CTRL
-                    button = 1 if ev.button == 2 or (ev.button == 1 and ctrl) else 0
-                    link.send(f"set_touch?x={at[0]}&y={at[1]}&button={button}")
+                    k = mirror.image.get_width() / APP_W if mirror.image else 2
+                    box = tuple(round(v * k) for v in MAP_BOX)
+                    if inspector and ev.button == 1 and not ctrl and inspector.tap((at[0] * k, at[1] * k), box):
+                        changed = True
+                    elif screen.app_xy(ev.pos, overlays):
+                        button = 1 if ev.button == 2 or (ev.button == 1 and ctrl) else 0
+                        link.send(f"set_touch?x={at[0]}&y={at[1]}&button={button}")
+                    changed = True
                 pressed = None
             elif ev.type == pygame.MOUSEMOTION and time.time() - last_move > POLL:
                 last_move = time.time()
@@ -241,15 +252,25 @@ def main():
             elif ev.type == pygame.WINDOWLEAVE:
                 link.send("set_mouse?x=-1&y=-1")
             elif ev.type == pygame.KEYDOWN and (name := key_name(ev)):
-                mods = pygame.key.get_mods()
-                mod = ("C" if mods & pygame.KMOD_CTRL else "") + ("S" if mods & pygame.KMOD_SHIFT else "")
-                link.send(f"set_char?char={name}&mod={mod}")
+                if name == 'Escape' and inspector and inspector.point is not None:
+                    inspector.close()
+                    changed = True
+                else:
+                    mods = pygame.key.get_mods()
+                    mod = ("C" if mods & pygame.KMOD_CTRL else "") + ("S" if mods & pygame.KMOD_SHIFT else "")
+                    link.send(f"set_char?char={name}&mod={mod}")
 
         while not frames.empty():
             mirror.apply(*frames.get())
             changed = True
+        if inspector and inspector.future and inspector.future.done():
+            changed = True
         if changed and mirror.image:
-            screen.draw(composed(mirror.image, overlays))
+            frame = composed(mirror.image, overlays)
+            if inspector:
+                k = frame.get_width() / APP_W
+                inspector.draw(frame, tuple(round(v * k) for v in MAP_BOX))
+            screen.draw(frame)
         if time.time() - last_input > CURSOR_IDLE:
             pygame.mouse.set_visible(False)
         time.sleep(0.02)

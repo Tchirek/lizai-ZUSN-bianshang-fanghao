@@ -4,6 +4,7 @@ After=network-online.target
 
 [Service]
 WorkingDirectory=%h/influ/hamclock
+Environment=HAMDATA_PROXY=http://127.0.0.1:7897
 ExecStart=%h/influ/.venv/bin/python activity.py
 Restart=always
 RestartSec=30

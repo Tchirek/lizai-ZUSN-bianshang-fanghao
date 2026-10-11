@@ -6,7 +6,7 @@ Sources
                  us: VHF APRS beacons (144.640 MHz here) -- who is on the air nearby, live.
                  Packets an igate heard on RF (q-construct qAR/qAO) are drawn brighter than
                  internet-only ones.
-  PSK Reporter   one query per 5 min, the Maidenhead fields the map covers taken in turn:
+  PSK Reporter   regional MQTT push through HAMDATA_PROXY; HTTP cache as a slow fallback:
                  FT8/FT4 stations in the region (last 30 min), coloured by band as HamClock
                  does; paths drawn when either end is on the map.
   our FT8 log    ~/influ/ft8/auto.jsonl: CQs we sent and QSOs completed since Monday 00:00
@@ -117,6 +117,14 @@ class Map:
                 lat, lon = self.latlon(x, y)
                 out.add(chr(65 + int((lon + 180) // 20)) + chr(65 + int((lat + 90) // 10)))
         return sorted(out)
+
+    def squares(self):
+        corners = [self.latlon(x, y) for x in range(0, W + 1, W // 8)
+                   for y in range(0, H + 1, H // 4)]
+        xs = [int((p[1] + 180) // 2) for p in corners]
+        ys = [int(p[0] + 90) for p in corners]
+        return [f'{chr(65 + x // 10)}{chr(65 + y // 10)}{x % 10}{y % 10}'
+                for x in range(min(xs), max(xs) + 1) for y in range(min(ys), max(ys) + 1)]
 
     def latlon(self, x, y):
         dx, dy = (x - W / 2) * self.km_per_px, (y - H / 2) * self.km_per_px
@@ -251,6 +259,7 @@ class Psk(threading.Thread):
     def __init__(self, fields):
         super().__init__(daemon=True)
         self.fields, self.lock = fields, threading.Lock()
+        self.live = None
         try:
             with open(self.STATE) as f:
                 self.state = json.load(f)
@@ -275,6 +284,10 @@ class Psk(threading.Thread):
     def run(self):
         while True:
             time.sleep(max(0, self.state["next"] - time.time()))
+            last = (self.live.last_wspr_received if isinstance(self, Wspr) else self.live.last_psk_received) if self.live else -math.inf
+            if time.time() - last < 120:
+                time.sleep(10)
+                continue
             done = self.state["fields"]
             field = min(self.fields, key=lambda f: done.get(f, {}).get("t", 0))
             wait = self.EVERY_S
@@ -339,6 +352,139 @@ class Wspr(Psk):
             return json.load(response)["data"]
 
 
+class LivePsk(threading.Thread):
+    """Regional MQTT push through this connection's proxy; never changes Clash's selectors."""
+
+    STATE = os.path.join(MODEL, "psk_live.json")
+
+    def __init__(self, m):
+        super().__init__(daemon=True)
+        self.m, self.lock, self.reports = m, threading.Lock(), {}
+        self.connected, self.received = False, 0
+        self.last_received = -math.inf
+        self.last_psk_received = self.last_wspr_received = -math.inf
+        for path in (Psk.STATE, self.STATE):
+            try:
+                with open(path) as f:
+                    state = json.load(f)
+                for field in state.get("fields", {}).values():
+                    if time.time() - field["t"] < 1800:
+                        for r in field["reports"]:
+                            self.reports[self.key(r)] = dict(r, _seen=r.get("_seen", field["t"]))
+            except (OSError, ValueError, KeyError, TypeError):
+                pass
+
+    @staticmethod
+    def key(r):
+        return r["senderCallsign"], r["receiverCallsign"], band(int(r["frequency"]) / 1000)[0], r["mode"]
+
+    def take(self, payload):
+        try:
+            v = json.loads(payload)
+            r = dict(senderCallsign=v["sc"], receiverCallsign=v["rc"], senderLocator=v["sl"],
+                     receiverLocator=v["rl"], frequency=int(v["f"]), mode=v["md"], _seen=time.time())
+            if not r["senderCallsign"] or not r["receiverCallsign"] or r["frequency"] <= 0:
+                return
+            ends = [locator(r[k]) for k in ("senderLocator", "receiverLocator")]
+            if not any(ll and self.m.inside(*self.m.xy(*ll)) for ll in ends):
+                return
+            with self.lock:
+                self.reports[self.key(r)] = r
+                self.received += 1
+                self.last_received = time.time()
+                if r['mode'] == 'WSPR':
+                    self.last_wspr_received = self.last_received
+                else:
+                    self.last_psk_received = self.last_received
+        except (ValueError, KeyError, TypeError, AttributeError):
+            return
+
+    def run(self):
+        import paho.mqtt.client as mqtt
+        import socks
+        client = mqtt.Client(mqtt.CallbackAPIVersion.VERSION2, client_id=f"influ-{time.time_ns()}")
+        proxy = urllib.parse.urlsplit(os.getenv("HAMDATA_PROXY", ""))
+        if proxy.hostname:
+            client.proxy_set(proxy_type=socks.HTTP, proxy_addr=proxy.hostname, proxy_port=proxy.port)
+        client.tls_set()
+        client.reconnect_delay_set(10, 180)
+
+        def connected(c, userdata, flags, reason, properties):
+            self.connected = not reason.is_failure
+            if self.connected:
+                topics = []
+                for field in self.m.fields():
+                    topics += [(f"pskr/filter/v2_field/+/+/{field}/+", 0),
+                               (f"pskr/filter/v2_field/+/+/+/{field}", 0)]
+                for grid in self.m.squares():
+                    for prefix in ('pskr/filter/v2', 'wspr/filter'):
+                        topics += [(f'{prefix}/+/+/+/+/{grid}/+/#', 0),
+                                   (f'{prefix}/+/+/+/+/+/{grid}/#', 0)]
+                c.subscribe(topics)
+            log.info("PSK MQTT: %s", reason)
+
+        def disconnected(c, userdata, flags, reason, properties):
+            self.connected = False
+            log.warning("PSK MQTT disconnected: %s", reason)
+
+        client.on_connect, client.on_disconnect = connected, disconnected
+        client.on_message = lambda c, u, msg: self.take(msg.payload)
+        client.connect_async("mqtt.pskreporter.info", 1884, 60)
+        client.loop_forever(retry_first_connection=True)
+
+    def current(self):
+        now = time.time()
+        with self.lock:
+            self.reports = {k: r for k, r in self.reports.items() if now - r["_seen"] < 1800}
+            rows = list(self.reports.values())
+            with open(self.STATE + ".tmp", "w") as f:
+                json.dump(dict(fields=dict(live=dict(t=now, reports=rows))), f)
+            os.replace(self.STATE + ".tmp", self.STATE)
+        return rows
+
+
+def digital_graph(m, reports):
+    """Keep every station and path; show local paths plus two distant direction bundles per station."""
+    stations, bands, paths = {}, set(), {}
+    for r in reports:
+        try:
+            name, colour = band(int(r["frequency"]) / 1000)
+            ll = [locator(r[k]) for k in ("senderLocator", "receiverLocator")]
+            ends = [m.xy(*p) if p else None for p in ll]
+            local = [i for i, p in enumerate(ends) if p and m.inside(*p)]
+            if not local:
+                continue
+            calls = [r["senderCallsign"], r["receiverCallsign"]]
+            bands.add((name, colour))
+            for i in local:
+                stations.setdefault(calls[i], ends[i] + (colour, i == 0))
+            if all(ends):
+                key = tuple(sorted(calls)) + (name,)
+                paths[key] = dict(ends=ends, local=local, calls=calls, band=name, colour=colour)
+        except (ValueError, KeyError, TypeError, AttributeError):
+            continue
+    inside, bundles, degrees = [], {}, {k: set() for k in stations}
+    for p in paths.values():
+        for i in p["local"]:
+            degrees[p["calls"][i]].add(p["calls"][1 - i])
+        if len(p["local"]) == 2:
+            inside.append(p)
+            continue
+        i = p["local"][0]
+        (x, y), (xx, yy) = p["ends"][i], p["ends"][1 - i]
+        sector = int((math.degrees(math.atan2(xx - x, y - yy)) % 360) // 30)
+        key = p["calls"][i], p["band"], sector
+        b = bundles.setdefault(key, dict(path=p, weight=0))
+        b["weight"] += 1
+    chosen = list(inside)
+    for call in stations:
+        options = [b for k, b in bundles.items() if k[0] == call]
+        options.sort(key=lambda b: (b["path"]["band"] not in ("2", "70cm"), -b["weight"],
+                                    b["path"]["band"], b["path"]["calls"]))
+        chosen += [b["path"] for b in options[:2]]
+    return stations, bands, chosen, {k: len(v) for k, v in degrees.items()}, len(paths)
+
+
 def ft8_week():
     """(CQs sent, completed QSOs as (call, grid), week start) since Monday 00:00 local time."""
     lt = time.localtime()
@@ -383,33 +529,16 @@ def draw_activity(m, aprs, reports, qsos):
                 d.text((lx, ly), text, font=F_CALL, fill=colour, stroke_width=1, stroke_fill=BLACK)
                 return
 
-    # FT8 / FT4: a line for every report touching the map, each station on the map once
-    stations, drawn, pairs = {}, set(), set()               # drawn: bands with a station shown
-    for r in reports:
-        try:
-            name, colour = band(int(r["frequency"]) / 1000)
-        except ValueError:
-            continue
-        ends = {}
-        for who in ("sender", "receiver"):
-            ll = locator(r[who + "Locator"])
-            if ll:
-                ends[who] = m.xy(*ll)
-        on_map = [who for who, (x, y) in ends.items() if m.inside(x, y)]
-        if not on_map:
-            continue
-        drawn.add((name, colour))
-        for who in on_map:
-            stations.setdefault(r[who + "Callsign"], ends[who] + (colour, who == "sender"))
-        pair = (r["senderCallsign"], r["receiverCallsign"], name)
-        if len(ends) == 2 and pair not in pairs:
-            pairs.add(pair)
-            d.line([ends["sender"], ends["receiver"]], fill=colour + (170,), width=1)
+    stations, drawn, paths, degrees, total = digital_graph(m, reports)
+    for p in paths:
+        d.line(p["ends"], fill=p["colour"] + ((155 if len(p["local"]) == 2 else 48),), width=1)
 
     # APRS RF hops between stations whose positions we know
     for a, b in links:
         if a in positions and b in positions:
-            d.line([m.xy(*positions[a][:2]), m.xy(*positions[b][:2])], fill=APRS_RF + (200,), width=2)
+            ends = [m.xy(*positions[a][:2]), m.xy(*positions[b][:2])]
+            alpha = 175 if all(m.inside(*p) for p in ends) else 48
+            d.line(ends, fill=APRS_RF + (alpha,), width=1)
 
     # our own QSOs, from us
     for call, grid in qsos:
@@ -420,7 +549,8 @@ def draw_activity(m, aprs, reports, qsos):
     # markers and labels on top of every line
     for call, (x, y, colour, sent) in sorted(stations.items(), key=lambda kv: not kv[1][3]):
         d.polygon([(x, y - 5), (x + 5, y), (x, y + 5), (x - 5, y)], fill=colour, outline=WHITE)
-        label(x, y, call, WHITE if sent else DIM)
+        text = call + (f" +{degrees[call]}" if degrees.get(call, 0) > 2 else "")
+        label(x, y, text, WHITE if sent else DIM)
     for call, (lat, lon, rf, t) in sorted(heard.items(), key=lambda kv: kv[1][2]):
         x, y = m.xy(lat, lon)
         if not m.inside(x, y):
@@ -438,7 +568,8 @@ def draw_activity(m, aprs, reports, qsos):
     # legend, bottom right, like HamClock's map labels
     order = {name: i for i, (_, name, _) in enumerate(BANDS)}
     local_aprs = sum(m.inside(*m.xy(*v[:2])) for v in heard.values())
-    parts = [(APRS_RF, f"APRS {local_aprs}"), (WHITE, f"DIGI {len(stations)}")]
+    parts = [(APRS_RF, f"APRS {local_aprs}"), (WHITE, f"DIGI {len(stations)}"),
+             (DIM, f"PATH {len(paths)}/{total}")]
     parts += [(colour, name if name.endswith("cm") else name + "m")
               for name, colour in sorted(drawn, key=lambda b: order.get(b[0], 99))]
     widths = [d.textlength(text, font=F_SMALL) + 18 for _, text in parts]
@@ -476,15 +607,31 @@ def save(img, name):
 def main():
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(message)s")
     m = Map()
-    aprs, psk, wspr = Aprs(m.lat0, m.lon0), Psk(m.fields()), Wspr(m)
+    from map_panel import night_layer
+    aprs, psk, wspr = Aprs(m.lat0, m.lon0), LivePsk(m), Wspr(m)
+    backup = Psk(m.fields())
+    backup.live = psk
+    wspr.live = psk
     aprs.start()
     psk.start()
     wspr.start()
+    backup.start()
+    solar_minute = None
     while True:
         cq, qsos, monday = ft8_week()
-        save(draw_activity(m, aprs.recent(), psk.current() + wspr.current(), qsos), "activity.png")
+        heard = aprs.recent()
+        reports = backup.current() + wspr.current() + psk.current()
+        save(draw_activity(m, heard, reports, qsos), "activity.png")
         save(draw_tally(cq, len(qsos), monday), "ft8week.png")
-        time.sleep(30)
+        if solar_minute != int(time.time() // 60):
+            save(night_layer(m), "night.png")
+            solar_minute = int(time.time() // 60)
+        path = os.path.join(MODEL, "activity.json")
+        with open(path + ".tmp", "w") as f:
+            json.dump(dict(t=time.time(), reports=reports, aprs=heard[0],
+                           mqtt_connected=psk.connected, mqtt_received=psk.received), f)
+        os.replace(path + ".tmp", path)
+        time.sleep(5)
 
 
 if __name__ == "__main__":
