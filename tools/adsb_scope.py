@@ -17,18 +17,19 @@ Vector    1-minute track projection; dotted trail of the last 5 minutes
 usage: adsb_scope.py [--pane 2] [--range-mi 30] [--every 5] [--once out.png]
 """
 import argparse
-import io
 import json
 import math
 import os
 import socket
+import struct
 import time
 import urllib.request
 from collections import defaultdict, deque
 
 from PIL import Image, ImageDraw, ImageFont
 
-W, H = 318, 294
+W, H = 318, 294                # drawing area inside the border
+BOX_W, BOX_H = 320, 296        # HamClock pane box at 1600x960 (160x148 app px, SCALESZ 2)
 BLACK = (0, 0, 0)
 GRID = (41, 40, 98)            # HamClock Map_grid colour
 BORDER = (139, 141, 139)       # HamClock pane border grey
@@ -281,10 +282,36 @@ class Scope:
             tw = d.textlength(msg, font=F_LABEL)
             d.rectangle([self.cx - tw / 2 - 2, 44, self.cx + tw / 2 + 2, 63], fill=RED)
             d.text((self.cx - tw / 2, 45), msg, font=F_LABEL, fill=WHITE)
-        # the image's last column/row land on HamClock's own pane border: paint them as border
-        d.line([W - 1, 0, W - 1, H - 1], fill=BORDER)
-        d.line([0, H - 1, W - 1, H - 1], fill=BORDER)
         return img
+
+
+def framed(content):
+    """Place the 318x294 scope into HamClock's full 320x296 pane box with the pane border
+    drawn exactly like HamClock's own panes: grey at columns 0 and 318 and rows 0 and 294,
+    black gap at column 319 and row 295 (measured from the X-Ray and DE_Wx panes)."""
+    img = Image.new("RGB", (BOX_W, BOX_H), BLACK)
+    img.paste(content, (1, 1))
+    d = ImageDraw.Draw(img)
+    d.line([0, 0, BOX_W - 2, 0], fill=BORDER)
+    d.line([0, BOX_H - 2, BOX_W - 2, BOX_H - 2], fill=BORDER)
+    d.line([0, 0, 0, BOX_H - 2], fill=BORDER)
+    d.line([BOX_W - 2, 0, BOX_W - 2, BOX_H - 2], fill=BORDER)
+    return img
+
+
+def bmp565(img):
+    """Top-down 16-bit RGB565 BMP (BI_BITFIELDS): exactly the pane's raw size, so HamClock
+    takes its perfect-fit path and copies the pixels without any refit."""
+    import numpy as np
+    a = np.asarray(img.convert("RGB"), dtype=np.uint16)
+    pix = ((a[..., 0] >> 3) << 11) | ((a[..., 1] >> 2) << 5) | (a[..., 2] >> 3)
+    w, h = img.size
+    body = pix.astype("<u2").tobytes()                 # 2*w bytes per row; w even -> no padding
+    off = 14 + 40 + 12
+    hdr = b"BM" + struct.pack("<IHHI", off + len(body), 0, 0, off)
+    dib = struct.pack("<IiiHHIIiiII", 40, w, -h, 1, 16, 3, len(body), 2835, 2835, 0, 0)
+    masks = struct.pack("<III", 0xF800, 0x07E0, 0x001F)
+    return hdr + dib + masks + body
 
 
 def sdr_away():
@@ -335,9 +362,8 @@ class PaneWatch:
 
 
 def push(img, pane, host):
-    b = io.BytesIO()
-    img.save(b, "BMP")
-    req = urllib.request.Request(f"http://{host}/set_bmp?pane={pane}&fit=crop", data=b.getvalue(),
+    data = bmp565(framed(img))
+    req = urllib.request.Request(f"http://{host}/set_bmp?pane={pane}&fit=crop", data=data,
                                  method="POST", headers={"Content-Type": "application/octet-stream"})
     return urllib.request.urlopen(req, timeout=10).read().decode().strip()
 

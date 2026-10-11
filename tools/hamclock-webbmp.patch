@@ -1,0 +1,84 @@
+--- HamClock.h.orig-influ	2026-05-21 22:29:50.607098679 +0800
++++ HamClock.h	2026-10-11 21:19:08.640148234 +0800
+@@ -2488,6 +2488,7 @@
+ 
+ extern const SBox plot_b[PANE_N];          // box for each pane
+ extern PlotChoice plot_ch[PANE_N];         // current choice in each pane, or PLOT_CH_NONE for PANE_0
++extern bool web_bmp_pane[PANE_N];          // influ: pane shows a set_bmp picture, hold its updates
+ extern const char *plot_names[PLOT_CH_N];  // must be in same order as PlotChoice
+ extern uint32_t plot_rothold;              // bitmask of PlotChoice in rotset but temporarily holding
+ extern uint32_t plot_rotset[PANE_N];       // bitmask of each pane's PlotChoice rotation choices
+--- wifi.cpp.orig-influ	2025-06-01 06:53:52.000000000 +0800
++++ wifi.cpp	2026-10-11 21:19:08.644148258 +0800
+@@ -98,6 +98,7 @@
+  */
+ static time_t next_rotation[PANE_N];            // next pane rotation
+ time_t next_update[PANE_N];                     // next function call
++bool web_bmp_pane[PANE_N];                      // influ: pane owned by a set_bmp picture
+ static time_t next_map;                         // next map check
+ static time_t map_time;                         // nowWO() when map was loaded
+ static bool fresh_redraw[PLOT_CH_N];            // whether full pane redraw is required
+@@ -989,6 +990,9 @@
+     if (pp_now != PANE_NONE && pp_now != pp)
+         return (false);
+ 
++    // influ: an explicit new choice releases a set_bmp picture
++    web_bmp_pane[pp] = false;
++
+     // display box
+     const SBox &box = plot_b[pp];
+ 
+@@ -2080,6 +2084,11 @@
+         const SBox &box = plot_b[pp];
+         PlotChoice pc = plot_ch[pp];
+ 
++        // influ: a picture posted with set_bmp owns this pane until set_bmp&off or a new
++        // choice, so neither scheduled updates nor rotation may paint over it
++        if (web_bmp_pane[pp])
++            continue;
++
+         // rotate if this pane is rotating and it's time
+         if (t0 >= next_rotation[pp] && (isPaneRotating(pp) || isSpecialPaneRotating(pp))) {
+ 
+--- webserver.cpp.orig-influ	2026-05-21 22:29:50.607098679 +0800
++++ webserver.cpp	2026-10-11 21:19:08.644148258 +0800
+@@ -3153,6 +3153,7 @@
+         if (wa.found[LBMP_OFF]) {
+ 
+             // "off" means restore pane content
++            web_bmp_pane[pane] = false;
+             scheduleNewPlot(plot_ch[pane]);
+ 
+         } else {
+@@ -3164,6 +3165,7 @@
+                 quietStrncpy (line, ynot.get(), line_len);
+                 return (false);
+             }
++            web_bmp_pane[pane] = true;          // influ: hold the pane's own updates
+         }
+     }
+ 
+--- plot.cpp.orig-influ	2025-11-24 00:57:21.000000000 +0800
++++ plot.cpp	2026-10-11 21:19:08.644148258 +0800
+@@ -718,8 +718,8 @@
+  */
+ bool installBMPBox (GenReader &gr, const SBox &box, ImageRefit fit, Message &ynot)
+ {
+-    // prep box with black
+-    fillSBox (box, RA8875_BLACK);
++    // influ: no black prefill -- readBMPImage always returns pixels for the whole box, and
++    // filling first made every redraw flash black (border included) for live viewers
+ 
+     // draw to full raw resolution
+     SBox raw_b;
+--- clocks.cpp.orig-influ	2025-11-24 00:56:31.000000000 +0800
++++ clocks.cpp	2026-10-11 21:19:08.644148258 +0800
+@@ -1046,7 +1046,7 @@
+         // update BC time marker if new hour and up
+         if (prev_hr != tm_wo.Hour) {
+             PlotPane bc_pane = findPaneChoiceNow(PLOT_CH_BC);
+-            if (bc_pane != PANE_NONE && bc_matrix.ok)
++            if (bc_pane != PANE_NONE && bc_matrix.ok && !web_bmp_pane[bc_pane])  // influ
+                 plotBandConditions (plot_b[bc_pane], 0, NULL, NULL);
+         }
+ 
