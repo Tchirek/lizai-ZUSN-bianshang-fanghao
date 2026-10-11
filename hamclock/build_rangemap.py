@@ -19,8 +19,10 @@ import io
 import json
 import math
 import os
+import threading
 import urllib.parse
 import urllib.request
+from concurrent.futures import ThreadPoolExecutor
 
 import numpy as np
 from PIL import Image, ImageDraw, ImageFont
@@ -91,29 +93,37 @@ def merc_px(lat, lon, z=DEM_ZOOM):
 class DEM:
     """Terrarium elevation mosaic for a lat/lon box, bilinear lookup in metres."""
 
-    def __init__(self, south, west, north, east):
-        x0, y0 = merc_px(north, west)
-        x1, y1 = merc_px(south, east)
+    def __init__(self, south, west, north, east, zoom=DEM_ZOOM):
+        self.zoom = zoom
+        x0, y0 = merc_px(north, west, zoom)
+        x1, y1 = merc_px(south, east, zoom)
         self.tx0, self.ty0 = int(x0 // 256), int(y0 // 256)
         tx1, ty1 = int(x1 // 256), int(y1 // 256)
-        rows = []
-        for ty in range(self.ty0, ty1 + 1):
-            rows.append(np.hstack([self.tile(tx, ty) for tx in range(self.tx0, tx1 + 1)]))
+        keys = [(tx, ty) for ty in range(self.ty0, ty1 + 1) for tx in range(self.tx0, tx1 + 1)]
+        with ThreadPoolExecutor(max_workers=6) as pool:
+            tiles = list(pool.map(lambda p: self.tile(*p, zoom), keys))
+        width = tx1 - self.tx0 + 1
+        rows = [np.hstack(tiles[i:i + width]) for i in range(0, len(tiles), width)]
         self.grid = np.vstack(rows)
 
     @staticmethod
-    def tile(tx, ty):
-        path = os.path.join(MODEL, "dem", f"{DEM_ZOOM}_{tx}_{ty}.png")
+    def tile(tx, ty, zoom=DEM_ZOOM):
+        path = os.path.join(MODEL, "dem", f"{zoom}_{tx}_{ty}.png")
         if not os.path.exists(path):
             os.makedirs(os.path.dirname(path), exist_ok=True)
             data = urllib.request.urlopen(urllib.request.Request(
-                DEM_URL.format(z=DEM_ZOOM, x=tx, y=ty), headers=UA), timeout=60).read()
-            open(path, "wb").write(data)
+                DEM_URL.format(z=zoom, x=tx, y=ty), headers=UA), timeout=15).read()
+            Image.open(io.BytesIO(data)).verify()
+            # Several background views may need the same tile; publish a complete file atomically.
+            tmp = path + f".{os.getpid()}.{threading.get_ident()}.tmp"
+            with open(tmp, "wb") as f:
+                f.write(data)
+            os.replace(tmp, path)
         a = np.asarray(Image.open(path).convert("RGB"), dtype=np.float32)
         return a[..., 0] * 256 + a[..., 1] + a[..., 2] / 256 - 32768
 
     def __call__(self, lat, lon):
-        x, y = merc_px(lat, lon)
+        x, y = merc_px(lat, lon, self.zoom)
         return map_coordinates(self.grid, [y - self.ty0 * 256, x - self.tx0 * 256], order=1,
                                mode="nearest")
 
@@ -237,6 +247,9 @@ def main():
     rgb[seen] = rgb[seen] * 0.45 + np.array(SEEN) * 0.55
     rgb[seen & ~inner] = SEEN
     img = Image.fromarray(np.clip(rgb, 0, 255).astype(np.uint8))
+    os.makedirs(MODEL, exist_ok=True)
+    img.save(os.path.join(MODEL, "rangeground.png"))
+    np.savez_compressed(os.path.join(MODEL, "range_visibility.npz"), az=az, distance=d, visible=vis)
     draw = ImageDraw.Draw(img)
     draw.fontmode = "1"
 
@@ -246,7 +259,7 @@ def main():
         return W / 2 + r * np.sin(np.radians(b)), H / 2 - r * np.cos(np.radians(b))
 
     # Maidenhead squares (2 x 1 degrees), as HamClock's grid
-    f_small, f_label, f_title = font(13), font(15), font(17)
+    f_small, f_label = font(13), font(15)
     for glon in range(int(box[1] // 2 * 2), int(box[3]) + 2, 2):
         x, y = xy(np.linspace(box[0], box[2], 60), np.full(60, glon))
         draw.line(list(zip(x, y)), fill=GRID)
@@ -279,7 +292,7 @@ def main():
         rank = {"yes": 0, "2": 0, "4": 1, "5": 2, "6": 3}.get(p.get("capital", ""), 4)
         return rank, -p.get("pop", 0), polar(lat0, lon0, p["lat"], p["lon"])[0]
 
-    taken = [(0, 0, 230, 26), (0, H - 24, 520, H)]           # title and note boxes
+    taken = [(0, H - 24, 520, H)]
     for p in sorted(osm["places"], key=importance):
         x, y = (v[0] for v in xy([p["lat"]], [p["lon"]]))
         dist = polar(lat0, lon0, p["lat"], p["lon"])[0]
@@ -311,11 +324,7 @@ def main():
     draw.ellipse([W / 2 - 9, H / 2 - 9, W / 2 + 9, H / 2 + 9], outline=DE_GREEN, width=4)
     draw.ellipse([W / 2 - 3, H / 2 - 3, W / 2 + 3, H / 2 + 3], fill=BLACK)
 
-    # title box like HamClock's map style label, and the assumptions
-    title = "UV-K5 line of sight"
-    tw = draw.textlength(title, font=f_title)
-    draw.rectangle([2, 2, tw + 12, 24], fill=BLACK, outline=WHITE)
-    draw.text((7, 4), title, font=f_title, fill=WHITE)
+    # Keep only the model assumptions, without a map title.
     note = f"our ant {a.our_agl:.0f} m AGL ({h_obs:.0f} m ASL)  their ant {a.their_agl:.0f} m  k=4/3"
     draw.rectangle([2, H - 22, draw.textlength(note, font=f_small) + 10, H - 2], fill=BLACK)
     draw.text((6, H - 20), note, font=f_small, fill=RING)
