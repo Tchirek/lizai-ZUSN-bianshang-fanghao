@@ -10,6 +10,9 @@ campuses  every higher education campus under the map from OpenStreetMap, live (
 airports  every aerodrome under the map from OpenStreetMap, live, by its code (ICAO, else
         IATA), and every runway (centre line and width, or outline), the same way, into
         ~/influ/model/airports.json.
+admin   province (admin level 4), prefecture (5) and county (6) boundaries under the map from
+        OpenStreetMap, live, each boundary way once with the highest level it bounds, the same
+        way, into ~/influ/model/admin.json.
 render  the ground as build_rangemap.py draws it (relief, line-of-sight coverage) as a tile
         pyramid in the map's own projection: level L is the W x H base map at L times its
         scale, cut into 256 px tiles, ~/influ/model/tiles/L/col_row.png. The map window only
@@ -18,7 +21,7 @@ render  the ground as build_rangemap.py draws it (relief, line-of-sight coverage
 Both steps skip what is already there; rerun render (with --force) after build_rangemap.py,
 which redoes the viewshed. Tiles past the map's edge repeat the edge.
 
-usage: build_tiles.py [dem] [campuses] [airports] [render] [--workers 3] [--force]
+usage: build_tiles.py [dem] [campuses] [airports] [admin] [render] [--workers 3] [--force]
 """
 import argparse
 import io
@@ -135,6 +138,13 @@ AIRPORT_QUERY = """[out:json][timeout:180];
 (nwr["aeroway"="aerodrome"]({box});
  way["aeroway"="runway"]({box}););
 out geom;"""
+ADMIN_CELLS = os.path.join(a.MODEL, "admin_cells")
+# the areas' relations (members only), then their boundary ways in the cell with geometry
+ADMIN_QUERY = """[out:json][timeout:180];
+rel["boundary"="administrative"]["admin_level"~"^(4|5|6)$"]({box})->.r;
+.r out body;
+way(r.r)({box});
+out geom;"""
 RELATION_CELLS = os.path.join(a.MODEL, "campus_relations")
 RELATION_QUERY = """[out:json][timeout:180];
 (rel["amenity"~"^(university|college)$"]({box});
@@ -215,8 +225,34 @@ def airports(rounds=30):
     return fetch_cells(AIRPORT_CELLS, AIRPORT_QUERY, write_airports, "airports", rounds)
 
 
+def admin(rounds=30):
+    return fetch_cells(ADMIN_CELLS, ADMIN_QUERY, write_admin, "admin boundaries", rounds)
+
+
+def write_admin():
+    """admin.json: every boundary way of a province, prefecture or county under the map once,
+    as a lat/lon line with the lowest admin level among the areas it bounds (a province's
+    border is also its prefectures' and counties')."""
+    found = kept(ADMIN_CELLS)
+    level = {}
+    for e in found.values():
+        if e["type"] == "relation":
+            rank = re.match(r"\d+", e.get("tags", {}).get("admin_level", ""))
+            for m in e.get("members", []) if rank else ():
+                if m["type"] == "way":
+                    level[m["ref"]] = min(level.get(m["ref"], 9), int(rank.group()))
+    lines = [dict(level=level[e["id"]], p=[[g["lat"], g["lon"]] for g in e["geometry"] if g])
+             for e in found.values() if e["type"] == "way" and e["id"] in level and len(e.get("geometry", [])) > 1]
+    with open(os.path.join(a.MODEL, "admin.json.tmp"), "w") as f:
+        json.dump(dict(lines=lines), f)
+    os.replace(os.path.join(a.MODEL, "admin.json.tmp"), os.path.join(a.MODEL, "admin.json"))
+    print(f"admin: {sum(x['level'] == 4 for x in lines)} province, {sum(x['level'] == 5 for x in lines)} prefecture, "
+          f"{sum(x['level'] == 6 for x in lines)} county boundary ways, {sum(len(x['p']) for x in lines)} points", flush=True)
+
+
 def kept(*folders):
-    """OSM elements of the kept cells by (type, id); a cell in a later folder wins."""
+    """OSM elements of the kept cells by (type, id); a cell in a later folder (a newer query
+    for the same thing) replaces that cell in an earlier one."""
     files = {}
     for folder in folders:
         if os.path.isdir(folder):
@@ -319,7 +355,9 @@ def write_campuses():
     """campuses.json from the kept cells (each from the latest query that has it): outlines
     (multipolygon ways joined into rings) with their middle for the name, else a point."""
     out = []
-    for e in kept(OLD_CELLS, CELLS, RELATION_CELLS).values():
+    found = kept(OLD_CELLS, CELLS)
+    found.update(kept(RELATION_CELLS))                   # relations again, now with their members
+    for e in found.values():
         tags = e.get("tags", {})
         name = tags.get("name:zh") or tags.get("name") or tags.get("name:en") or ""
         if any(word in name for word in NOT_HIGHER):
@@ -440,7 +478,7 @@ def render(workers, force):
 
 def main():
     ap = argparse.ArgumentParser()
-    ap.add_argument("steps", nargs="*", default=["dem", "campuses", "airports", "render"])
+    ap.add_argument("steps", nargs="*", default=["dem", "campuses", "airports", "admin", "render"])
     ap.add_argument("--workers", type=int, default=3)
     ap.add_argument("--force", action="store_true")
     args = ap.parse_args()
@@ -450,6 +488,8 @@ def main():
         print("some campus cells are still missing; run campuses again later", flush=True)
     if "airports" in args.steps and not airports():
         print("some airport cells are still missing; run airports again later", flush=True)
+    if "admin" in args.steps and not admin():
+        print("some admin boundary cells are still missing; run admin again later", flush=True)
     if "render" in args.steps:
         render(args.workers, args.force)
 
