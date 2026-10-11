@@ -59,8 +59,33 @@
      }
  
 --- plot.cpp.orig-influ	2025-11-24 00:57:21.000000000 +0800
-+++ plot.cpp	2026-10-11 21:19:08.644148258 +0800
-@@ -718,8 +718,8 @@
++++ plot.cpp	2026-10-11 21:33:49.915471266 +0800
+@@ -261,7 +261,7 @@
+     // prep
+     prepPlotBox (box);
+ 
+-    const uint8_t attr_w = FONTW+1;     // allow for attribution down right side
++    const uint8_t attr_w = 0;           // influ: no attribution column, use the full width
+     uint16_t dy = box.h/3;
+     uint16_t ddy = box.h/5;
+     float f;
+@@ -375,14 +375,7 @@
+     tft.setCursor (box.x+(box.w-attr_w-w)/2, box.y+dy);
+     tft.print(buf);
+ 
+-    // attribution very small down the right side
+-    selectFontStyle (LIGHT_FONT, FAST_FONT);
+-    uint8_t ylen = strlen(wi.attribution);
+-    uint16_t ly0 = box.y + (box.h - ylen*FONTH)/2;
+-    for (uint8_t i = 0; i < ylen; i++) {
+-        tft.setCursor (box.x+box.w-attr_w, ly0+i*FONTH);
+-        tft.print (wi.attribution[i]);
+-    }
++    // influ: no attribution down the right side
+ 
+     // printFreeHeap ("plotWX");
+ }
+@@ -718,8 +711,8 @@
   */
  bool installBMPBox (GenReader &gr, const SBox &box, ImageRefit fit, Message &ynot)
  {
@@ -82,3 +107,39 @@
                  plotBandConditions (plot_b[bc_pane], 0, NULL, NULL);
          }
  
+--- dxpeds.cpp.orig-influ	2025-07-10 02:56:53.000000000 +0800
++++ dxpeds.cpp	2026-10-11 21:33:49.919471274 +0800
+@@ -186,16 +186,7 @@
+     tft.setCursor (box.x + (box.w-tw)/2, box.y + PANETITLE_H);
+     tft.print (title);
+ 
+-    // credit
+-    char credit[100];
+-    int c_l = 0;
+-    for (int i = 0; i < n_credits; i++)
+-        c_l += snprintf (credit+c_l, sizeof(credit)-c_l, "%s ", credits[i].name);
+-    selectFontStyle (LIGHT_FONT, FAST_FONT);
+-    tft.setTextColor(DXPEDS_COLOR);
+-    uint16_t c_w = getTextWidth (credit);
+-    tft.setCursor (box.x + (box.w-c_w)/2, box.y + CREDITS_Y0);
+-    tft.print (credit);
++    // influ: no credit row
+ 
+     // show each dxpedition starting with top_vis, up to max visible.
+     // N.B. scroller doesn't know show_date entries occupy two rows.
+--- contests.cpp.orig-influ	2025-04-29 14:00:16.000000000 +0800
++++ contests.cpp	2026-10-11 21:33:49.919471274 +0800
+@@ -88,12 +88,7 @@
+     tft.setCursor (box.x + (box.w-tw)/2, box.y + PANETITLE_H);
+     tft.print (title);
+ 
+-    // credit
+-    selectFontStyle (LIGHT_FONT, FAST_FONT);
+-    tft.setTextColor(CONTEST_COLOR);
+-    uint16_t cw = getTextWidth(credit);
+-    tft.setCursor (box.x + (box.w-cw)/2, box.y + CREDITS_Y0);
+-    tft.print (credit);
++    // influ: no credit row
+ 
+     // show each contest starting with top_vis, up to max visible.
+     // N.B. scroller doesn't know show_data entries occupy two rows.

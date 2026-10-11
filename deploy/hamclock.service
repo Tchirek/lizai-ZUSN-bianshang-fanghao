@@ -1,0 +1,13 @@
+[Unit]
+Description=HamClock engine (REST 8070, live 8071 r/w, 8072 r/o)
+After=network-online.target
+
+[Service]
+WorkingDirectory=%h
+ExecStart=%h/influ/hamclock/bin/hamclock-web -d %h/.hamclock -b hamclock.com:80 -k -e 8070 -w 8071 -r 8072 -x 2 -t 35
+Restart=always
+RestartSec=10
+Nice=5
+
+[Install]
+WantedBy=default.target

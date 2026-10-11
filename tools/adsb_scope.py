@@ -146,7 +146,6 @@ class Scope:
             if dist < self.range_km * 0.95 and ap["name"] not in done:
                 done.add(ap["name"])
                 d.text((x + 6, y + 2), ap["name"], font=F_SMALL, fill=MAP_STYLE["runway"][0])
-        d.text((W - 4 - d.textlength("OSM", font=F_SMALL), H - 32), "OSM", font=F_SMALL, fill=GRID)
 
     def xy(self, lat, lon):
         d, b = polar(self.lat0, self.lon0, lat, lon)

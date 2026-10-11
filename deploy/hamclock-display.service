@@ -1,0 +1,13 @@
+[Unit]
+Description=HamClock full screen on the built-in display
+PartOf=graphical-session.target
+After=graphical-session.target hamclock.service
+Wants=hamclock.service
+
+[Service]
+ExecStart=%h/influ/.venv/bin/python %h/influ/hamclock/hcdisplay.py
+Restart=always
+RestartSec=3
+
+[Install]
+WantedBy=graphical-session.target
