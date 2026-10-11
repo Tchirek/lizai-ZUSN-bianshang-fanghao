@@ -13,6 +13,9 @@ airports  every aerodrome under the map from OpenStreetMap, live, by its code (I
 admin   province (admin level 4), prefecture (5) and county (6) boundaries under the map from
         OpenStreetMap, live, each boundary way once with the highest level it bounds, the same
         way, into ~/influ/model/admin.json.
+military  every military area under the map from OpenStreetMap, live (landuse military, or a
+        military base, barracks, airfield, naval base, range or training area): outlines with
+        their name if mapped, else a point, the same way, into ~/influ/model/military.json.
 render  the ground as build_rangemap.py draws it (relief, line-of-sight coverage) as a tile
         pyramid in the map's own projection: level L is the W x H base map at L times its
         scale, cut into 256 px tiles, ~/influ/model/tiles/L/col_row.png. The map window only
@@ -21,7 +24,7 @@ render  the ground as build_rangemap.py draws it (relief, line-of-sight coverage
 Both steps skip what is already there; rerun render (with --force) after build_rangemap.py,
 which redoes the viewshed. Tiles past the map's edge repeat the edge.
 
-usage: build_tiles.py [dem] [campuses] [airports] [admin] [render] [--workers 3] [--force]
+usage: build_tiles.py [dem] [campuses] [airports] [admin] [military] [render] [--workers 3] [--force]
 """
 import argparse
 import io
@@ -138,6 +141,11 @@ AIRPORT_QUERY = """[out:json][timeout:180];
 (nwr["aeroway"="aerodrome"]({box});
  way["aeroway"="runway"]({box}););
 out geom;"""
+MILITARY_CELLS = os.path.join(a.MODEL, "military_cells")
+MILITARY_QUERY = """[out:json][timeout:180];
+(nwr["landuse"="military"]({box});
+ nwr["military"~"^(base|barracks|airfield|naval_base|range|training_area)$"]({box}););
+out geom;"""
 ADMIN_CELLS = os.path.join(a.MODEL, "admin_cells")
 # the areas' relations (members only), then their boundary ways in the cell with geometry
 ADMIN_QUERY = """[out:json][timeout:180];
@@ -223,6 +231,32 @@ def campuses(rounds=30):
 
 def airports(rounds=30):
     return fetch_cells(AIRPORT_CELLS, AIRPORT_QUERY, write_airports, "airports", rounds)
+
+
+def military(rounds=30):
+    return fetch_cells(MILITARY_CELLS, MILITARY_QUERY, write_military, "military", rounds)
+
+
+def write_military():
+    """military.json: each military area's outline (multipolygons joined into rings) and name
+    (English if given, else as mapped; often none) at its middle, else a point; areas mapped
+    inside a larger one dropped as parts of it."""
+    out = []
+    for e in kept(MILITARY_CELLS).values():
+        tags = e.get("tags", {})
+        name = tags.get("name:en") or tags.get("name") or ""
+        if e["type"] == "node":
+            out.append(dict(name=name, rings=[], point=[e["lat"], e["lon"]]))
+        elif found := outer_rings(e):
+            out.append(dict(name=name, rings=[[list(p) for p in r] for r in found],
+                            point=middle(max(found, key=lambda r: abs(area(r))))))
+    inner = nested(out)
+    out = [c for i, c in enumerate(out) if i not in inner]
+    with open(os.path.join(a.MODEL, "military.json.tmp"), "w") as f:
+        json.dump(out, f, ensure_ascii=False)
+    os.replace(os.path.join(a.MODEL, "military.json.tmp"), os.path.join(a.MODEL, "military.json"))
+    print(f"military: {sum(bool(c['rings']) for c in out)} outlined, {sum(not c['rings'] for c in out)} points, "
+          f"{sum(bool(c['name']) for c in out)} named", flush=True)
 
 
 def admin(rounds=30):
@@ -478,7 +512,7 @@ def render(workers, force):
 
 def main():
     ap = argparse.ArgumentParser()
-    ap.add_argument("steps", nargs="*", default=["dem", "campuses", "airports", "admin", "render"])
+    ap.add_argument("steps", nargs="*", default=["dem", "campuses", "airports", "admin", "military", "render"])
     ap.add_argument("--workers", type=int, default=3)
     ap.add_argument("--force", action="store_true")
     args = ap.parse_args()
@@ -490,6 +524,8 @@ def main():
         print("some airport cells are still missing; run airports again later", flush=True)
     if "admin" in args.steps and not admin():
         print("some admin boundary cells are still missing; run admin again later", flush=True)
+    if "military" in args.steps and not military():
+        print("some military cells are still missing; run military again later", flush=True)
     if "render" in args.steps:
         render(args.workers, args.force)
 
