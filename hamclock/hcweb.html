@@ -3,163 +3,22 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=1">
 <title>HamClock</title>
-<style>
-html,body{margin:0;background:#000;color:#ddd;height:100%;overflow:hidden}
-body{display:grid;place-items:center}
-canvas{display:block;width:min(100vw,calc(100dvh * 5 / 3));height:auto;max-height:100dvh;touch-action:none;outline:none}
-#status{position:fixed;left:50%;top:50%;width:24px;height:24px;margin:-13px;border:1px solid #ffffff10;border-top-color:#ffffff38;border-radius:50%;pointer-events:none;opacity:0;transition:opacity .3s;animation:spin 1.2s linear infinite}
-#status.on{opacity:1;transition-delay:.5s}
-#status span{position:absolute;width:1px;height:1px;overflow:hidden;clip-path:inset(50%)}
-@keyframes spin{to{transform:rotate(1turn)}}
-@media (prefers-reduced-motion:reduce){#status{animation-duration:4s}}
-</style>
-<canvas width="1280" height="768" tabindex="0" aria-label="HamClock 地图与电台状态"></canvas>
-<div id="status" class="on" role="status"><span>连接中</span></div>
-<script>
-const canvas=document.querySelector('canvas'), ctx=canvas.getContext('2d'), status=document.querySelector('#status');
-const mapKeys=new Set(['ArrowLeft','ArrowRight','ArrowUp','ArrowDown','+','=','-','PageUp','PageDown']);
-const namedKeys=new Set([...mapKeys,'Enter','Tab','Escape','Backspace','Space']);
-let session=null, revision=-1, active=true, creating=null, sending=false, events=[], gesture=null, lastHover=0, frameTask=null;
-const pointers=new Map(), keys=new Set();
-const sleep=ms=>new Promise(resolve=>setTimeout(resolve,ms));
-// Waiting shows only a faint ring (after a moment, so quick reconnects never flash); the words are for screen readers.
-function notice(text){status.classList.toggle('on',!!text);status.firstChild.textContent=text;}
-function at(e){const r=canvas.getBoundingClientRect();return {x:Math.max(0,Math.min(799.999,(e.clientX-r.left)*800/r.width)),y:Math.max(0,Math.min(479.999,(e.clientY-r.top)*480/r.height))};}
-function onMap(p){return p.x>=139&&p.x<799&&p.y>=149&&p.y<479;}
-async function create(){
- if(creating)return creating;
- creating=(async()=>{const r=await fetch('/session',{method:'POST',headers:{'Content-Type':'application/json'},body:'{}'});
-  if(!r.ok)throw Error('页面暂不可用，正在重试…');
-  const s=await r.json();session=s.session;revision=-1;events=[];keys.clear();pointers.clear();gesture=null;
- })();
- try{await creating;}finally{creating=null;}
-}
-async function frames(){
- while(active){
-  try{
-   if(!session)await create();
-   const r=await fetch('/frame.png?session='+encodeURIComponent(session)+'&after='+revision,{cache:'no-store'});
-   if(r.status===410){session=null;notice('重新连接');continue;}
-   if(r.status===200){
-    // A strip of changed rectangles over the frame we hold, or a whole frame.
-    const rects=r.headers.get('X-Frame-Rects'), image=await createImageBitmap(await r.blob());
-    if(rects===null)ctx.drawImage(image,0,0);
-    else if(Number(r.headers.get('X-Frame-Base'))===revision){
-     let sy=0;
-     for(const rect of rects.split(';')){const [x,y,w,h]=rect.split(',').map(Number);ctx.drawImage(image,0,sy,w,h,x,y,w,h);sy+=h;}
-    }else{image.close();revision=-1;continue;}
-    image.close();revision=Number(r.headers.get('X-Frame-Revision'));notice('');
-    if(!document.hidden)continue;            // ask for the next frame straight away
-   }
-   else if(r.status===204)notice('');
-   else notice('等待 HamClock 连接');
-  }catch(e){notice('连接中断，正在重试');await sleep(1000);}
-  await sleep(document.hidden?1000:40);
- }
-}
-function enqueue(event){
- if(!session)return;
- if(event.type==='hover'){const i=events.findIndex(e=>e.type==='hover');if(i>=0)events.splice(i,1);}
- events.push(event);flush();
-}
-async function flush(){
- if(sending)return;
- sending=true;
- try{
-  while(active&&session&&events.length){
-   const batch=events.splice(0,64), token=session;
-   const r=await fetch('/input',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({session:token,events:batch})});
-   if(r.status===410){if(session===token)session=null;events=[];break;}
-   if(!r.ok){events=[];break;}
-   await sleep(30);
-  }
- }catch(e){events=[];}
- finally{sending=false;}
-}
-function geometry(){const [a,b]=[...pointers.values()];return {x:(a.last.x+b.last.x)/2,y:(a.last.y+b.last.y)/2,d:Math.hypot(a.last.x-b.last.x,a.last.y-b.last.y)};}
-canvas.addEventListener('pointerdown',e=>{
- if(!session||![0,1,2].includes(e.button)||pointers.size>=2)return;
- canvas.focus({preventScroll:true});canvas.setPointerCapture(e.pointerId);
- const p=at(e);pointers.set(e.pointerId,{origin:p,last:p,button:e.button+1,moved:false});
- if(pointers.size===2){gesture=geometry();for(const p of pointers.values())p.moved=true;}
- e.preventDefault();
-});
-canvas.addEventListener('pointermove',e=>{
- const p=at(e), pointer=pointers.get(e.pointerId);
- if(!pointer){if(e.pointerType==='mouse'&&performance.now()-lastHover>100){lastHover=performance.now();enqueue({type:'hover',...p});}return;}
- const previous=pointer.last;pointer.last=p;
- if(pointers.size===2){
-  const next=geometry();
-  if(gesture&&gesture.d>1&&next.d>1){
-   enqueue({type:'pinch',x:gesture.x,y:gesture.y,ratio:Math.max(.25,Math.min(4,next.d/gesture.d))});
-   enqueue({type:'pan',x:gesture.x,y:gesture.y,dx:next.x-gesture.x,dy:next.y-gesture.y});
-  }
-  gesture=next;return;
- }
- if(pointer.moved||Math.max(Math.abs(p.x-pointer.origin.x),Math.abs(p.y-pointer.origin.y))>5){
-  pointer.moved=true;
-  if(onMap(pointer.origin))enqueue({type:'pan',...pointer.origin,dx:p.x-previous.x,dy:p.y-previous.y});
- }
-});
-function endPointer(e){
- const pointer=pointers.get(e.pointerId);if(!pointer)return;
- if(e.type==='pointerup'&&!pointer.moved)enqueue({type:'tap',...at(e),button:pointer.button,ctrl:e.ctrlKey});
- pointers.delete(e.pointerId);gesture=null;
-}
-canvas.addEventListener('pointerup',endPointer);canvas.addEventListener('pointercancel',endPointer);
-canvas.addEventListener('contextmenu',e=>e.preventDefault());
-canvas.addEventListener('wheel',e=>{
- const p=at(e);if(!onMap(p))return;
- e.preventDefault();const factor=e.deltaMode===1?16:e.deltaMode===2?480:1;
- if(e.shiftKey)enqueue({type:'pan',...p,dx:Math.max(-800,Math.min(800,-e.deltaX*factor)),dy:Math.max(-480,Math.min(480,-e.deltaY*factor))});
- else enqueue({type:'scroll',...p,notches:Math.max(-8,Math.min(8,-e.deltaY*factor/(e.ctrlKey?60:120)))});
-},{passive:false});
-function keyEvent(e){
- const key=e.key===' '?'Space':e.key;
- if(!namedKeys.has(key)&&!(key.length===1&&key.charCodeAt(0)>=33&&key.charCodeAt(0)<=126))return;
- e.preventDefault();
- if(e.type==='keydown')keys.add(key);else keys.delete(key);
- enqueue({type:'key',key,down:e.type==='keydown',ctrl:e.ctrlKey,shift:e.shiftKey});
-}
-canvas.addEventListener('keydown',keyEvent);canvas.addEventListener('keyup',keyEvent);
-// A gamepad on this device: stick or D-pad pans, shoulders zoom, A is Enter, B is Escape.
-const padHeld=new Set(), padPressed=new Set();
-let padTask=0, padRefresh=0;
-function padState(){
- const held=new Set(), pressed=new Set();
- for(const g of navigator.getGamepads()){
-  if(!g||!g.connected)continue;
-  const b=i=>!!(g.buttons[i]&&g.buttons[i].pressed), ax=i=>g.axes[i]||0;
-  if(ax(0)<-.4||b(14))held.add('ArrowLeft');
-  if(ax(0)>.4||b(15))held.add('ArrowRight');
-  if(ax(1)<-.4||b(12))held.add('ArrowUp');
-  if(ax(1)>.4||b(13))held.add('ArrowDown');
-  if(b(5)||b(7))held.add('PageUp');
-  if(b(4)||b(6))held.add('PageDown');
-  if(b(0))pressed.add('Enter');
-  if(b(1))pressed.add('Escape');
- }
- return {held,pressed};
-}
-function padPoll(){
- padTask=0;
- if(document.hidden)return;
- const {held,pressed}=padState(), now=performance.now(), refresh=now-padRefresh>1000;
- for(const key of held)if(!padHeld.has(key)||refresh)enqueue({type:'key',key,down:true});
- for(const key of padHeld)if(!held.has(key)&&!keys.has(key))enqueue({type:'key',key,down:false});
- for(const key of pressed)if(!padPressed.has(key))enqueue({type:'key',key,down:true});
- if(refresh)padRefresh=now;              // the station drops held keys after 3 s without input
- padHeld.clear();held.forEach(k=>padHeld.add(k));padPressed.clear();pressed.forEach(k=>padPressed.add(k));
- if([...navigator.getGamepads()].some(g=>g&&g.connected))padTask=requestAnimationFrame(padPoll);
-}
-function padStart(){if(!padTask&&navigator.getGamepads)padTask=requestAnimationFrame(padPoll);}
-window.addEventListener('gamepadconnected',padStart);
-function release(){keys.clear();padHeld.clear();pointers.clear();gesture=null;enqueue({type:'release'});}
-window.addEventListener('blur',release);
-document.addEventListener('visibilitychange',()=>{if(document.hidden)release();else padStart();});
-window.addEventListener('pagehide',()=>{active=false;if(session)navigator.sendBeacon('/close',new Blob([JSON.stringify({session})],{type:'application/json'}));});
-function startFrames(){if(!frameTask)frameTask=frames().finally(()=>{frameTask=null;if(active)startFrames();});}
-window.addEventListener('pageshow',e=>{if(e.persisted){session=null;active=true;startFrames();}});
-startFrames();padStart();
-</script>
+<link rel="stylesheet" href="/vendor/openlayers/ol.css?v=10.11.0">
+<link rel="stylesheet" href="/webmap.css">
+<div id="stage">
+  <canvas id="clock" width="1280" height="768" tabindex="0" aria-label="HamClock 电台状态"></canvas>
+  <div id="map" tabindex="0" aria-label="电台覆盖地图"></div>
+  <div id="map-ui">
+    <div id="sun"></div><div id="dem"></div><div id="legend"></div>
+  </div>
+  <div id="profile" hidden role="dialog" aria-label="地点可达性">
+    <button id="profile-close" aria-label="关闭">×</button>
+    <div class="title">VHF/UHF DE–DX</div><div id="position"></div>
+    <table id="reach-table"></table><div id="loss"></div>
+    <canvas id="terrain" width="300" height="45"></canvas>
+    <div id="nearby"></div><div id="conditions"></div>
+  </div>
+</div>
+<script src="/vendor/openlayers/ol.js?v=10.11.0"></script>
+<script src="/webmap.js"></script>
 </html>

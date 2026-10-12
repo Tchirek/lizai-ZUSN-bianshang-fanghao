@@ -25,6 +25,7 @@ import hcdisplay as display
 import hcweb as web
 import map_panel as panel
 import map_view as maps
+from webmap import MapData
 
 
 class Link:
@@ -49,11 +50,28 @@ def ground(base, origin, scale, size):
 class Fixture:
     """Actual Canvas/MapPanel, with synthetic ground and a shared clock frame."""
 
+    def __init__(self, clock=False):
+        self.clock = clock
+
     def __enter__(self):
         self.stack = ExitStack()
         folder = self.stack.enter_context(tempfile.TemporaryDirectory())
-        (Path(folder) / 'rangemap.json').write_text(json.dumps(dict(km_per_px=.05, our_agl_m=16)))
-        (Path(folder) / 'rangemap_osm.json').write_text('{"lines":[]}')
+        (Path(folder) / 'rangemap.json').write_text(json.dumps(dict(km_per_px=.05, our_agl_m=16,
+                 reach_km=20, far_lat=30.1, far_lon=105.1, bearing=45, far_elev_m=100)))
+        (Path(folder) / 'rangemap_osm.json').write_text('{"lines":[],"places":[]}')
+        for name in ('government.json', 'embassies.json'):
+            (Path(folder) / name).write_text('[]')
+        self.stack.enter_context(patch.object(maps, 'OFFICES', str(Path(folder) / 'government.json')))
+        self.stack.enter_context(patch.object(maps, 'EMBASSIES', str(Path(folder) / 'embassies.json')))
+        for level in (1, 2):
+            (Path(folder) / 'tiles' / str(level)).mkdir(parents=True)
+            for x in range((a.W * level + 255) // 256):
+                for y in range((a.H * level + 255) // 256):
+                    Image.new('RGB', (256, 256), (35 + x * 5, 50 + y * 5, 45)).save(Path(folder) / 'tiles' / str(level) / f'{x}_{y}.png')
+        (Path(folder) / 'tiles/levels.json').write_text(json.dumps(dict(levels=[1, 2], tile=256, w=a.W, h=a.H)))
+        if self.clock:
+            (Path(folder) / 'activity.json').write_text('{"reports":[],"aprs":{},"qsos":[]}')
+            Image.new('RGB', (16, 16), '#ffba44').save(Path(folder) / 'sdo.png')
         for module in (a, display):
             self.stack.enter_context(patch.object(module, 'MODEL', folder))
         self.stack.enter_context(patch.object(maps, 'ground', ground))
@@ -63,8 +81,9 @@ class Fixture:
         self.workers = {kind: self.stack.enter_context(ThreadPoolExecutor(1)) for kind in ('picture', 'scene')}
         self.pool = self.stack.enter_context(ThreadPoolExecutor(2))
         self.link = Link()
-        self.renderer = web.Renderer(scene_factory=self.scene, link=self.link)
-        self.server = web.Server(('127.0.0.1', 0), self.renderer)
+        self.renderer = web.Renderer(scene_factory=web.ClockScene if self.clock else self.scene, link=self.link)
+        self.map_data = MapData(base=self.base, model=folder)
+        self.server = web.Server(('127.0.0.1', 0), self.renderer, map_data=self.map_data)
         self.renderer.start()
         self.thread = threading.Thread(target=self.server.serve_forever, daemon=True)
         self.thread.start()
@@ -302,6 +321,86 @@ class Tests(unittest.TestCase):
             finally:
                 server.shutdown()
                 thread.join()
+
+
+class MapTests(unittest.TestCase):
+    def setUp(self):
+        self.fixture = Fixture(clock=True).__enter__()
+        self.addCleanup(self.fixture.__exit__, None, None, None)
+
+    def test_browser_sessions_do_not_construct_server_side_maps(self):
+        f = self.fixture
+        first, second = f.open(), f.open()
+        for token in (first, second):
+            scene = f.renderer.sessions[token].scene
+            self.assertIsNone(scene.canvas)
+            self.assertIsNone(scene.inspector)
+        self.assertTrue(all(worker is None for worker in f.renderer.workers.values()))
+        status, _, data = f.frame(first)
+        self.assertEqual(status, 200)
+        image = Image.open(io.BytesIO(data))
+        self.assertEqual(image.getpixel((600, 500)), (0, 0, 0))
+
+    def test_configuration_tiles_and_cache_validation(self):
+        f = self.fixture
+        status, _, body = f.request('/map/config')
+        self.assertEqual(status, 200)
+        self.assertEqual(json.loads(body)['levels'], [1, 2])
+        status, headers, body = f.request('/map/tiles/1/0/0.png')
+        self.assertEqual(status, 200)
+        self.assertEqual(Image.open(io.BytesIO(body)).size, (256, 256))
+        self.assertIn('max-age', headers['Cache-Control'])
+        self.assertEqual(f.request('/map/tiles/1/0/0.png', headers={'If-None-Match': headers['ETag']})[0], 304)
+        for path in ('/map/tiles/99/0/0.png', '/map/tiles/1/900/0.png', '/map/tiles/1/../station.json'):
+            self.assertEqual(f.request(path)[0], 404)
+
+    def test_projected_point_uses_the_existing_reachability_calculation(self):
+        f = self.fixture
+        point = f.map_data.coordinate((700, 330))
+        status, _, body = f.request('/map/reachability', dict(x=point[0], y=point[1]))
+        self.assertEqual(status, 200)
+        result = json.loads(body)
+        latitude, longitude = f.base.latlon(700, 330)
+        expected = panel.path_profile(f.base, latitude, longitude)
+        self.assertAlmostEqual(result['distance'], expected['distance'], places=5)
+        self.assertEqual(result['status'], expected['status'])
+        self.assertLessEqual(len(result['ground']), 322)
+        self.assertEqual(f.input(f.open(), dict(type='release')), 204)
+        self.assertEqual(f.link.sent, [])
+        for value in (True, float('nan'), 1e20):
+            self.assertEqual(f.request('/map/reachability', dict(x=value, y=0))[0], 400)
+
+    def test_features_grid_and_night_overlay_are_local_map_data(self):
+        f = self.fixture
+        query='?bbox='+','.join(map(str, f.map_data.extent))+'&zoom=1'
+        status, _, body = f.request('/map/features'+query)
+        self.assertEqual(status, 200)
+        features = json.loads(body)['features']
+        self.assertTrue(any(item['properties']['kind']=='station' for item in features))
+        status, _, body = f.request('/map/grid'+query)
+        self.assertEqual(status, 200)
+        self.assertTrue(json.loads(body)['features'])
+        status, _, body = f.request('/map/night.png')
+        self.assertEqual(status, 200)
+        self.assertEqual(Image.open(io.BytesIO(body)).size, (a.W, a.H))
+        self.assertEqual(f.request('/map/grid?bbox=nan,0,1,1')[0], 400)
+
+    def test_frontend_has_no_loading_text_or_spinner(self):
+        f = self.fixture
+        status, _, body = f.request('/')
+        self.assertEqual(status, 200)
+        self.assertIn(b'openlayers', body)
+        self.assertNotIn(b'id="status"', body)
+        self.assertNotIn('加载中'.encode(), body)
+
+    def test_geometry_reuses_native_thinning_without_losing_line_ends(self):
+        data = self.fixture.map_data
+        coordinates = [[float(x), 0] for x in np.linspace(0, 1000, 10000)]
+        data.static_features = [data.feature('LineString', coordinates, 'river')]
+        result = data.geometry_at(0, 1)['geometry']['coordinates']
+        self.assertLess(len(result), 100)
+        np.testing.assert_allclose(result[0], coordinates[0])
+        np.testing.assert_allclose(result[-1], coordinates[-1])
 
 
 if __name__ == '__main__':

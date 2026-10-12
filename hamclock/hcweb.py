@@ -8,14 +8,17 @@ import argparse
 from concurrent.futures import Future, ThreadPoolExecutor
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 import io
+import gzip
 import json
 import logging
 import math
 import os
 from pathlib import Path
 import queue
+import re
 import secrets
 import socket
+import signal
 import threading
 import time
 from urllib.parse import parse_qs, urlsplit
@@ -25,7 +28,7 @@ os.environ.setdefault('PYGAME_HIDE_SUPPORT_PROMPT', '1')
 import pygame
 from PIL import Image, ImageChops
 
-from hcdisplay import APP_W, APP_H, MAP_BOX, Fitted, Link, Mirror, Scene, on_map
+from hcdisplay import APP_W, APP_H, MAP_BOX, TALLY_BOX, Fitted, Link, Mirror, Overlay, Scene, on_map
 
 SIZE = (1280, 768)                         # same frame size as the X230 window
 IDLE_S = 120
@@ -43,6 +46,33 @@ class Busy(Exception):
 
 class Gone(Exception):
     pass
+
+
+class ClockScene(Scene):
+    """Only the clock panes are streamed; OpenLayers owns the map in each browser."""
+
+    def __init__(self, size, link):
+        self.link, self.k = link, size[0] / APP_W
+        self.frame, self.fitted = pygame.Surface(size), Fitted(size)
+        self.box = pygame.Rect(*(round(v * self.k) for v in MAP_BOX))
+        self.canvas = self.inspector = None
+        self.overlays = [Overlay('ft8week.png', TALLY_BOX)]
+        self.whole = self.clock_dirty = True
+        self.last_check = self.last_panel = 0
+        self.held = set()
+
+    def covered(self, at):
+        return on_map(at) or any(o.covers(at) for o in self.overlays)
+
+    def draw(self):
+        if self.fitted.image is None or not (self.whole or self.clock_dirty):
+            return False
+        self.frame.blit(self.fitted.image, (0, 0))
+        self.frame.fill((0, 0, 0), self.box)
+        for overlay in self.overlays:
+            overlay.blit(self.frame)
+        self.whole = self.clock_dirty = False
+        return True
 
 
 def number(event, name, limit):
@@ -170,7 +200,7 @@ class Session:
 class Renderer(threading.Thread):
     """Owns all Pygame state. HTTP threads pass bounded commands through this queue."""
 
-    def __init__(self, scene_factory=Scene, link=None):
+    def __init__(self, scene_factory=ClockScene, link=None):
         super().__init__(daemon=True)
         self.frames, self.commands = queue.Queue(maxsize=8), queue.Queue(maxsize=256)
         self.link = link if link is not None else Link(self.frames)
@@ -260,7 +290,10 @@ class Renderer(threading.Thread):
                 while not self.frames.empty():
                     changed = self.mirror.apply(*self.frames.get())
                     if self.mirror.image is not None and changed != []:
-                        self.fitted.update(self.mirror.image, changed)
+                        skip = None
+                        if self.scene_factory is ClockScene:
+                            skip = pygame.Rect(*(round(v * self.mirror.image.get_width() / APP_W) for v in MAP_BOX))
+                        self.fitted.update(self.mirror.image, changed, skip)
                         self.revision += 1
                 for token, session in list(self.sessions.items()):
                     if now - session.seen > IDLE_S:
@@ -305,10 +338,20 @@ class Renderer(threading.Thread):
 class Server(ThreadingHTTPServer):
     daemon_threads = True
 
-    def __init__(self, address, renderer):
+    def __init__(self, address, renderer, map_data=None):
         self.renderer = renderer
+        self.map_data, self.map_lock = map_data, threading.Lock()
+        self.profile_slots = threading.BoundedSemaphore(2)
         self.address_family = socket.AF_INET6 if ':' in address[0] else socket.AF_INET
         super().__init__(address, Handler)
+
+    def get_map(self):
+        if self.map_data is None:
+            with self.map_lock:
+                if self.map_data is None:
+                    from webmap import MapData
+                    self.map_data = MapData()
+        return self.map_data
 
     def server_bind(self):
         if self.address_family == socket.AF_INET6:
@@ -321,12 +364,18 @@ class Handler(BaseHTTPRequestHandler):
         super().setup()
         self.connection.settimeout(10)
 
-    def reply(self, status, body=b'', content_type='text/plain; charset=utf-8', revision=None, rects=None):
+    def reply(self, status, body=b'', content_type='text/plain; charset=utf-8', revision=None, rects=None,
+              cache='no-store', etag=None, compressed=False):
         self.send_response(status)
         self.send_header('Content-Type', content_type)
         self.send_header('Content-Length', str(len(body)))
-        self.send_header('Cache-Control', 'no-store')
+        self.send_header('Cache-Control', cache)
         self.send_header('X-Content-Type-Options', 'nosniff')
+        if etag:
+            self.send_header('ETag', etag)
+        if compressed:
+            self.send_header('Content-Encoding', 'gzip')
+            self.send_header('Vary', 'Accept-Encoding')
         if revision is not None:
             self.send_header('X-Frame-Revision', str(revision))
         if rects is not None:                # a strip of these rectangles over revision - 1
@@ -335,11 +384,72 @@ class Handler(BaseHTTPRequestHandler):
         self.end_headers()
         self.wfile.write(body)
 
+    def json_reply(self, data):
+        body = json.dumps(data, ensure_ascii=False, allow_nan=False, separators=(',', ':')).encode()
+        compressed = 'gzip' in self.headers.get('Accept-Encoding', '')
+        self.reply(200, gzip.compress(body, compresslevel=1) if compressed else body,
+                   'application/json; charset=utf-8', compressed=compressed)
+
+    def file_reply(self, path, content_type, cache='no-store'):
+        stat = path.stat()
+        etag = f'"{stat.st_mtime_ns:x}-{stat.st_size:x}"'
+        if self.headers.get('If-None-Match') == etag:
+            self.reply(304, cache=cache, etag=etag)
+        else:
+            body = path.read_bytes()
+            compressed = content_type.startswith(('text/', 'application/javascript')) \
+                and 'gzip' in self.headers.get('Accept-Encoding', '')
+            self.reply(200, gzip.compress(body, compresslevel=1) if compressed else body,
+                       content_type, cache=cache, etag=etag, compressed=compressed)
+
+    def map_query(self, args):
+        data = self.server.get_map()
+        bbox = [float(value) for value in args['bbox'][0].split(',')]
+        zoom = float(args.get('zoom', ['1'])[0])
+        if len(bbox) != 4 or not all(math.isfinite(value) for value in bbox + [zoom]) \
+                or not 1 <= zoom <= 100 or bbox[0] >= bbox[2] or bbox[1] >= bbox[3]:
+            raise ValueError('invalid map extent')
+        bbox = [max(bbox[0], data.extent[0]), max(bbox[1], data.extent[1]),
+                min(bbox[2], data.extent[2]), min(bbox[3], data.extent[3])]
+        if bbox[0] >= bbox[2] or bbox[1] >= bbox[3]:
+            raise ValueError('extent outside map')
+        return data, bbox, zoom
+
     def do_GET(self):
         route = urlsplit(self.path)
         try:
             if route.path == '/':
-                self.reply(200, Path(__file__).with_name('hcweb.html').read_bytes(), 'text/html; charset=utf-8')
+                self.file_reply(Path(__file__).with_name('hcweb.html'), 'text/html; charset=utf-8')
+            elif route.path in ('/webmap.js', '/webmap.css'):
+                self.file_reply(Path(__file__).with_name(route.path[1:]),
+                                'application/javascript' if route.path.endswith('.js') else 'text/css')
+            elif route.path in ('/vendor/openlayers/ol.js', '/vendor/openlayers/ol.css'):
+                self.file_reply(Path(__file__).parent / route.path[1:],
+                                'application/javascript' if route.path.endswith('.js') else 'text/css',
+                                cache='public, max-age=86400')
+            elif route.path == '/map/config':
+                self.json_reply(self.server.get_map().config())
+            elif route.path in ('/map/features', '/map/grid'):
+                data, bbox, zoom = self.map_query(parse_qs(route.query))
+                self.json_reply(data.static(bbox, zoom) if route.path.endswith('features') else data.grid(bbox, zoom))
+            elif route.path == '/map/live':
+                self.json_reply(self.server.get_map().live())
+            elif route.path == '/map/night.png':
+                self.reply(200, self.server.get_map().night(), 'image/png', cache='public, max-age=30')
+            elif match := re.fullmatch(r'/map/tiles/(\d+)/(\d+)/(\d+)\.png', route.path):
+                self.file_reply(self.server.get_map().tile_path(*map(int, match.groups())), 'image/png',
+                                cache='public, max-age=86400')
+            elif match := re.fullmatch(r'/map/flags/([A-Z]{2})\.png', route.path):
+                import flags
+                if not flags.known(match[1]):
+                    self.reply(404)
+                else:
+                    out = io.BytesIO()
+                    pygame.image.save(flags.flag(match[1], 13), out, 'flag.png')
+                    self.reply(200, out.getvalue(), 'image/png', cache='public, max-age=86400')
+            elif route.path == '/map/sun.png':
+                self.file_reply(self.server.get_map().model / 'sdo.png', 'image/png',
+                                cache='public, max-age=60')
             elif route.path == '/frame.png':
                 args = parse_qs(route.query)
                 result = self.server.renderer.call('frame', dict(session=args['session'][0],
@@ -353,6 +463,8 @@ class Handler(BaseHTTPRequestHandler):
                 self.reply(404)
         except (KeyError, ValueError):
             self.reply(400, b'invalid request')
+        except FileNotFoundError:
+            self.reply(404)
         except Gone as e:
             self.reply(410, str(e).encode())
         except Busy as e:
@@ -377,7 +489,19 @@ class Handler(BaseHTTPRequestHandler):
             if not isinstance(data, dict):
                 raise ValueError('invalid request')
             route = urlsplit(self.path).path
-            if route == '/session':
+            if route == '/map/reachability':
+                map_data = self.server.get_map()
+                limit = max(abs(value) for value in map_data.extent)
+                x, y = number(data, 'x', limit), number(data, 'y', limit)
+                if not self.server.profile_slots.acquire(blocking=False):
+                    raise Busy('terrain queries busy')
+                try:
+                    self.json_reply(map_data.reachability(x, y))
+                except (OSError, SyntaxError):
+                    self.reply(503, b'terrain unavailable')
+                finally:
+                    self.server.profile_slots.release()
+            elif route == '/session':
                 result = self.server.renderer.call('open')
                 self.reply(200, json.dumps(result).encode(), 'application/json')
             elif route == '/input':
@@ -415,6 +539,9 @@ def main():
     parser.add_argument('--port', type=int, default=8075)
     args = parser.parse_args()
     logging.basicConfig(level=logging.INFO)
+    def stop_signal(*_):
+        raise KeyboardInterrupt
+    signal.signal(signal.SIGTERM, stop_signal)
     renderer = Renderer()
     with Server((args.host, args.port), renderer) as server:
         renderer.start()

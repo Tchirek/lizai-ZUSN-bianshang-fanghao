@@ -1,0 +1,26 @@
+html,body{margin:0;background:#000;color:#ddd;height:100%;overflow:hidden}
+body{display:grid;place-items:center;font:12px Arial,"Microsoft YaHei","PingFang SC",sans-serif}
+#stage{position:relative;width:min(100vw,calc(100dvh * 5 / 3));aspect-ratio:5/3}
+#clock{display:block;width:100%;height:100%;outline:none}
+#map,#map-ui{position:absolute;left:17.375%;top:31.0416667%;width:82.5%;height:68.75%}
+#map{background:#101018;outline:none;touch-action:none}
+#map-ui{pointer-events:none;font:11px Arial,sans-serif;color:#ddd}
+#sun{position:absolute;right:4px;top:4px;background:#000;border:1px solid #777;padding:2px 5px}
+#sun:empty,#legend:empty,#dem:empty{display:none}
+#sun img{width:15px;height:15px;object-fit:contain;vertical-align:middle;margin-right:5px}
+#sun span{margin-right:7px}#sun b{color:#fff;font-weight:400;margin-left:3px}
+#legend{position:absolute;right:4px;bottom:4px;display:flex;flex-wrap:wrap;justify-content:flex-end;max-width:calc(100% - 8px);gap:7px;background:#000;border:1px solid #aaa;padding:3px 5px}
+#legend i{display:inline-block;width:7px;height:7px;margin-right:4px}
+#dem{position:absolute;left:150px;bottom:7px;background:#000;padding:1px 4px;color:#aaa}
+.ol-scale-line{background:#000;border-radius:0;bottom:4px;left:4px}
+.ol-scale-line-inner{font:11px Arial,sans-serif;border-color:#eee;color:#fff}
+#profile{position:absolute;box-sizing:border-box;width:260px;background:#000;border:1px solid #888;color:#ddd;padding:5px 7px;font:11px Arial,sans-serif;z-index:5}
+#profile[hidden]{display:none}#profile .title{text-align:center;color:#fff;margin-bottom:9px}
+#profile-close{position:absolute;right:3px;top:2px;border:1px solid #777;background:#000;color:#ddd;width:18px;height:18px;padding:0;cursor:pointer}
+#position{color:#ffb400;margin-bottom:9px}#reach-table{border-collapse:collapse;width:100%;margin-bottom:7px}
+#reach-table th{font-weight:400;color:#fff;padding:2px}#reach-table td{text-align:center;border:1px solid #444;padding:3px 1px}
+#reach-table td:first-child{border:0;text-align:left;color:#ddd;padding-right:4px}
+#reach-table .OK{background:#009100;color:#fff}#reach-table .LOS{background:#af7d00;color:#fff}#reach-table .BLK{background:#910000;color:#fff}
+#terrain{display:block;width:100%;height:35px;margin-top:3px;border-bottom:1px solid #666}
+#nearby{color:#00dcdc;margin-top:5px}#conditions{color:#999;margin-top:6px;font-size:10px}
+@media(max-width:700px){#sun{font-size:9px}#legend{font-size:9px;gap:4px}#dem{left:95px;font-size:9px}#profile{width:235px;font-size:10px}}
