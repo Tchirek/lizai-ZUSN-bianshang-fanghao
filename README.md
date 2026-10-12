@@ -53,7 +53,7 @@
 
 - 地图数据 © [OpenStreetMap](https://www.openstreetmap.org/copyright) 贡献者，ODbL，经 Overpass API 获取。
 - OSM 里没有的无线电管理机构，地址取自各级政府网站和政务服务网，出处逐条写在 `hamclock/radio_regulators.json`。
-- 政府机关：OSM，以及用本站的高德 key 采集的 POI（`tools/amap_gov.py`）和按规范名称地理编码定位的机关（`tools/amap_names.py`），数据不进仓库。
+- 政府机关：OSM，以及用本站的高德 key 采集的 POI（`tools/amap_gov.py`）、按规范名称地理编码定位的机关（`tools/amap_names.py`），以及百度、腾讯地图按县检索的机关（`tools/place_gov.py`），数据不进仓库。
 - 使领馆：四川省、重庆市外事办公室公布的名单，出处逐条写在 `hamclock/embassies.json`。
 - 高程：AWS Terrain Tiles（Terrarium 格式），来源见 [Tilezen 的说明](https://github.com/tilezen/joerd/blob/master/docs/attribution.md)。
 - [HamClock](https://www.clearskyinstitute.com/ham/HamClock/)（Clear Sky Institute，WB0OEW）。其天气（OpenWeatherMap）、DX 远征和比赛日历数据经 HamClock 的服务获取；本站补丁去掉了屏幕上的来源字样，数据与致谢归原提供者。

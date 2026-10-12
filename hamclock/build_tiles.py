@@ -205,6 +205,7 @@ REGULATORS = os.path.join(os.path.dirname(os.path.abspath(__file__)), "radio_reg
 AMAP_CELLS = os.path.join(a.MODEL, "amap_cells")          # tools/amap_gov.py's passes
 AMAP_PASSES = (AMAP_CELLS, os.path.join(a.MODEL, "amap_media"), os.path.join(a.MODEL, "amap_custody"))
 AMAP_NAMES = os.path.join(a.MODEL, "amap_names", "geo.jsonl")   # tools/amap_names.py's
+PLACES = [os.path.join(a.MODEL, p) for p in ("baidu", "tencent")]   # tools/place_gov.py's
 # where an office's name shows from: city level and up as military areas do, then counties
 HIGH = re.compile("(省|自治州|市|州|地区)(人民政府|政府|委员会|中级人民法院|人民检察院|公安局)$")
 COUNTY = re.compile("(县|区|市|旗)(人民政府|政府|委员会|人民法院|人民检察院|公安局|税务局)$")
@@ -411,7 +412,7 @@ def geocoded_offices():
             except ValueError:
                 continue
             q, (lon0, lat0) = plain(r["job"]["q"]), r["job"]["centre"]
-            for g in r["found"][:1]:
+            for g in r["found"]:                          # the first candidate that is the office
                 address = plain(g["address"])
                 if g["level"] != "兴趣点" or not address.endswith(q) or not g["location"]:
                     continue
@@ -427,6 +428,28 @@ def geocoded_offices():
                 seen.add((name, round(lat, 4), round(lon, 4)))
                 zoom = min(name_zoom(name), tier.get(levels.get(r["job"]["unit"]), 12))
                 out.append(dict(name=name, rings=[], point=[lat, lon], radio="无线电" in name, zoom=zoom))
+                break
+    return out
+
+
+def place_offices():
+    """The offices tools/place_gov.py found county by county, each once, in WGS-84."""
+    out, seen = [], set()
+    for path in [os.path.join(d, n) for d in PLACES if os.path.isdir(d) for n in sorted(os.listdir(d))]:
+        if not path.endswith(".json"):
+            continue
+        with open(path, encoding="utf-8") as f:
+            county = json.load(f)
+        for places in county["found"].values():
+            for p in places:
+                if p["uid"] in seen:
+                    continue
+                seen.add(p["uid"])
+                radio = "无线电" in p["name"]
+                if not radio and (not wanted(p["name"]) or NOT_GOVERNMENT.search(p["name"])):
+                    continue
+                lat, lon = wgs84(p["lat"], p["lng"])
+                out.append(dict(name=p["name"], rings=[], point=[lat, lon], radio=radio, zoom=name_zoom(p["name"])))
     return out
 
 
@@ -461,7 +484,7 @@ def write_government():
     for c in out:
         mapped.setdefault(plain(c["name"]), []).append(c["point"])
     amap = []
-    for c in amap_offices() + geocoded_offices():
+    for c in amap_offices() + geocoded_offices() + place_offices():
         if not any(math.dist(c["point"], p) < 0.004 for p in mapped.get(plain(c["name"]), ())):
             amap.append(c)
             mapped.setdefault(plain(c["name"]), []).append(c["point"])
