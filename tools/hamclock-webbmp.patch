@@ -1,3 +1,10 @@
+--- version.cpp.orig-influ
++++ version.cpp
+@@ -1,3 +1,3 @@
+ // N.B. if beta be sure to use 2 places: 4.09b01
+ 
+-const char *hc_version = "4.22";
++const char *hc_version = "89.64";
 --- HamClock.h.orig-influ	2026-05-21 22:29:50.607098679 +0800
 +++ HamClock.h	2026-10-11 21:19:08.640148234 +0800
 @@ -2488,6 +2488,7 @@

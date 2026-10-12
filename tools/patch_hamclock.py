@@ -11,6 +11,7 @@
    column, DXpeditions and Contests credit rows); the data and its readiness checks stay.
 6. clocks.cpp: the main clock and its date show DE local time (all computing stays UTC);
    the UTC button reads LOC when the DE time zone is not UTC.
+7. version.cpp: report V89.64 instead of upstream V4.22.
 
 Idempotent: refuses if a hunk is not found exactly once. Run inside the ESPHamClock source dir.
 """
@@ -27,6 +28,11 @@ def patch(path, old, new):
         sys.exit(f"{path}: expected 1 match, found {n}: {old[:70]!r}")
     open(path, "w").write(s.replace(old, new))
     print("patched", path)
+
+
+patch("version.cpp",
+      'const char *hc_version = "4.22";',
+      'const char *hc_version = "89.64";')
 
 
 patch("HamClock.h",
