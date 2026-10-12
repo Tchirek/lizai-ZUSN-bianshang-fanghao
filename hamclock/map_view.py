@@ -408,7 +408,7 @@ def static_part(static, scale):
     key = (static["key"], scale)
     if _part.get("key") == key:
         return _part
-    items, kinds = [], []
+    items, kinds, row = [], [], {}
     for c in static["campuses"]:
         if c["name"]:
             items.append((c["name"], c["point"], 15, CAMPUS_ZOOM, math.inf))
@@ -420,6 +420,8 @@ def static_part(static, scale):
                                   + [("government", GOVERNMENT, c) for c in static["government"] if c["name"]]
                                   + [("embassy", EMBASSY, c) for c in static["embassies"]],
                                   key=lambda k: (k[2]["zoom"], -size(k[2]))):
+        if kind == "government":
+            row[id(c)] = len(items)
         items.append((c["name"], c["point"], 13, c["zoom"], math.inf))
         kinds.append((kind, colour, c["code"]) if kind == "embassy" else (kind, colour))
     places(static, items, kinds, False)
@@ -433,6 +435,7 @@ def static_part(static, scale):
     part = dict(key=key, places=static["place_xy"], campuses=static["campuses"], military=static["military"],
                 government=static["government"], regulators=static["regulators"],
                 embassies=static["embassies"], pads=pads,
+                government_label=np.array([row.get(id(c), -1) for c in static["government"]], dtype=int),
                 airports=[x["point"] for x in static["airports"]], runways=static["runways"], far=static["far"][0],
                 labels=[(text, xy, size) for text, xy, size, *_ in items], kinds=kinds, sizes=sizes, spots=spots)
     _part.clear()
@@ -606,6 +609,7 @@ def combined(d, part):
     out["spots"] = np.vstack([d["spots"], d["part_spots"]])
     out["label_xy"] = np.vstack([d["label_xy"], part["label_xy"]])
     out["label_campus"] = np.concatenate([np.zeros(n, bool), part["label_campus"]])
+    out["government_label"] = np.where(part["government_label"] >= 0, part["government_label"] + n, -1)
     labelled = np.zeros((len(part["places"]), len(LABEL_ZOOMS)), bool)
     labelled[d["place_index"]] = d["spots"][d["place_rows"]] >= 0
     labelled[part["place_index"]] = d["part_spots"][part["place_rows"]] >= 0
@@ -1112,6 +1116,7 @@ class Scene:
             return []
         left, top, right, bottom = view.rect()
         grow = min(2.0, 1 + 0.22 * max(0.0, math.log2(view.zoom / 6)))     # dots stay findable
+        li = max(i for i, z in enumerate(LABEL_ZOOMS) if z <= view.zoom * 1.0001)
         if view.zoom < RING_ZOOM:
             airports = view.points(d["airport_xy"])
             self.stamp(surface, "ring", AIRPORT, airports[inside(airports)])
@@ -1120,9 +1125,10 @@ class Scene:
                 continue
             here = (box[:, 2] >= left) & (box[:, 0] <= right) & (box[:, 3] >= top) & (box[:, 1] <= bottom)
             big = self.big(box, view, s)
-            dots = [found[i]["point"] for i in np.flatnonzero(here)
-                    if not (found[i]["rings"] and big[i])
-                    and (colour != GOVERNMENT or view.zoom >= max(MILITARY_ZOOM, found[i]["zoom"] - 2))]
+            if colour == GOVERNMENT:             # an office's dot only with its name
+                rows = d["government_label"]
+                here &= (rows >= 0) & (d["spots"][np.maximum(rows, 0), li] >= 0)
+            dots = [found[i]["point"] for i in np.flatnonzero(here) if not (found[i]["rings"] and big[i])]
             xy = view.points(np.array(dots, dtype=float).reshape(-1, 2))
             if len(xy) > DOTS:
                 self.dots(surface, colour, xy, grow)
