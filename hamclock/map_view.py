@@ -53,7 +53,8 @@ LABEL_ZOOMS = tuple(2 ** (k / 2) for k in range(14))       # label placement ste
 CAMPUS_ZOOM = 8               # campuses (outline, dot, name) show from this zoom on
 MILITARY_ZOOM = 4             # military areas (outline, dot) from this zoom on, named from 6x
 MILITARY = (255, 85, 70)
-GOVERNMENT, REGULATOR = (235, 190, 70), (90, 215, 255)   # offices; radio regulators: as military
+GOVERNMENT, REGULATOR = (240, 214, 130), (90, 215, 255)  # offices; radio regulators: as military
+FAINT = {GOVERNMENT: 165}     # layers drawn see-through (alpha): the offices stay in the background
 EMBASSY = (150, 250, 170)     # consulates and embassies: named with a mini flag at the left
 LEAD = (160, 160, 150)        # the hairline tying a label placed off its point back to it
 EMBASSY_ZOOM = 6              # their names show from this zoom on, as the regulators' do
@@ -899,7 +900,10 @@ class Scene:
         for at in ((0, 0), (1, 0), (2, 0), (0, 1), (2, 1), (0, 2), (1, 2), (2, 2)):
             out.blit(shadow, at)
         out.blit(pic, (1, 1))
-        self.glyphs[key] = out.convert_alpha() if pygame.display.get_surface() else out
+        out = out.convert_alpha() if pygame.display.get_surface() else out
+        if colour in FAINT:
+            out.set_alpha(FAINT[colour])
+        self.glyphs[key] = out
         if len(self.glyphs) > 4096:
             self.glyphs.popitem(last=False)
         return self.glyphs[key]
@@ -921,7 +925,7 @@ class Scene:
         key = shape, colour, round(grow, 2)
         if key not in self.marks:
             s = self.scale
-            r = {"diamond": 5, "dot": 4, "ring": 5, "square": 4, "campus": 3, "consulate": 4,
+            r = {"diamond": 5, "dot": 4, "ring": 5, "square": 4, "campus": 3, "office": 2.4, "consulate": 4,
                  "city": 2, "town": 1}[shape] * s * grow
             n = math.ceil(2 * r) + 3
             pic = pygame.Surface((n, n), pygame.SRCALPHA)
@@ -934,8 +938,8 @@ class Scene:
             elif shape == "ring":
                 pygame.draw.circle(pic, (0, 0, 0), (c, c), round(r) + 1, max(1, round(2 * s)) + 2)
                 pygame.draw.circle(pic, colour, (c, c), round(r), max(1, round(2 * s)))
-            elif shape in ("campus", "consulate"):       # a consulate's a little larger
-                pygame.draw.circle(pic, colour, (c, c), max(2, round(r)))
+            elif shape in ("campus", "office", "consulate"):   # a consulate's a little larger
+                pygame.draw.circle(pic, colour + (FAINT.get(colour, 255),), (c, c), max(2, round(r)))
             else:                                        # square, city, town
                 side = max(2, round(2 * r)) if shape != "town" else 2
                 pic.fill(colour, (round(c - side / 2), round(c - side / 2), side, side))
@@ -949,11 +953,21 @@ class Scene:
         surface.blits([(pic, (x, y)) for x, y in np.round(xy * s - c).astype(int).tolist()], False)
 
     def dots(self, surface, colour, xy, grow=1.0):
-        """A small square at each view px point of `xy`, written as pixels all at once."""
-        r = max(1, round(grow))
+        """A small square at each view px point of `xy`, written as pixels all at once (a FAINT
+        layer's a little smaller, blended)."""
+        alpha = FAINT.get(colour)
+        r = max(1, round(grow * (0.8 if alpha else 1)))
         p = np.round(xy * self.scale).astype(int)
         w, h = surface.get_size()
         p = p[(p[:, 0] >= r) & (p[:, 0] < w - r) & (p[:, 1] >= r) & (p[:, 1] < h - r)]
+        if alpha:
+            pixels, value = pygame.surfarray.pixels3d(surface), np.array(colour) * alpha
+            for dx in range(-r, r + 1):
+                for dy in range(-r, r + 1):
+                    x, y = p[:, 0] + dx, p[:, 1] + dy
+                    pixels[x, y] = (pixels[x, y].astype(np.int32) * (255 - alpha) + value) // 255
+            del pixels
+            return
         pixels, value = pygame.surfarray.pixels2d(surface), surface.map_rgb(colour) & 0xFFFFFFFF
         for dx in range(-r, r + 1):
             for dy in range(-r, r + 1):
@@ -1076,8 +1090,9 @@ class Scene:
             for i in np.flatnonzero(here & self.big(box, view, s)):
                 for ring in found[i]["rings"]:
                     pts = (view.points(ring) * s).tolist()
-                    pygame.draw.polygon(self.layer, colour + (40,), pts)
-                    pygame.draw.lines(self.layer, colour + (210,), True, pts, max(1, round(1.5 * s)))
+                    fade = FAINT.get(colour, 255) / 255
+                    pygame.draw.polygon(self.layer, colour + (round(40 * fade),), pts)
+                    pygame.draw.lines(self.layer, colour + (round(210 * fade),), True, pts, max(1, round(1.5 * s)))
         ends = view.points(d["line_ends"])
         for (p, q), (_, colour, alpha) in zip(ends, d["lines"]):    # faint: to past the map
             pygame.draw.line(self.layer, colour + (alpha,), (p * s).tolist(), (q * s).tolist())
@@ -1112,7 +1127,7 @@ class Scene:
             if len(xy) > DOTS:
                 self.dots(surface, colour, xy, grow)
             else:
-                self.stamp(surface, "square" if colour == REGULATOR else "campus", colour, xy, grow)
+                self.stamp(surface, {REGULATOR: "square", GOVERNMENT: "office"}.get(colour, "campus"), colour, xy, grow)
         if view.zoom >= MILITARY_ZOOM:
             emb = view.points(d["embassy_xy"])
             self.stamp(surface, "consulate", EMBASSY, emb[inside(emb)], grow)
