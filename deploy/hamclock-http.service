@@ -1,0 +1,12 @@
+[Unit]
+Description=Optional HamClock HTTP display with independent maps
+After=hamclock.service
+Wants=hamclock.service
+
+[Service]
+ExecStart=%h/influ/.venv/bin/python %h/influ/hamclock/hcweb.py --host 0.0.0.0 --port 8075
+Restart=on-failure
+RestartSec=3
+
+[Install]
+WantedBy=default.target

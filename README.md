@@ -50,6 +50,23 @@
 
 站点的位置、呼号和网格只放在 `~/influ/station.json`（模板是 `deploy/station.example.json`），不进仓库。发往公共接口（adsb.lol、adsb.fi、Open-Meteo）的位置只取到 0.01°。密钥和登录口令放在 `~/influ/private/`，同样不进仓库。
 
+### 可选的 HamClock 网页
+
+网页与本机窗口使用同一套绘制和可达性查询代码。每个页面的地图中心、缩放和地点弹窗独立，本机窗口也不受网页浏览影响；电台与 HamClock 本身的设置仍作用于同一座站。
+
+按需启用，默认不开启：
+
+```sh
+mkdir -p ~/.config/systemd/user
+cp ~/influ/deploy/hamclock-http.service ~/.config/systemd/user/
+systemctl --user daemon-reload
+systemctl --user enable --now hamclock-http.service
+```
+
+访问 `http://站机地址:8075/`。滚轮缩放，拖动平移，点击地点查询可达性；触屏支持双指平移和捏合，方向键平移，`+` / `-` 缩放，`Esc` 关闭弹窗。网页直接显示合成后的无损画面，可在本机窗口关闭时独立运行。
+
+关闭：`systemctl --user disable --now hamclock-http.service`。也可仅监听本机：`~/influ/.venv/bin/python ~/influ/hamclock/hcweb.py`，默认地址为 `127.0.0.1:8075`。
+
 ## 1090 MHz 接收设置
 
 手动增益 49.6 dB，不开 RTL2832 数字 AGC。依据是 `analysis/gain_ab.py report` 对随机分块 A/B 的诊断：

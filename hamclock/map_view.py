@@ -1398,12 +1398,13 @@ class Canvas:
     """HamClock's map box (`size` physical px): the ground under the vector scene, through
     the camera."""
 
-    def __init__(self, size):
-        base = a.Map()
+    def __init__(self, size, base=None, workers=None):
+        base = base if base is not None else a.Map()
         self.scale = size[0] / W
         self.camera, self.scene = Camera(base), Scene(base, self.scale)
         self.view = self.camera.view()
-        self.workers = {"picture": None, "scene": None}
+        self.owns_workers = workers is None
+        self.workers = workers if workers is not None else {"picture": None, "scene": None}
         minute = int(time.time() // 60)
         whole = (0.0, 0.0), self.scale, (round(W * self.scale), round(H * self.scale))   # stand-in
         self.whole = Raster(*whole, *shade(base, *whole, minute * 60), minute)
@@ -1427,6 +1428,15 @@ class Canvas:
 
     def submit_scene(self, fn, *args):
         return self.submit("scene", fn, *args)
+
+    def close(self):
+        for future in (self.job and self.job[-1], self.scene.future, self.scene.admin_future):
+            if future:
+                future.cancel()
+        if self.owns_workers:
+            for worker in self.workers.values():
+                if worker:
+                    worker.shutdown(wait=False, cancel_futures=True)
 
     def scroll(self, notches, at):
         if self.camera.scroll(notches, at):

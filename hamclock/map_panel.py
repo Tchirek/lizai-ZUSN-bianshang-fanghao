@@ -315,9 +315,10 @@ class MapPanel:
     """The popup for a tapped map point; it stays on that place as the map zooms and pans
     (whoever draws the map keeps `m` set to its current view)."""
 
-    def __init__(self):
-        self.m = a.Map()
-        self.pool = ThreadPoolExecutor(max_workers=1)
+    def __init__(self, base=None, pool=None):
+        self.m = base if base is not None else a.Map()
+        self.owns_pool = pool is None
+        self.pool = pool if pool is not None else ThreadPoolExecutor(max_workers=1)
         self.point = self.target = self.future = self.profile = self.error = None
         self.box = self.surface = None
         self.drawn_at = 0
@@ -334,6 +335,11 @@ class MapPanel:
         if self.future:
             self.future.cancel()
         self.future = None
+
+    def shutdown(self):
+        self.close()
+        if self.owns_pool:
+            self.pool.shutdown(wait=False, cancel_futures=True)
 
     def tap(self, at, map_box):
         if self.box and self.box.collidepoint(at):

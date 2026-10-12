@@ -220,6 +220,128 @@ class Overlay:
             frame.blit(self.scaled, box)
 
 
+class Scene:
+    """One independent view, drawn identically in a window or onto an HTTP frame."""
+
+    def __init__(self, size, link, frame=None, canvas_options=None, panel_options=None):
+        from map_panel import MapPanel
+        self.link, self.k = link, size[0] / APP_W
+        self.frame = frame if frame is not None else pygame.Surface(size)
+        self.box = pygame.Rect(*(round(v * self.k) for v in MAP_BOX))
+        self.fitted = Fitted(size)
+        self.overlays = [Overlay(name, box) for name, box in OVERLAYS]
+        self.canvas = self.inspector = None
+        self.map_size = (1320, 660)
+        try:
+            from map_view import Canvas, W, H
+            self.map_size = W, H
+            self.canvas = Canvas(self.box.size, **(canvas_options or {}))
+            self.overlays = [o for o in self.overlays if o.box != MAP_BOX]
+        except (OSError, ValueError, KeyError, ImportError) as e:
+            print(f"zoomable map unavailable: {e}", flush=True)
+        try:
+            self.inspector = MapPanel(**(panel_options or {}))
+        except (OSError, ValueError, KeyError):
+            pass
+        w, h = size
+        b = self.box
+        self.strips = [pygame.Rect(0, 0, w, b.top), pygame.Rect(0, b.bottom, w, h - b.bottom),
+                       pygame.Rect(0, b.top, b.left, b.h), pygame.Rect(b.right, b.top, w - b.right, b.h)]
+        self.whole = self.clock_dirty = self.map_dirty = True
+        self.last_check = self.last_panel = 0
+        self.held = set()
+
+    def covered(self, at):
+        return (self.canvas and on_map(at)) or any(o.covers(at) for o in self.overlays)
+
+    def map_xy(self, at):
+        return ((at[0] - MAP_BOX[0]) * self.map_size[0] / MAP_BOX[2],
+                (at[1] - MAP_BOX[1]) * self.map_size[1] / MAP_BOX[3])
+
+    def panel_contains(self, at):
+        return bool(self.inspector and self.inspector.box
+                    and self.inspector.box.collidepoint(at[0] * self.k, at[1] * self.k))
+
+    def tap(self, at, button=1, ctrl=False):
+        if self.canvas and self.inspector:
+            self.inspector.m = self.canvas.view
+        if self.inspector and button == 1 and not ctrl:
+            was_open = self.inspector.point is not None
+            consumed = self.inspector.tap((at[0] * self.k, at[1] * self.k), self.box)
+            self.map_dirty = consumed or was_open or self.map_dirty
+            if consumed:
+                return
+        if not self.covered(at):
+            alternate = button == 2 or button == 1 and ctrl
+            self.link.send(f"set_touch?x={int(at[0])}&y={int(at[1])}&button={int(alternate)}")
+
+    def hover(self, at):
+        x, y = (int(at[0]), int(at[1])) if at and not self.covered(at) else (-1, -1)
+        self.link.send(f"set_mouse?x={x}&y={y}")
+
+    def key(self, name, ctrl=False, shift=False):
+        if name == "Escape" and self.inspector and self.inspector.point is not None:
+            self.inspector.close()
+            self.map_dirty = True
+        else:
+            mod = ("C" if ctrl else "") + ("S" if shift else "")
+            self.link.send(f"set_char?char={name}&mod={mod}")
+
+    def update(self, source, changed=None):
+        if changed == []:
+            return
+        skip = self.canvas and pygame.Rect(*(round(v * source.get_width() / APP_W) for v in MAP_BOX))
+        self.fitted.update(source, changed, skip)
+        self.clock_dirty = True
+
+    def tick(self, dt):
+        now = time.monotonic()
+        if now - self.last_check > 5:
+            self.last_check = now
+            self.clock_dirty = any([o.refresh() for o in self.overlays]) or self.clock_dirty
+        if self.canvas:
+            vx = int('ArrowLeft' in self.held) - int('ArrowRight' in self.held)
+            vy = int('ArrowUp' in self.held) - int('ArrowDown' in self.held)
+            zoom = int(bool(self.held & {'+', '=', 'PageUp'})) - int(bool(self.held & {'-', 'PageDown'}))
+            if vx or vy:
+                self.canvas.pan(vx * KEY_PAN * dt, vy * KEY_PAN * dt)
+            if zoom:
+                self.canvas.scroll(zoom * KEY_ZOOM * dt, tuple(v / 2 for v in self.map_size))
+            self.map_dirty = self.canvas.tick(dt) or self.map_dirty
+            if self.inspector:
+                self.inspector.m = self.canvas.view
+        if self.inspector and self.inspector.point is not None \
+                and ((self.inspector.future and self.inspector.future.done()) or now - self.last_panel > 10):
+            self.map_dirty = True
+            self.last_panel = now
+
+    def draw(self):
+        if self.fitted.image is None or not (self.whole or self.clock_dirty or self.map_dirty):
+            return False
+        frame = self.frame
+        if self.canvas and not self.whole:
+            if self.clock_dirty:
+                for r in self.strips:
+                    frame.blit(self.fitted.image, r, r)
+        else:
+            frame.blit(self.fitted.image, (0, 0))
+        if self.whole or self.clock_dirty or not self.canvas:
+            for o in self.overlays:
+                o.blit(frame)
+        if self.canvas and (self.whole or self.map_dirty):
+            self.canvas.draw(frame, self.box)
+        if self.inspector and (self.whole or self.map_dirty or not self.canvas):
+            self.inspector.draw(frame, tuple(self.box))
+        self.whole = self.clock_dirty = self.map_dirty = False
+        return True
+
+    def close(self):
+        if self.canvas:
+            self.canvas.close()
+        if self.inspector:
+            self.inspector.shutdown()
+
+
 class Screen:
     """The full-screen window; `frame` is the part showing the clock, centred, aspect kept."""
 
@@ -260,53 +382,34 @@ def on_map(at):
 
 
 def main():
-    from map_panel import MapPanel
     frames = queue.Queue()
     link = Link(frames)
     link.start()
     mirror, screen = Mirror(), Screen()
-    fitted = Fitted(screen.view.size)
-    overlays = [Overlay(name, box) for name, box in OVERLAYS]
-    k = screen.view.w / APP_W                                       # app px -> frame px
-    box = pygame.Rect(*(round(v * k) for v in MAP_BOX))
-    canvas = gestures = None
-    try:
-        from map_view import Canvas, W as MAP_W, H as MAP_H
-        canvas = Canvas(box.size)
-        overlays = [o for o in overlays if o.box != MAP_BOX]      # it draws the whole map box
-        from gestures import Gestures
-        gestures = Gestures()
-    except (OSError, ValueError, KeyError, ImportError) as e:
-        print(f"{'touchpad gestures' if canvas else 'zoomable map'} unavailable: {e}", flush=True)
-    try:
-        inspector = MapPanel()
-    except (OSError, ValueError):
-        inspector = None
-    fw, fh = screen.view.size
+    scene = Scene(screen.view.size, link, screen.frame)
+    canvas, inspector, box, k = scene.canvas, scene.inspector, scene.box, scene.k
+    MAP_W, MAP_H = scene.map_size
+    gestures = None
+    if canvas:
+        try:
+            from gestures import Gestures
+            gestures = Gestures()
+        except (OSError, ValueError, KeyError, ImportError) as e:
+            print(f"touchpad gestures unavailable: {e}", flush=True)
     # Wayland scrolls come in the window's own px; SDL scales the frame onto it
     surface_k = screen.surface.get_width() / pygame.display.get_window_size()[0]
-    strips = [pygame.Rect(0, 0, fw, box.top), pygame.Rect(0, box.bottom, fw, fh - box.bottom),
-              pygame.Rect(0, box.top, box.left, box.h), pygame.Rect(box.right, box.top, fw - box.right, box.h)]
-
-    def covered(at):
-        return (canvas and on_map(at)) or any(o.covers(at) for o in overlays)
-
-    def map_xy(at):
-        return (at[0] - MAP_BOX[0]) * MAP_W / MAP_BOX[2], (at[1] - MAP_BOX[1]) * MAP_H / MAP_BOX[3]
+    map_xy = scene.map_xy
 
     clock, dt = pygame.time.Clock(), 0.0
     pressed = drag = None                # app px of the press; (last window px, dragging?)
-    whole, last_move, last_input, last_check = True, 0.0, time.time(), 0.0
+    last_move, last_input = 0.0, time.time()
     while True:
-        clock_dirty = map_dirty = False
-        if time.time() - last_check > 5:
-            last_check = time.time()
-            clock_dirty = any([o.refresh() for o in overlays])     # list: refresh every one
         for ev in pygame.event.get():
             if ev.type == pygame.QUIT:
+                scene.close()
                 return
             if ev.type in (pygame.WINDOWEXPOSED, pygame.WINDOWSIZECHANGED):
-                whole = True
+                scene.whole = True
             if ev.type in (pygame.MOUSEMOTION, pygame.MOUSEBUTTONDOWN, pygame.MOUSEWHEEL, pygame.KEYDOWN):
                 last_input = time.time()
                 pygame.mouse.set_visible(True)
@@ -330,29 +433,19 @@ def main():
                 if not (drag and drag[1]) and at and abs(at[0] - pressed[0]) <= JITTER \
                         and abs(at[1] - pressed[1]) <= JITTER:
                     ctrl = pygame.key.get_mods() & pygame.KMOD_CTRL
-                    if inspector and ev.button == 1 and not ctrl and inspector.tap((at[0] * k, at[1] * k), box):
-                        map_dirty = True
-                    elif not covered(at):
-                        button = 1 if ev.button == 2 or (ev.button == 1 and ctrl) else 0
-                        link.send(f"set_touch?x={int(at[0])}&y={int(at[1])}&button={button}")
+                    scene.tap(at, ev.button, bool(ctrl))
                 pressed = drag = None
             elif ev.type == pygame.WINDOWLEAVE:
                 link.send("set_mouse?x=-1&y=-1")
             elif ev.type == pygame.KEYDOWN and canvas and (ev.key in MAP_KEYS or ev.key in ZOOM_KEYS):
                 pass                                    # held keys move the map, below
             elif ev.type == pygame.KEYDOWN and (name := key_name(ev)):
-                if name == "Escape" and inspector and inspector.point is not None:
-                    inspector.close()
-                    map_dirty = True
-                else:
-                    mods = pygame.key.get_mods()
-                    mod = ("C" if mods & pygame.KMOD_CTRL else "") + ("S" if mods & pygame.KMOD_SHIFT else "")
-                    link.send(f"set_char?char={name}&mod={mod}")
+                mods = pygame.key.get_mods()
+                scene.key(name, bool(mods & pygame.KMOD_CTRL), bool(mods & pygame.KMOD_SHIFT))
             if ev.type == pygame.MOUSEMOTION and not drag and time.time() - last_move > POLL:
                 last_move = time.time()
                 at = screen.app_xy(ev.pos)
-                at = (int(at[0]), int(at[1])) if at and not covered(at) else (-1, -1)
-                link.send(f"set_mouse?x={at[0]}&y={at[1]}")
+                scene.hover(at)
 
         if gestures:
             for e in gestures.poll():
@@ -380,32 +473,10 @@ def main():
         while not frames.empty():
             changed = mirror.apply(*frames.get())
             if mirror.image:
-                skip = canvas and pygame.Rect(*(round(v * mirror.image.get_width() / APP_W) for v in MAP_BOX))
-                fitted.update(mirror.image, changed, skip)
-                clock_dirty = True
-        if canvas:
-            map_dirty = canvas.tick(dt) or map_dirty
-            if inspector:
-                inspector.m = canvas.view
-        if inspector and inspector.future and inspector.future.done():
-            map_dirty = True
-        if fitted.image and (whole or clock_dirty or map_dirty):
-            frame = screen.frame
-            if canvas and not whole:             # the map box keeps the map drawn there
-                if clock_dirty:
-                    for r in strips:
-                        frame.blit(fitted.image, r, r)
-            else:
-                frame.blit(fitted.image, (0, 0))
-            if whole or clock_dirty or not canvas:
-                for o in overlays:
-                    o.blit(frame)
-            if canvas and (whole or map_dirty):
-                canvas.draw(frame, box)
-            if inspector and (whole or map_dirty or not canvas):
-                inspector.draw(frame, tuple(box))
+                scene.update(mirror.image, changed)
+        scene.tick(dt)
+        if scene.draw():
             pygame.display.flip()
-            whole = False
         if time.time() - last_input > CURSOR_IDLE:
             pygame.mouse.set_visible(False)
         dt = clock.tick(FPS) / 1000

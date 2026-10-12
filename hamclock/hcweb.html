@@ -1,0 +1,118 @@
+<!doctype html>
+<html lang="zh-CN">
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=1">
+<title>HamClock</title>
+<style>
+html,body{margin:0;background:#000;color:#ddd;height:100%;overflow:hidden}
+body{display:grid;place-items:center}
+canvas{display:block;width:min(100vw,calc(100dvh * 5 / 3));height:auto;max-height:100dvh;touch-action:none;outline:none}
+#status{position:fixed;inset:0;display:grid;place-items:center;font:15px sans-serif;background:#000b;pointer-events:none}
+#status[hidden]{display:none}
+</style>
+<canvas width="1280" height="768" tabindex="0" aria-label="HamClock 地图与电台状态"></canvas>
+<div id="status" role="status">连接中…</div>
+<script>
+const canvas=document.querySelector('canvas'), ctx=canvas.getContext('2d'), status=document.querySelector('#status');
+const mapKeys=new Set(['ArrowLeft','ArrowRight','ArrowUp','ArrowDown','+','=','-','PageUp','PageDown']);
+const namedKeys=new Set([...mapKeys,'Enter','Tab','Escape','Backspace','Space']);
+let session=null, revision=-1, active=true, creating=null, sending=false, events=[], gesture=null, lastHover=0, frameTask=null;
+const pointers=new Map(), keys=new Set();
+const sleep=ms=>new Promise(resolve=>setTimeout(resolve,ms));
+function notice(text){status.textContent=text;status.hidden=!text;}
+function at(e){const r=canvas.getBoundingClientRect();return {x:Math.max(0,Math.min(799.999,(e.clientX-r.left)*800/r.width)),y:Math.max(0,Math.min(479.999,(e.clientY-r.top)*480/r.height))};}
+function onMap(p){return p.x>=139&&p.x<799&&p.y>=149&&p.y<479;}
+async function create(){
+ if(creating)return creating;
+ creating=(async()=>{const r=await fetch('/session',{method:'POST',headers:{'Content-Type':'application/json'},body:'{}'});
+  if(!r.ok)throw Error('页面暂不可用，正在重试…');
+  const s=await r.json();session=s.session;revision=-1;events=[];keys.clear();pointers.clear();gesture=null;
+ })();
+ try{await creating;}finally{creating=null;}
+}
+async function frames(){
+ while(active){
+  try{
+   if(!session)await create();
+   const r=await fetch('/frame.png?session='+encodeURIComponent(session)+'&after='+revision,{cache:'no-store'});
+   if(r.status===410){session=null;notice('重新连接…');continue;}
+   if(r.status===200){const image=await createImageBitmap(await r.blob());ctx.drawImage(image,0,0);image.close();revision=Number(r.headers.get('X-Frame-Revision'));notice('');}
+   else if(r.status!==204)notice('等待 HamClock 连接…');
+  }catch(e){notice(e.message==='Failed to fetch'?'连接中断，正在重试…':e.message);}
+  await sleep(document.hidden?1000:100);
+ }
+}
+function enqueue(event){
+ if(!session)return;
+ if(event.type==='hover'){const i=events.findIndex(e=>e.type==='hover');if(i>=0)events.splice(i,1);}
+ events.push(event);flush();
+}
+async function flush(){
+ if(sending)return;
+ sending=true;
+ try{
+  while(active&&session&&events.length){
+   const batch=events.splice(0,64), token=session;
+   const r=await fetch('/input',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({session:token,events:batch})});
+   if(r.status===410){if(session===token)session=null;events=[];break;}
+   if(!r.ok){notice('操作暂未送达');events=[];break;}
+   await sleep(30);
+  }
+ }catch(e){events=[];notice('连接中断，正在重试…');}
+ finally{sending=false;}
+}
+function geometry(){const [a,b]=[...pointers.values()];return {x:(a.last.x+b.last.x)/2,y:(a.last.y+b.last.y)/2,d:Math.hypot(a.last.x-b.last.x,a.last.y-b.last.y)};}
+canvas.addEventListener('pointerdown',e=>{
+ if(!session||![0,1,2].includes(e.button)||pointers.size>=2)return;
+ canvas.focus({preventScroll:true});canvas.setPointerCapture(e.pointerId);
+ const p=at(e);pointers.set(e.pointerId,{origin:p,last:p,button:e.button+1,moved:false});
+ if(pointers.size===2){gesture=geometry();for(const p of pointers.values())p.moved=true;}
+ e.preventDefault();
+});
+canvas.addEventListener('pointermove',e=>{
+ const p=at(e), pointer=pointers.get(e.pointerId);
+ if(!pointer){if(e.pointerType==='mouse'&&performance.now()-lastHover>100){lastHover=performance.now();enqueue({type:'hover',...p});}return;}
+ const previous=pointer.last;pointer.last=p;
+ if(pointers.size===2){
+  const next=geometry();
+  if(gesture&&gesture.d>1&&next.d>1){
+   enqueue({type:'pinch',x:gesture.x,y:gesture.y,ratio:Math.max(.25,Math.min(4,next.d/gesture.d))});
+   enqueue({type:'pan',x:gesture.x,y:gesture.y,dx:next.x-gesture.x,dy:next.y-gesture.y});
+  }
+  gesture=next;return;
+ }
+ if(pointer.moved||Math.max(Math.abs(p.x-pointer.origin.x),Math.abs(p.y-pointer.origin.y))>5){
+  pointer.moved=true;
+  if(onMap(pointer.origin))enqueue({type:'pan',...pointer.origin,dx:p.x-previous.x,dy:p.y-previous.y});
+ }
+});
+function endPointer(e){
+ const pointer=pointers.get(e.pointerId);if(!pointer)return;
+ if(e.type==='pointerup'&&!pointer.moved)enqueue({type:'tap',...at(e),button:pointer.button,ctrl:e.ctrlKey});
+ pointers.delete(e.pointerId);gesture=null;
+}
+canvas.addEventListener('pointerup',endPointer);canvas.addEventListener('pointercancel',endPointer);
+canvas.addEventListener('contextmenu',e=>e.preventDefault());
+canvas.addEventListener('wheel',e=>{
+ const p=at(e);if(!onMap(p))return;
+ e.preventDefault();const factor=e.deltaMode===1?16:e.deltaMode===2?480:1;
+ if(e.shiftKey)enqueue({type:'pan',...p,dx:Math.max(-800,Math.min(800,-e.deltaX*factor)),dy:Math.max(-480,Math.min(480,-e.deltaY*factor))});
+ else enqueue({type:'scroll',...p,notches:Math.max(-8,Math.min(8,-e.deltaY*factor/(e.ctrlKey?60:120)))});
+},{passive:false});
+function keyEvent(e){
+ const key=e.key===' '?'Space':e.key;
+ if(!namedKeys.has(key)&&!(key.length===1&&key.charCodeAt(0)>=33&&key.charCodeAt(0)<=126))return;
+ e.preventDefault();
+ if(e.type==='keydown')keys.add(key);else keys.delete(key);
+ enqueue({type:'key',key,down:e.type==='keydown',ctrl:e.ctrlKey,shift:e.shiftKey});
+}
+canvas.addEventListener('keydown',keyEvent);canvas.addEventListener('keyup',keyEvent);
+function release(){keys.clear();pointers.clear();gesture=null;enqueue({type:'release'});}
+window.addEventListener('blur',release);
+document.addEventListener('visibilitychange',()=>{if(document.hidden)release();});
+window.addEventListener('pagehide',()=>{active=false;if(session)navigator.sendBeacon('/close',new Blob([JSON.stringify({session})],{type:'application/json'}));});
+function startFrames(){if(!frameTask)frameTask=frames().finally(()=>{frameTask=null;if(active)startFrames();});}
+window.addEventListener('pageshow',e=>{if(e.persisted){session=null;active=true;startFrames();}});
+startFrames();
+</script>
+</html>
