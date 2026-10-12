@@ -1,5 +1,7 @@
 # 立在 ZUSN 边上放号
 
+<img src="ai-slop-67.png" alt="Vibe Trending — #67 AI-slop Of The Day" width="250" height="55">
+
 莫斯科号无法同时使用通信和雷达设备，rtl-sdr v4无法同时接收adsb和民用频段。
 
 这是一个业余电台站的软件，跑在一台 Debian 笔记本（ThinkPad X230）上，项目代号 influ。
