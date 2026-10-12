@@ -283,6 +283,8 @@ def main():
     except (OSError, ValueError):
         inspector = None
     fw, fh = screen.view.size
+    # Wayland scrolls come in the window's own px; SDL scales the frame onto it
+    surface_k = screen.surface.get_width() / pygame.display.get_window_size()[0]
     strips = [pygame.Rect(0, 0, fw, box.top), pygame.Rect(0, box.bottom, fw, fh - box.bottom),
               pygame.Rect(0, box.top, box.left, box.h), pygame.Rect(box.right, box.top, fw - box.right, box.h)]
 
@@ -360,9 +362,9 @@ def main():
                     continue
                 if e[0] == "pinch":                      # fingers spread, and their middle moved
                     canvas.pinch(e[1], map_xy(at))
-                    canvas.pan(e[2] * MAP_W / box.w, e[3] * MAP_H / box.h)
+                    canvas.pan(e[2] * surface_k * MAP_W / box.w, e[3] * surface_k * MAP_H / box.h)
                 elif e[0] == "scroll":                   # two fingers or the TrackPoint: pan
-                    canvas.pan(-e[1] * MAP_W / box.w, -e[2] * MAP_H / box.h)
+                    canvas.pan(-e[1] * surface_k * MAP_W / box.w, -e[2] * surface_k * MAP_H / box.h)
                 elif e[0] == "wheel":
                     canvas.scroll(e[1], map_xy(at))
         if canvas:
