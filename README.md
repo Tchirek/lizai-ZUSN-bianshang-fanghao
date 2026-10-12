@@ -21,6 +21,8 @@
 - **发射**：一台 UV-K5，用 CEC 固件经写频线发 FT8。
 - **显示**：机器自带屏幕上跑一个本地化的 HamClock。
 
+![X230 屏幕上的 HamClock：中间是可缩放的 UV-K5 视距覆盖图，叠着 APRS 台站、FT8/WSPR 路径和 Maidenhead 网格；左边 DX 集群和本周 FT8 统计，上面 X 射线、ADS-B 雷达屏和天气](hamclock/screenshot.png)
+
 ## 组成
 
 | 目录 | 内容 |
