@@ -189,15 +189,17 @@ class Auto:
         self.qso = QSO(self.call, self.grid)
         self.lock = threading.Lock()
         self.decoding = threading.Event()
-        self.chat = None
-        if llm:
-            from ft8_llm import Chat
-            self.chat = Chat(self.call, self.write)
         self.radio = k5ft8.Radio(port)
         self.radio.configure(dial)
         self.dial, self.out = dial, out
         self.last_cq = 0
         os.makedirs(out, exist_ok=True)
+        from ft8_memory import Memory
+        self.memory = Memory(os.path.join(out, "memory.json"), os.path.join(out, "auto.jsonl"))
+        self.chat = None
+        if llm:
+            from ft8_llm import Chat
+            self.chat = Chat(self.call, self.write, self.memory)
         from ft8_web import Control, serve
         self.web = Control(self.call, self.grid, self.validate_manual)
         self.restore_cq(time.time())
@@ -335,8 +337,14 @@ class Auto:
             if (self.qso.peer or self.qso.pending) and slot - self.qso.started > 240:
                 self.qso.reset()
                 self.web.discard("状态机")
-            return (self.web.recent(slot) or bool(self.qso.peer and
-                    (self.qso.last_tx >= self.qso.started or 0 <= self.qso.started - self.last_cq <= 240)))
+            chat = self.chat
+            if chat:
+                chat.tick(slot)
+            # a reply or greeting under way after the exchange belongs to it, for at most the
+            # chat's four minutes
+            return (self.web.recent(slot) or bool(chat and not self.qso.peer and chat.engaged(slot))
+                    or bool(self.qso.peer and (self.qso.last_tx >= self.qso.started
+                                               or 0 <= self.qso.started - self.last_cq <= 240)))
 
     def transmit(self, slot):
         if self.decoding.is_set():
@@ -388,8 +396,9 @@ class Auto:
                 with open(os.path.join(self.out, "qsos.adi"), "a") as f:
                     f.write(adif(qso, self.call, self.grid, self.dial))
                 self.write("qso", **qso)
+                self.memory.record_qso(qso)
                 if self.chat:
-                    self.chat.start(qso)
+                    self.chat.start(qso, opening=True)
             self.qso.completed.clear()
             return True
 

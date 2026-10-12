@@ -1,5 +1,6 @@
 from concurrent.futures import Future
 import json
+from pathlib import Path
 import tempfile
 import threading
 import unittest
@@ -7,6 +8,7 @@ from unittest.mock import Mock, patch
 
 from ft8_auto import Auto, QSO
 from ft8_llm import Chat
+from ft8_memory import Memory
 from ft8_web import Control
 import k5ft8
 
@@ -55,10 +57,11 @@ class Tests(unittest.TestCase):
         self.tmp = tempfile.TemporaryDirectory()
         self.addCleanup(self.tmp.cleanup)
         c.out = self.tmp.name
+        c.memory = Memory(str(Path(self.tmp.name)/'memory.json'))
         c.chat = None
         if chat:
             with patch.dict('os.environ',OPENAI_API_KEY='test',OPENAI_MODEL='test'):
-                c.chat = Chat(c.call,c.write)
+                c.chat = Chat(c.call,c.write,c.memory)
             self.addCleanup(c.chat.close)
         return c
 

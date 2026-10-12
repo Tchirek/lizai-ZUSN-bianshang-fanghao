@@ -51,7 +51,7 @@ class Tests(unittest.TestCase):
     def test_only_started_qso_gets_priority_and_it_expires(self):
         controller = object.__new__(Auto)
         controller.lock, controller.qso, controller.last_cq = threading.Lock(), QSO('K1ABC','FN31'), -1000
-        controller.web = Control('K1ABC', 'FN31', lambda s:s)
+        controller.web, controller.chat = Control('K1ABC', 'FN31', lambda s:s), None
         controller.qso.receive(30, [dict(message='CQ W1ABC FN42', snr=-12)])
         self.assertFalse(controller.in_qso(45))
         controller.qso.transmitted(45)

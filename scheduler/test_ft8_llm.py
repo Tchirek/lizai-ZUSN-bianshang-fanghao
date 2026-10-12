@@ -62,7 +62,7 @@ class Tests(unittest.TestCase):
         chat = self.chat()
         chat.start(qso)
         chat.receive(dict(slot=105, decodes=[dict(df=1200, message='TNX QSO')]))
-        self.assertIs(chat.pool.submit.call_args.args[-1], qso)
+        self.assertIs(chat.pool.submit.call_args.args[-2], qso)
         response = dict(status='completed', output=[dict(type='message', role='assistant',
                         content=[dict(type='output_text', text='TNX 73')])])
         with patch.dict('os.environ', FT8_LLM_CONTACT='TG EXAMPLE'), \
