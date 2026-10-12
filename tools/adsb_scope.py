@@ -13,10 +13,15 @@ Symbols   jet/heavy (A3-A6) chevron along track, heavy drawn larger
           hollow symbol = position from MLAT/TIS-B, filled = ADS-B
 Colour    altitude band (legend at the bottom), white = altitude unknown
 Vector    1-minute track projection; dotted trail of the last 5 minutes
+Count     top right, aircraft heard today (since local midnight, kept across restarts in
+          ~/influ/model/adsb_today.json, a new day filled from the collector's snapshots);
+          below it the ones on the scope now
 
 usage: adsb_scope.py [--pane 2] [--range-mi 30] [--every 5] [--once out.png]
 """
 import argparse
+import glob
+import gzip
 import json
 import math
 import os
@@ -43,6 +48,9 @@ FONT_DIRS = ["/usr/share/fonts/truetype/freefont", "/usr/share/fonts/truetype/li
 JSON = "/run/dump1090-fa/aircraft.json"
 SDRMUX = "/run/sdrmux/ctl.sock"
 MI_KM = 1.609344
+TODAY = os.path.expanduser("~/influ/model/adsb_today.json")
+SNAPSHOTS = os.path.expanduser("~/influ/data/aircraft")      # the collector's, UTC day/hour files
+TZ_S = 8 * 3600
 # base map: dim, so aircraft stay the brightest thing on the scope (old vector radar look)
 MAP_STYLE = {"water": ((20, 45, 110), 1), "river": ((30, 70, 160), 1), "rail": ((70, 70, 70), 1),
              "trunk": ((75, 55, 20), 1), "motorway": ((120, 85, 25), 1),
@@ -85,6 +93,69 @@ def polar(lat0, lon0, lat, lon):
     return d, brg % 360
 
 
+def heard(ac):
+    """An aircraft dump1090 is tracking now on two messages or more (one may be noise)."""
+    return ac.get("seen", 99) <= 60 and ac.get("messages", 0) >= 2 and not ac["hex"].startswith("~")
+
+
+class Today:
+    """Aircraft heard since local midnight."""
+
+    def __init__(self, path=TODAY, snapshots=SNAPSHOTS):
+        self.path, self.snapshots = path, snapshots
+        self.day, self.hexes = None, set()
+        try:
+            with open(path) as f:
+                d = json.load(f)
+            self.day, self.hexes = d["day"], set(d["hex"])
+        except (OSError, ValueError, KeyError):
+            pass
+
+    @staticmethod
+    def day_of(t):
+        return time.strftime("%Y-%m-%d", time.gmtime(t + TZ_S))
+
+    def backfill(self, now):
+        """What the collector heard today before this process saw it."""
+        midnight = (now + TZ_S) // 86400 * 86400 - TZ_S
+        found = set()
+        for day in {time.strftime("%Y%m%d", time.gmtime(t)) for t in (midnight, now)}:
+            for path in sorted(glob.glob(os.path.join(self.snapshots, day, "*"))):
+                try:
+                    with (gzip.open if path.endswith(".gz") else open)(path, "rt") as f:
+                        for i, line in enumerate(f):
+                            if i % 5:                  # aircraft stay for many snapshots
+                                continue
+                            try:
+                                d = json.loads(line)
+                            except ValueError:
+                                continue
+                            if d.get("now", 0) >= midnight:
+                                found |= {ac["hex"] for ac in d.get("aircraft", []) if heard(ac)}
+                except (OSError, EOFError):
+                    continue
+        return found
+
+    def add(self, now, aircraft):
+        day = self.day_of(now)
+        if day != self.day:
+            self.day, self.hexes = day, self.backfill(now)
+            self.save()
+        new = {ac["hex"] for ac in aircraft if heard(ac)} - self.hexes
+        if new:
+            self.hexes |= new
+            self.save()
+        return len(self.hexes)
+
+    def save(self):
+        try:
+            with open(self.path + ".tmp", "w") as f:
+                json.dump(dict(day=self.day, hex=sorted(self.hexes)), f)
+            os.replace(self.path + ".tmp", self.path)
+        except OSError:
+            pass
+
+
 class Scope:
     def __init__(self, a):
         st = json.load(open(os.path.expanduser("~/influ/station.json")))
@@ -94,6 +165,8 @@ class Scope:
         self.R = min(W // 2, H // 2 - 6) - 16
         self.trails = defaultdict(lambda: deque(maxlen=300))     # hex -> (t, lat, lon)
         self.last = {}
+        self.today = Today()
+        self.count = 0
         self.base = self.static_layer(a.basemap)
 
     def static_layer(self, path):
@@ -160,6 +233,7 @@ class Scope:
             return
         now = j.get("now", time.time())
         self.last = {"now": now, "aircraft": j.get("aircraft", [])}
+        self.count = self.today.add(now, self.last["aircraft"])
         for ac in self.last["aircraft"]:
             if ac.get("lat") is not None and ac.get("seen_pos", 99) < 2:
                 tr = self.trails[ac["hex"]]
@@ -263,11 +337,10 @@ class Scope:
         d.text((4, 1), "ADS-B", font=F_TITLE, fill=TITLE)
         mi = self.range_km / MI_KM
         d.text((4, 24), f"{mi:.0f} mi", font=F_SMALL, fill=DIM)
-        cnt = f"{n_pos} AC"
+        cnt = f"{self.count} AC"
         d.text((W - 4 - d.textlength(cnt, font=F_TITLE), 1), cnt, font=F_TITLE, fill=WHITE)
-        if n_nopos:
-            s = f"+{n_nopos} no pos"
-            d.text((W - 4 - d.textlength(s, font=F_SMALL), 24), s, font=F_SMALL, fill=DIM)
+        s = f"{n_pos} now" + (f" +{n_nopos} no pos" if n_nopos else "")
+        d.text((W - 4 - d.textlength(s, font=F_SMALL), 24), s, font=F_SMALL, fill=DIM)
         # altitude legend, bottom-left: colour chips for 0/2/10/20/30 kft
         x0 = 4
         for (top, c), lab in zip(ALT_BANDS, ("0", "2", "10", "20", "30k")):
