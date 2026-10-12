@@ -16,9 +16,13 @@ admin   province (admin level 4), prefecture (5) and county (6) boundaries under
 military  every military area under the map from OpenStreetMap, live (landuse military, or a
         military base, barracks, airfield, naval base, range or training area): outlines with
         their name if mapped, else a point, the same way, into ~/influ/model/military.json.
-government  government offices and town halls under the map from OpenStreetMap, live, the
-        same way, radio regulators among them marked; the regulators OSM lacks come from
-        radio_regulators.json (official addresses), into ~/influ/model/government.json.
+government  the wanted government departments under the map (WANTED: party and government
+        organs, congress and CPPCC, public security, courts and procuratorates, custodial
+        facilities, emergency response and fire, enforcement and regulation bureaus,
+        livelihood and public services, broadcasters and news media) from OpenStreetMap and
+        the AMap offices tools/amap_gov.py collected, live, radio regulators (a layer of
+        their own) marked; the regulators OSM lacks come from radio_regulators.json (official
+        addresses), into ~/influ/model/government.json.
 render  the ground as build_rangemap.py draws it (relief, line-of-sight coverage) as a tile
         pyramid in the map's own projection: level L is the W x H base map at L times its
         scale, cut into 256 px tiles, ~/influ/model/tiles/L/col_row.png. The map window only
@@ -163,8 +167,40 @@ GOVERNMENT_QUERY = """[out:json][timeout:240];
 out geom;"""
 # names ending like an office that are not one
 NOT_GOVERNMENT = re.compile("邮政|邮局|电信|移动|联通|银行|信用社|酒店|宾馆|饭店|餐厅|招待所|书店|超市|药(?!品监督管理)|宿舍|小区|家属|公寓|"
-                            "旧址|遗址|纪念|博物|学校|学院|大学|医院|公司|集团|广场|公园|站台|车站|加油|维修|商店|"
-                            "专卖|门市|营业|网点|服务部|经营部|门诊|诊所|殡仪|陵园|电视台|电台$|报社|出版|市场(?!监督管理)")
+                            "旧址|遗址|纪念|博物|学院|公司|集团|广场|公园|站台|车站|加油|维修|商店|"
+                            "专卖|门市|营业|网点|服务部|经营部|门诊|诊所|殡仪|陵园|出版|支部|党组|居民委员会|村民"
+                            "委员会|居委会|村委会|社区委员会|社区党委|社区工作委员会|社区纪律检查|市场(?!监督|监管)|=>|路：|->|"
+                            "共青团|青年团|关心下一代|林长制|河长制|残疾人|工会|离退休|学会|协会|基金会|"
+                            "国民党革命委员会|民主同盟|民主建国会|民主促进会|农工民主党|致公党|九三学社|台湾民主自治同盟")
+# the departments the layer keeps, by the map's categories: the party and government organs;
+# congress and the CPPCC; public security; the courts and procuratorates; the custodial and
+# treatment facilities; emergency response and fire; the enforcement and regulatory bureaus;
+# the livelihood and public service bureaus; and broadcasters and news media. Anything else
+# mapped as an office is left out; the radio regulators (cyan) are a layer of their own.
+WANTED = re.compile(
+    "党委|党工委|市委|县委|区委|镇委|乡委|州委|省委|盟委|"                        # 党政机关
+    "政府|街道办事处|街道办|机关工作委员会|街道工作委员会|新区工作委员会|"
+    "开发区工作委员会|园区工作委员会|纪律检查委员会|纪律检查工作委员会|政法委员会|"
+    "人大|人民代表大会|政协(?!助)|"                                             # 权力与协商机关
+    "公安|派出所|交警|交通警察|警务|车管所|车辆管理所|"                            # 公安机关
+    "法院|人民法庭|检察|司法局|司法所|"                                          # 司法与法律监督机关
+    "看守所|拘留所|监狱|戒毒|"                                                  # 监管场所
+    "应急管理|消防|防汛|抗旱|"                                                  # 应急救援机关
+    "市场监管|市场监督管理|药品监督管理|城管(?!理)|城市管理|综合行政执法|生态环境|环境保护局|环保局|交通执法|交通运输.*?执法|税务|"   # 行政执法与监管机关
+    "卫生健康|卫生和计划生育|卫生局|民政|教育|信访|疾病预防控制|疾控|政务服务中心|"   # 民生与公共服务机关
+    "广播电视局|广播电视台|广播电视总台|广播电台|电视台|融媒体|新闻传媒|报社|日报")   # 宣传与新闻传媒机构
+# a 中共 committee counts only for a jurisdiction's own (市委, 县委, 纪委, 机关工委 ...), not
+# for the committee or the branch inside some other unit (中共XX局委员会, 中共XX学校支部委员会)
+PARTY = re.compile("党委|党工委|市委|县委|区委|镇委|乡委|州委|省委|盟委|"
+                   "机关工作委员会|街道工作委员会|新区工作委员会|开发区工作委员会|园区工作委员会|"
+                   "纪律检查委员会|纪律检查工作委员会|政法委员会")
+
+
+def wanted(name):
+    """Whether the government layer shows this office."""
+    if "中共" in name and not PARTY.search(name):
+        return False
+    return bool(WANTED.search(name))
 REGULATORS = os.path.join(os.path.dirname(os.path.abspath(__file__)), "radio_regulators.json")
 AMAP_CELLS = os.path.join(a.MODEL, "amap_cells")          # tools/amap_gov.py's
 # where an office's name shows from: city level and up as military areas do, then counties
@@ -342,8 +378,11 @@ def amap_offices():
             if p["id"] in seen or not p.get("name"):
                 continue
             seen.add(p["id"])
+            radio = "无线电" in p["name"]
+            if not radio and (not wanted(p["name"]) or NOT_GOVERNMENT.search(p["name"])):
+                continue
             lat, lon = wgs84(p["lat"], p["lng"])
-            out.append(dict(name=p["name"], rings=[], point=[lat, lon], radio="无线电" in p["name"],
+            out.append(dict(name=p["name"], rings=[], point=[lat, lon], radio=radio,
                             zoom=name_zoom(p["name"], p.get("type", "").split(";")[-1])))
     return out
 
@@ -353,18 +392,19 @@ def plain(name):
 
 
 def write_government():
-    """government.json: government offices and town halls, outlined or a point, with their
-    names; radio regulators (无线电 in the name) flagged, and those OSM lacks added from
+    """government.json: only the departments WANTED names (the yellow areas and points, by
+    the map's categories), outlined or a point, each with its name; radio regulators (无线电
+    in the name) are flagged and kept whatever the list says, and those OSM lacks added from
     radio_regulators.json unless one is mapped within ~500 m."""
     out = []
     for e in kept(OLD_GOVERNMENT_CELLS, GOVERNMENT_CELLS).values():
         tags = e.get("tags", {})
         name = tags.get("name:zh") or tags.get("name") or tags.get("name:en") or ""
         radio = "无线电" in name
-        tagged = (tags.get("office") == "government" or tags.get("government") or tags.get("building") == "government"
-                  or tags.get("amenity") in ("townhall", "courthouse", "police"))
-        if not radio and not tagged and (NOT_GOVERNMENT.search(name) or tags.get("highway") or tags.get("railway")
-                                         or tags.get("public_transport") or tags.get("shop")):
+        # the wanted departments, less the bus stop or market that merely carries one's name
+        if not radio and (NOT_GOVERNMENT.search(name) or not wanted(name)
+                          or tags.get("highway") or tags.get("railway")
+                          or tags.get("public_transport") or tags.get("shop")):
             continue
         if e["type"] == "node":
             out.append(dict(name=name, rings=[], point=[e["lat"], e["lon"]], radio=radio, zoom=name_zoom(name)))
