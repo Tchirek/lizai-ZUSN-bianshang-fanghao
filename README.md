@@ -1,6 +1,8 @@
 # 立在 ZUSN 边上放号
 
-<img src="ai-slop-67.png" alt="Vibe Trending — #67 AI-slop Of The Day" width="250" height="55">
+<p align="center">
+  <img src="ai-slop-67.png" alt="Vibe Trending — #67 AI-slop Of The Day" width="250" height="55">
+</p>
 
 莫斯科号无法同时使用通信和雷达设备，rtl-sdr v4无法同时接收adsb和民用频段。
 
