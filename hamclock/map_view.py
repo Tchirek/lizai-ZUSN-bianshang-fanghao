@@ -25,7 +25,7 @@ import math
 import multiprocessing
 import os
 import time
-from collections import OrderedDict
+from collections import Counter, OrderedDict
 from itertools import islice
 from concurrent.futures import ProcessPoolExecutor
 from concurrent.futures.process import BrokenProcessPool
@@ -227,44 +227,34 @@ def text_size(text, size, scale):
     return (r.width + 2) / scale, (r.height + 2) / scale
 
 
-FAN = 9                       # rows a fan column holds, one column each side
-SPOTS = 15 + 2 * FAN          # spot() places: 0..8 beside and on the point, 9..14 a ladder,
-                              # then the fan's two columns, for many labels on one point
+AROUND = 8                    # spots right beside a label's point, all a label normally tries
+STACK = 7                     # rows a stack column holds, the nearest first
+SPOTS = 9 + 2 * STACK         # then 8, centred on the point, and the stack's two columns
+SAME_PLACE = 0.004            # base px (~4 m): points this close share a building
 
 
 def spot(k, tw, th=0):
-    """Where a label in spot `k` puts its top left, from its point (view px). 0..8: right,
-    left, above, below, the same again further out, and centred; 9..14: one 26 px ladder step
-    at a time, right of all those; 15..: the fan — a column near and one far, right and left,
-    one row at a time, for places where label after label sits on one point (a consulate's
-    building)."""
+    """Where a label in spot `k` puts its top left, from its point (view px). 0..7 beside the
+    point: right, left, above, below, then the same a little further out; 8 centred on it (a
+    town's name once its dot is gone); 9 on, only for points that share a building with others:
+    a stack of rows right of the point, the nearest row first, then the same left of it."""
     if k < 9:
         return ((7, -7), (-tw - 7, -7), (-tw / 2, -22), (-tw / 2, 7),
                 (18, -7), (-tw - 18, -7), (-tw / 2, -33), (-tw / 2, 18), (-tw / 2, -th / 2))[k]
-    if k < 15:
-        return (tw / 2 + 7, (-33, 19, -59, 45, -85, 71)[k - 9])
-    col, row = divmod(k - 15, FAN)
-    dy = -7 + (row - (FAN - 1) / 2) * 26
-    if col % 2 == 0:                                # the right-hand column, then the left
-        return (tw / 2 + 7, dy)
-    return (-tw / 2 - 7 - tw, dy)
+    col, row = divmod(k - 9, STACK)
+    step = (row + 1) // 2 * (1 if row % 2 else -1)          # 0, +1, -1, +2, -2 ...
+    return (7 if col == 0 else -tw - 7, -th / 2 + step * (th + 1))
 
 
 def offsets(k, tw, th):
-    """spot() over arrays of spots: (dx, dy) each; a scalar goes through spot() itself (this
-    runs for every label and every try, so it must not pay the array machinery)."""
-    if np.ndim(k) == 0:
-        return spot(int(k), float(tw), float(th))
+    """spot() over arrays: the (dx, dy) of every label at once."""
     k = np.asarray(k)
-    fan, col, row = k >= 15, (k - 15) // FAN, (k - 15) % FAN
-    right = col % 2 == 0
-    dx = np.select([k == 0, k == 1, k == 4, k == 5, (k >= 9) & ~fan, fan & right, fan],
-                   [7, -tw - 7, 18, -tw - 18, tw / 2 + 7, tw / 2 + 7, -tw / 2 - 7 - tw],
-                   -tw / 2)
-    dy = np.select([k == 2, k == 3, k == 6, k == 7, k == 8, (k >= 9) & ~fan, fan],
-                   [-22, 7, -33, 18, -th / 2,
-                    np.array([-33, 19, -59, 45, -85, 71])[np.clip(k - 9, 0, 5)],
-                    -7 + (row - (FAN - 1) / 2) * 26], -7)
+    stack, col, row = k >= 9, (k - 9) // STACK, (k - 9) % STACK
+    step = (row + 1) // 2 * np.where(row % 2 == 1, 1, -1)
+    dx = np.select([k == 0, k == 1, k == 4, k == 5, stack & (col == 0), stack],
+                   [7, -tw - 7, 18, -tw - 18, 7, -tw - 7], -tw / 2)
+    dy = np.select([k == 2, k == 3, k == 6, k == 7, k == 8, stack],
+                   [-22, 7, -33, 18, -th / 2, -th / 2 + step * (th + 1)], -7)
     return dx, dy
 
 
@@ -278,16 +268,16 @@ def flag_box(scale, size=13):
 
 def place_labels(items, scale, pads=None, limits=None):
     """For labels in priority order, each (text, base xy, size, from zoom, centred from zoom):
-    their sizes (view px) and, per LABEL_ZOOMS step, the spot each takes (0..8) or -1. At each
+    their sizes (view px) and, per LABEL_ZOOMS step, the spot each takes (see spot()) or -1. At each
     step a label keeps its earlier spot if that is still clear, else takes the first clear one,
     else waits; nothing overlaps, and no label leaves the map. `pads` widens a label's box to
-    the left by that much (view px), for what is drawn there — a consulate's flag; `limits`
-    says how many spots each label may try, the fan's beyond the usual fifteen being for the
-    few that need them."""
+    the left by that much (view px), for what is drawn there: a consulate's flag. `limits` says
+    how many spots each label may try: the eight beside its point, or all of them (the stack)
+    for a point sharing its building with others."""
     pygame.freetype.init()
     sizes = [text_size(text, size, scale) for text, _, size, *_ in items]
     pads = [0.0] * len(items) if pads is None else pads
-    limits = [15] * len(items) if limits is None else limits
+    limits = [AROUND] * len(items) if limits is None else limits
     spots = np.full((len(items), len(LABEL_ZOOMS)), -1, np.int8)
     cell = 128
     for li, z in enumerate(LABEL_ZOOMS):
@@ -311,7 +301,8 @@ def place_labels(items, scale, pads=None, limits=None):
             if z < start * 0.999:
                 continue
             before = int(spots[i, li - 1]) if li else -1
-            order = ([before] if before >= 0 else []) + [k for k in range(limits[i]) if k != before]
+            order = ([before] if before >= 0 and before != 8 else []) + \
+                [k for k in range(limits[i]) if k not in (before, 8)]
             if z >= centred * 0.999:                     # centred if it can be, else beside
                 order = [8] + order
             for k in order:
@@ -431,7 +422,11 @@ def static_part(static, scale):
         kinds.append((kind, colour, c["code"]) if kind == "embassy" else (kind, colour))
     places(static, items, kinds, False)
     pads = np.array([flag_box(scale)[2] if kind[0] == "embassy" else 0.0 for kind in kinds])
-    limits = [SPOTS if kind[0] == "embassy" else 15 for kind in kinds]
+    # a point sharing its building with others gets the stack beside it, so that each name in
+    # the building can show; every other label stays right beside its own point
+    building = [(round(xy[0] / SAME_PLACE), round(xy[1] / SAME_PLACE)) for _, xy, *_ in items]
+    shared = {b for b, n in Counter(building).items() if n > 1}
+    limits = [SPOTS if b in shared else AROUND for b in building]
     sizes, spots = place_labels(items, scale, pads, limits)
     part = dict(key=key, places=static["place_xy"], campuses=static["campuses"], military=static["military"],
                 government=static["government"], regulators=static["regulators"],
@@ -1177,7 +1172,7 @@ class Scene:
             if kind[0] == "embassy":                 # a consulate's flag at the label's left
                 w, gap, _ = flag_box(s, size)
                 jobs.append((flags.flag(kind[2], text_px(size, s)), (px - w - gap - 1, py + 1)))
-            if k[i] >= 9:                            # placed away from its point: show the tie
+            if k[i] >= 9:                            # one of a building's stack: tie it to the point
                 ax, ay = at[i, 0] * s, at[i, 1] * s
                 mid = py + th[i] * s / 2
                 leads.append(((ax, ay), (px - 3, mid) if x[i] > at[i, 0] else (px + tw[i] * s + 3, mid)))
