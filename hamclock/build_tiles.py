@@ -19,9 +19,9 @@ military  every military area under the map from OpenStreetMap, live (landuse mi
 government  the wanted government departments under the map (WANTED: party and government
         organs, congress and CPPCC, public security, courts and procuratorates, custodial
         facilities, emergency response and fire, enforcement and regulation bureaus,
-        livelihood and public services, broadcasters and news media) from OpenStreetMap and
-        the AMap offices tools/amap_gov.py collected, live, radio regulators (a layer of
-        their own) marked; the regulators OSM lacks come from radio_regulators.json (official
+        livelihood and public services, broadcasters and news media) from OpenStreetMap, the
+        AMap offices tools/amap_gov.py collected and those tools/amap_names.py named and
+        geocoded, live, radio regulators (a layer of their own) marked; the regulators OSM lacks come from radio_regulators.json (official
         addresses), into ~/influ/model/government.json.
 render  the ground as build_rangemap.py draws it (relief, line-of-sight coverage) as a tile
         pyramid in the map's own projection: level L is the W x H base map at L times its
@@ -202,7 +202,9 @@ def wanted(name):
         return False
     return bool(WANTED.search(name))
 REGULATORS = os.path.join(os.path.dirname(os.path.abspath(__file__)), "radio_regulators.json")
-AMAP_CELLS = os.path.join(a.MODEL, "amap_cells")          # tools/amap_gov.py's
+AMAP_CELLS = os.path.join(a.MODEL, "amap_cells")          # tools/amap_gov.py's passes
+AMAP_PASSES = (AMAP_CELLS, os.path.join(a.MODEL, "amap_media"), os.path.join(a.MODEL, "amap_custody"))
+AMAP_NAMES = os.path.join(a.MODEL, "amap_names", "geo.jsonl")   # tools/amap_names.py's
 # where an office's name shows from: city level and up as military areas do, then counties
 HIGH = re.compile("(省|自治州|市|州|地区)(人民政府|政府|委员会|中级人民法院|人民检察院|公安局)$")
 COUNTY = re.compile("(县|区|市|旗)(人民政府|政府|委员会|人民法院|人民检察院|公安局|税务局)$")
@@ -365,14 +367,12 @@ def wgs84(lat, lon):
 
 
 def amap_offices():
-    """AMap's offices (tools/amap_gov.py), each once, in WGS-84."""
+    """AMap's offices (every pass of tools/amap_gov.py), each once, in WGS-84."""
     out, seen = [], set()
-    if not os.path.isdir(AMAP_CELLS):
-        return out
-    for name in sorted(os.listdir(AMAP_CELLS)):
-        if not name.endswith(".json"):
-            continue
-        with open(os.path.join(AMAP_CELLS, name)) as f:
+    files = [os.path.join(folder, name) for folder in AMAP_PASSES if os.path.isdir(folder)
+             for name in sorted(os.listdir(folder)) if name.endswith(".json")]
+    for path in files:
+        with open(path) as f:
             pois = json.load(f).get("pois", [])
         for p in pois:
             if p["id"] in seen or not p.get("name"):
@@ -384,6 +384,49 @@ def amap_offices():
             lat, lon = wgs84(p["lat"], p["lng"])
             out.append(dict(name=p["name"], rings=[], point=[lat, lon], radio=radio,
                             zoom=name_zoom(p["name"], p.get("type", "").split(";")[-1])))
+    return out
+
+
+def geocoded_offices():
+    """The offices tools/amap_names.py named and AMap's Geocoder placed: only answers that are
+    a point of interest whose address ends with the very name asked for (a county's police
+    asked for and the city's found does not count), within 80 km of the place it was asked for,
+    each named as AMap names it, once, in WGS-84; named from the zoom its level deserves (a
+    prefecture's offices as city level, a county's as county level)."""
+    out, seen = [], set()
+    if not os.path.exists(AMAP_NAMES):
+        return out
+    levels = {}
+    with open(os.path.join(os.path.dirname(AMAP_NAMES), "districts.json"), encoding="utf-8") as f:
+        stack = list(json.load(f).values())
+    while stack:
+        d = stack.pop()
+        levels.setdefault(d["name"], d["level"])
+        stack += d["districts"]
+    tier = {"province": 8, "city": 6, "district": 8}
+    with open(AMAP_NAMES, encoding="utf-8") as f:
+        for line in f:
+            try:
+                r = json.loads(line)
+            except ValueError:
+                continue
+            q, (lon0, lat0) = plain(r["job"]["q"]), r["job"]["centre"]
+            for g in r["found"][:1]:
+                address = plain(g["address"])
+                if g["level"] != "兴趣点" or not address.endswith(q) or not g["location"]:
+                    continue
+                name = address                                # less the province, city, ... it starts with
+                for part in g.get("parts") or []:
+                    if part and name.startswith(part) and name[len(part):].endswith(q):
+                        name = name[len(part):]
+                if "无线电" not in name and (not wanted(name) or NOT_GOVERNMENT.search(name)):
+                    continue
+                lat, lon = wgs84(g["location"][1], g["location"][0])
+                if math.dist((lat, lon), (lat0, lon0)) > 0.8 or (name, round(lat, 4), round(lon, 4)) in seen:
+                    continue
+                seen.add((name, round(lat, 4), round(lon, 4)))
+                zoom = min(name_zoom(name), tier.get(levels.get(r["job"]["unit"]), 12))
+                out.append(dict(name=name, rings=[], point=[lat, lon], radio="无线电" in name, zoom=zoom))
     return out
 
 
@@ -417,8 +460,11 @@ def write_government():
     mapped = {}
     for c in out:
         mapped.setdefault(plain(c["name"]), []).append(c["point"])
-    amap = [c for c in amap_offices()
-            if not any(math.dist(c["point"], p) < 0.004 for p in mapped.get(plain(c["name"]), ()))]
+    amap = []
+    for c in amap_offices() + geocoded_offices():
+        if not any(math.dist(c["point"], p) < 0.004 for p in mapped.get(plain(c["name"]), ())):
+            amap.append(c)
+            mapped.setdefault(plain(c["name"]), []).append(c["point"])
     out += amap
     with open(REGULATORS, encoding="utf-8") as f:     # those found nowhere else, placed by hand
         for r in json.load(f):
