@@ -39,7 +39,7 @@ import activity as a
 import build_rangemap as terrain
 import build_tiles as tiles
 import flags
-from map_panel import night_rgba, solar_elevation
+from map_panel import EDGE, LINE_PX, SUN_DOWN, SUN_GOLD, SUN_ICON_R, SUNSET, solar_elevation, sun_picture, sun_text, twilight
 
 W, H = a.W, a.H
 MAX_ZOOM = 96
@@ -78,6 +78,8 @@ PROVINCE = (255, 255, 255, 190), 2, (9, 3, 2, 3)             # dash-dot, as on p
 PREFECTURE = (255, 255, 255, 150), 2, (7, 4)
 COUNTY = (255, 255, 255, 70), 1, None
 RING = (190, 190, 190, 90)
+TAG_STEP = 11                 # view px between the rows the terminator is found on, and where its name may sit
+TAG_GAP = 1.5                 # physical px between the line's dark edge and the name's baseline
 log = logging.getLogger(__name__)
 
 
@@ -680,15 +682,23 @@ def ground(base, origin, scale, size):
 
 def shade(base, origin, scale, size, when):
     """The ground with night laid on for time `when`, as RGB bytes with a 1 px border that
-    repeats the edge (picture px (i, j) at (i + 1, j + 1)); and the metres a terrain pixel."""
+    repeats the edge (picture px (i, j) at (i + 1, j + 1)); the metres a terrain pixel; and the
+    terminator to lay over what is drawn on the ground, None if it is not in the picture, else
+    (x, y, w, h) of the picture px it covers and their RGBA bytes with a 1 px clear border."""
     picture, metres = ground(base, origin, scale, size)
-    step = 8                                         # night is smooth: every 8th pixel
+    step = 8                                         # the sun's elevation is smooth: every 8th pixel
     y, x = np.mgrid[0:size[1] + step:step, 0:size[0] + step:step] + step / 2
     lat, lon = grid_latlon(base, origin[0] + x / scale, origin[1] + y / scale)
-    night = Image.fromarray(night_rgba(lat, lon, when)).resize(
-        size, Image.Resampling.BILINEAR, box=(0, 0, size[0] / step, size[1] / step))
+    night, line = twilight(solar_elevation(lat, lon, when), size, step)
     rgb = np.asarray(Image.alpha_composite(picture.convert("RGBA"), night).convert("RGB"))
-    return np.pad(rgb, ((1, 1), (1, 1), (0, 0)), mode="edge").tobytes(), metres
+    if line is not None:
+        x, y, rgba = line
+        h, w = rgba.shape[:2]
+        padded = np.zeros((h + 2, w + 2, 4), np.uint8)
+        padded[..., :3] = EDGE
+        padded[1:-1, 1:-1] = rgba
+        line = (x, y, w, h), padded.tobytes()
+    return np.pad(rgb, ((1, 1), (1, 1), (0, 0)), mode="edge").tobytes(), metres, line
 
 
 # ------------------------------------------------------------------ vector scene ----
@@ -801,6 +811,7 @@ class Scene:
         pygame.freetype.init()
         self.base, self.scale = base, scale
         self.glyphs = OrderedDict()
+        self.turned, self.suns = {}, {}       # the terminator's name as turned; the HUD's sun, up and down
         self.data, self.future, self.mtime, self.checked = None, None, None, 0
         self.part = None                      # the static part of the scene, kept between loads
         self.admin, self.admin_future, self.admin_mtime = {}, None, None
@@ -988,10 +999,13 @@ class Scene:
 
     # -------------------------------------------------------------------- draw ----
 
-    def draw(self, surface, view, metres, resting=True):
+    def draw(self, surface, view, metres, resting=True, when=None, terminator=None):
         """Draw over the ground on `surface` (the map box at its physical size): opaque lines,
         then the translucent ones (rings, grid, boundaries, campuses, paths) blended at once,
-        then the grid's names, markers and labels."""
+        then the terminator (`terminator(surface)` draws it) over every line, then the grid's
+        names, markers and labels, the terminator's name and the HUD, the sun as at `when` (the
+        time the ground's night was shaded for)."""
+        when = time.time() if when is None else when
         s = self.scale
         self.budget = math.inf if resting else NEW_GLYPHS
         if self.layer is None or self.layer.get_size() != surface.get_size():
@@ -1002,11 +1016,14 @@ class Scene:
         self.draw_boundaries(view, s)
         self.draw_overlays(view, s)
         surface.blit(self.layer, (0, 0), special_flags=pygame.BLEND_ALPHA_SDL2)
+        if terminator:
+            terminator(surface)
         surface.blits([(self.glyph(text, colour, size, True), (round(x * s) - 1, round(y * s) - 1))
                        for text, colour, size, (x, y) in grid_names], False)
         legend = self.draw_markers(view, surface, s)
         self.draw_labels(view, surface, s)
-        self.draw_hud(view, surface, s, metres, legend)
+        self.draw_terminator(view, surface, s, when, grid_names)
+        self.draw_hud(view, surface, s, metres, legend, when)
 
     def draw_ground_lines(self, view, surface, s):
         """Rivers and runways (to scale, never thinner than 2 px, on a dark edge so they show
@@ -1159,6 +1176,7 @@ class Scene:
         us; then every label placed for this zoom step."""
         d = self.data
         li = max(i for i, z in enumerate(LABEL_ZOOMS) if z <= view.zoom * 1.0001)
+        self.label_boxes = np.empty((0, 4))
         if d is not None:
             if view.zoom < CITY_ZOOM:                    # zoomed in, towns are their outlines
                 xy = view.points(d["places"])
@@ -1183,6 +1201,7 @@ class Scene:
         shown = (k >= 0) & (x + tw > 0) & (x < W) & (y + th > 0) & (y < H)
         if view.zoom < CAMPUS_ZOOM:
             shown &= ~d["label_campus"]
+        self.label_boxes = np.stack([x, y, x + tw, y + th], axis=1)[shown]
         jobs, leads = [], []
         for i, px, py in zip(np.flatnonzero(shown).tolist(), np.round(x[shown] * s - 1).astype(int).tolist(),
                              np.round(y[shown] * s - 1).astype(int).tolist()):
@@ -1203,7 +1222,77 @@ class Scene:
             pygame.draw.aaline(surface, LEAD, a, b)
         surface.blits(jobs, False)
 
-    def draw_hud(self, view, surface, s, metres, legend):
+    def along(self, text, colour, size, angle):
+        """`text` in outlined italics turned `angle` degrees clockwise (to the degree), and the
+        offset from the middle of that picture to the middle of the text's baseline (physical
+        px); cached."""
+        key = text, colour, size, round(angle)
+        if key not in self.turned:
+            k = 2                                        # drawn twice as large, turned and halved: smooth
+            f = font(kind_of(text), text_px(size, self.scale) * k)
+            pic, _ = f.render(text, colour, style=pygame.freetype.STYLE_OBLIQUE)
+            shadow, _ = f.render(text, (0, 0, 0), style=pygame.freetype.STYLE_OBLIQUE)
+            out = pygame.Surface((pic.get_width() + 2 * k, pic.get_height() + 2 * k), pygame.SRCALPHA)
+            for at in ((0, 0), (k, 0), (2 * k, 0), (0, k), (2 * k, k), (0, 2 * k), (k, 2 * k), (2 * k, 2 * k)):
+                out.blit(shadow, at)
+            out.blit(pic, (k, k))
+            turned = pygame.transform.rotozoom(out, -round(angle), 1 / k)
+            rad = math.radians(round(angle))
+            down = (k + f.get_sized_ascender() - out.get_height() / 2) / k   # middle to baseline, unturned
+            self.turned[key] = (turned.convert_alpha() if pygame.display.get_surface() else turned,
+                                (-down * math.sin(rad), down * math.cos(rad)))
+            if len(self.turned) > 64:
+                self.turned.pop(next(iter(self.turned)))
+        return self.turned[key]
+
+    def draw_terminator(self, view, surface, s, when, grid_names):
+        """SUNSET or SUNRISE in gold italics on the terminator, the line its baseline, reading
+        down it; at the first place from the top where it covers the least of the labels and
+        grid names (none, mostly), clear of the HUD."""
+        corners = view.grid_latlon(np.array([0.0, W, 0, W]), np.array([0.0, 0, H, H]))
+        if len(set((solar_elevation(*corners, when) >= SUNSET).tolist())) < 2:
+            return                                       # the line is all but straight: not in view
+        x, rows = np.linspace(0, W, 133), np.arange(TAG_STEP / 2, H, TAG_STEP)
+        lat, lon = view.grid_latlon(*np.meshgrid(x, rows))
+        alt = solar_elevation(lat, lon, when) - SUNSET
+        r, c = np.nonzero(np.diff(alt >= 0, axis=1))
+        r, first = np.unique(r, return_index=True)       # where the line crosses each row
+        c = c[first]
+        if len(r) < 2:
+            return
+        on = np.stack([x[c] + (x[c + 1] - x[c]) * alt[r, c] / (alt[r, c] - alt[r, c + 1]), rows[r]], axis=1)
+        setting = float(solar_elevation(lat[r[0], c[0]], lon[r[0], c[0]], when + 60)) < float(alt[r[0], c[0]]) + SUNSET
+        angle = math.degrees(math.atan2(*(on[-1] - on[0])[::-1]))           # the line's way down the view
+        pic, baseline = self.along("SUNSET" if setting else "SUNRISE", SUN_GOLD, 13, angle)
+        rad = math.radians(round(angle))
+        lift = LINE_PX / 2 + 1 + TAG_GAP                 # physical px from the line's middle to the baseline
+        shift = (np.array([math.sin(rad), -math.cos(rad)]) * lift - baseline) / s
+        half = np.array(pic.get_size()) / 2 / s
+        taken = np.vstack([self.label_boxes.reshape(-1, 4)] +
+                          [(x0, y0, x0 + self.width(text, size), y0 + size + 5) for text, _, size, (x0, y0) in grid_names])
+        boxes = np.hstack([on + shift - half, on + shift + half])
+        boxes = boxes[(boxes[:, 0] >= 4) & (boxes[:, 2] <= W - 4) & (boxes[:, 1] >= 28) & (boxes[:, 3] <= H - 30)]
+        if not len(boxes):
+            return
+        wide = np.clip(np.minimum(boxes[:, None, 2], taken[:, 2]) - np.maximum(boxes[:, None, 0], taken[:, 0]), 0, None)
+        tall = np.clip(np.minimum(boxes[:, None, 3], taken[:, 3]) - np.maximum(boxes[:, None, 1], taken[:, 1]), 0, None)
+        box = boxes[np.argmin((wide * tall).sum(axis=1))]
+        surface.blit(pic, (round(box[0] * s), round(box[1] * s)))
+
+    def sun(self, up):
+        """The HUD's sun (sun_picture()), up or faded; made again when sdo.png changes."""
+        try:
+            key = up, os.path.getmtime(os.path.join(a.MODEL, "sdo.png"))
+        except OSError:
+            key = up, None
+        if key not in self.suns:
+            pic = sun_picture(SUN_ICON_R * self.scale, 255 if up else SUN_DOWN)
+            pic = pygame.image.frombytes(pic.tobytes(), pic.size, "RGBA")
+            self.suns = {k: v for k, v in self.suns.items() if k[1] == key[1]}
+            self.suns[key] = pic.convert_alpha() if pygame.display.get_surface() else pic
+        return self.suns[key]
+
+    def draw_hud(self, view, surface, s, metres, legend, when):
         """Scale bar and terrain detail bottom left, legend bottom right, sun top right."""
         km = 130 * view.km_per_px
         decade = 10 ** math.floor(math.log10(km))
@@ -1225,11 +1314,21 @@ class Scene:
                 pygame.draw.rect(surface, colour, (x * s, (H - 15) * s, 8 * s, 8 * s))
                 self.text(surface, text, (x + 12, H - 20), a.WHITE)
                 x += w
-        sun = f"SUN {float(solar_elevation(view.lat0, view.lon0, time.time())):+.0f} deg"
-        tw = self.width(sun)
-        pygame.draw.rect(surface, (0, 0, 0), ((W - tw - 16) * s, 4 * s, (tw + 12) * s, 20 * s))
-        pygame.draw.rect(surface, GREY, ((W - tw - 16) * s, 4 * s, (tw + 12) * s, 20 * s), 1)
-        self.text(surface, sun, (W - tw - 10, 6), a.WHITE)
+        # the sun here: SDO's picture of it as HamClock's SDO pane has it, faded once it has
+        # set; its elevation, and the day's sunrise and sunset in local time
+        elevation, parts = sun_text(view.lat0, view.lon0, when)
+        widths = [(self.width(name), self.width(value)) for name, value in parts]
+        width = 30 + sum(n + 3 + v for n, v in widths) + 12 * (len(parts) - 1) + 8
+        left = W - 4 - width
+        pygame.draw.rect(surface, (0, 0, 0), (left * s, 4 * s, width * s, 20 * s))
+        pygame.draw.rect(surface, GREY, (left * s, 4 * s, width * s, 20 * s), 1)
+        pic = self.sun(elevation > SUNSET)
+        surface.blit(pic, (round((left + 15) * s - pic.get_width() / 2), round(14 * s - pic.get_height() / 2)))
+        x = left + 30
+        for (name, value), (n, v) in zip(parts, widths):
+            self.text(surface, name, (x, 6), a.DIM)
+            self.text(surface, value, (x + n + 3, 6), a.WHITE)
+            x += n + 3 + v + 12
 
 
 # ------------------------------------------------------------------------ canvas ----
@@ -1237,15 +1336,21 @@ class Scene:
 class Raster:
     """A ground picture: picture px (i, j) covers base px origin + (i, j) / scale. Its surface
     has a 1 px border repeating the edge, so a scaled sample can always reach half a pixel
-    past it. `wide` if it reaches past the view it was made for."""
+    past it. `wide` if it reaches past the view it was made for. `line`: the terminator over
+    it, None or ((x, y, w, h) picture px, a surface of them with a 1 px clear border)."""
 
-    def __init__(self, origin, scale, size, rgb, metres, minute, wide=False):
+    def __init__(self, origin, scale, size, rgb, metres, line, minute, wide=False):
         self.origin, self.scale, self.size, self.metres, self.wide = origin, scale, size, metres, wide
-        self.shaded(rgb, minute)
+        self.shaded(rgb, line, minute)
 
-    def shaded(self, rgb, minute):
+    def shaded(self, rgb, line, minute):
         surface = pygame.image.frombytes(rgb, (self.size[0] + 2, self.size[1] + 2), "RGB")
         self.surface = surface.convert() if pygame.display.get_surface() else surface
+        self.line = None
+        if line is not None:
+            rect, rgba = line
+            pic = pygame.image.frombytes(rgba, (rect[2] + 2, rect[3] + 2), "RGBA")
+            self.line = rect, pic.convert_alpha() if pygame.display.get_surface() else pic
         self.minute = minute
 
     def rect(self):
@@ -1385,7 +1490,7 @@ class Canvas:
         what, geometry, minute, future = self.job
         self.job = None
         try:
-            rgb, metres = future.result()
+            rgb, metres, line = future.result()
         except Exception as e:                           # tiles unreadable, worker died...
             log.warning("map picture: %s", e)
             if isinstance(e, BrokenProcessPool):
@@ -1396,11 +1501,11 @@ class Canvas:
                 self.retry_at = now + RETRY_S
             return False
         if isinstance(what, Raster):
-            what.shaded(rgb, minute)
+            what.shaded(rgb, line, minute)
             return True
         if what == "view" and self.resting:              # fade in a sharper picture at rest;
             self.previous, self.loaded_at = self.detail or self.whole, now   # moving, just swap
-        self.detail = Raster(*geometry, rgb, metres, minute, wide=what == "wide")
+        self.detail = Raster(*geometry, rgb, metres, line, minute, wide=what == "wide")
         return True
 
     def sample(self, raster, dest, part=False):
@@ -1408,40 +1513,46 @@ class Canvas:
         view, or with `part` whatever of it is in view. True if it drew."""
         if raster is None:
             return False
+        return self.paint(raster, raster.surface, (0, 0, *raster.size), dest, part)
+
+    def paint(self, raster, surface, rect, dest, part):
+        """Draw `surface`, picture px `rect` (x, y, w, h) of `raster` with a 1 px border, under
+        the current view, scaled onto `dest`: only if it covers the whole view, or with `part`
+        whatever of it is in view. True if it drew."""
         left, top, right, bottom = self.view.rect()
-        x0, y0 = (left - raster.origin[0]) * raster.scale, (top - raster.origin[1]) * raster.scale
-        x1, y1 = (right - raster.origin[0]) * raster.scale, (bottom - raster.origin[1]) * raster.scale
-        w, h = raster.size
+        x0, y0 = (left - raster.origin[0]) * raster.scale - rect[0], (top - raster.origin[1]) * raster.scale - rect[1]
+        x1, y1 = (right - raster.origin[0]) * raster.scale - rect[0], (bottom - raster.origin[1]) * raster.scale - rect[1]
+        w, h = rect[2:]
         lo, hi = (max(0, x0), max(0, y0)), (min(w, x1), min(h, y1))
         whole = lo[0] - x0 < 1e-6 and lo[1] - y0 < 1e-6 and x1 - hi[0] < 1e-6 and y1 - hi[1] < 1e-6
         if not (whole or part) or hi[0] <= lo[0] or hi[1] <= lo[1]:
             return False
         k = dest.get_width() / (x1 - x0)
-        if whole and abs(k - 1) < 1e-6 and abs(x0 - round(x0)) < 1e-3 and abs(y0 - round(y0)) < 1e-3:
-            dest.blit(raster.surface, (0, 0), (round(x0) + 1, round(y0) + 1, *dest.get_size()))
-            return True                                  # at rest: the picture pixel for pixel
-        (fx, nx, sx, ax), (fy, ny, sy, ay) = (span(lo[i], hi[i], k, (x0, y0)[i]) for i in (0, 1))
         clip = dest.get_clip()
         if not whole:                                    # keep the padding off what lies beyond
             dest.set_clip(pygame.Rect(math.floor((lo[0] - x0) * k), math.floor((lo[1] - y0) * k),
                                       math.ceil((hi[0] - lo[0]) * k), math.ceil((hi[1] - lo[1]) * k)).clip(clip))
-        dest.blit(pygame.transform.smoothscale(raster.surface.subsurface((fx, fy, nx, ny)), (sx, sy)), (ax, ay))
+        if abs(k - 1) < 1e-6 and abs(x0 - round(x0)) < 1e-3 and abs(y0 - round(y0)) < 1e-3:
+            dest.blit(surface, (-round(x0) - 1, -round(y0) - 1))      # at rest: pixel for pixel
+        else:
+            (fx, nx, sx, ax), (fy, ny, sy, ay) = (span(lo[i], hi[i], k, (x0, y0)[i]) for i in (0, 1))
+            dest.blit(pygame.transform.smoothscale(surface.subsurface((fx, fy, nx, ny)), (sx, sy)), (ax, ay))
         dest.set_clip(clip)
         return True
 
     def ground(self, raster, dest):
         """`raster` over the whole view, else the whole map with `raster` where it reaches; the
-        metres a terrain pixel of what covers the view."""
+        picture that covers the view (for the metres a terrain pixel and the minute of its night)."""
         if self.sample(raster, dest):
-            return raster.metres
+            return raster
         self.sample(self.whole, dest)                    # views never leave the whole map
         self.sample(raster, dest, part=True)
-        return self.whole.metres
+        return self.whole
 
     def draw(self, frame, box):
         """Draw the map into `box` (frame px) of `frame`."""
         area = frame.subsurface(box)
-        metres = self.ground(self.detail, area)
+        shown = self.ground(self.detail, area)
         fade = (time.monotonic() - self.loaded_at) / FADE_S
         if fade < 1 and self.previous:
             if self.fading is None or self.fading.get_size() != area.get_size():
@@ -1449,4 +1560,6 @@ class Canvas:
             self.ground(self.previous, self.fading)
             self.fading.set_alpha(round((1 - fade) * 255))
             area.blit(self.fading, (0, 0))
-        self.scene.draw(area, self.view, metres, self.resting)
+        line = shown.line
+        self.scene.draw(area, self.view, shown.metres, self.resting, shown.minute * 60,
+                        line and (lambda dest: self.paint(shown, line[1], line[0], dest, True)))

@@ -27,6 +27,16 @@ class Tests(unittest.TestCase):
         self.assertGreater(float(p.solar_elevation(0, 0, noon)), 85)
         self.assertLess(float(p.solar_elevation(0, 0, noon - 43200)), -85)
 
+    def test_sunrise_and_sunset_are_where_the_sun_crosses_the_horizon(self):
+        evening = datetime(2026, 10, 12, 20, tzinfo=timezone.utc).timestamp()
+        rise, sunset = p.sun_times(40, -75, evening)
+        self.assertLess(rise, sunset)
+        self.assertLess(abs(sunset - evening), 43200)          # the solar day nearest the time
+        for t in (rise, sunset):
+            self.assertAlmostEqual(float(p.solar_elevation(40, -75, t)), p.SUNSET, delta=0.1)
+        self.assertEqual(p.sun_times(80, 0, datetime(2026, 6, 21, 12, tzinfo=timezone.utc).timestamp()),
+                         (None, None))                          # midnight sun
+
     def test_flat_short_path_clear_and_ridge_blocks_every_frequency(self):
         flat = lambda lat,lon: (np.zeros_like(lat), 12)
         with patch.object(p, 'heights', flat):

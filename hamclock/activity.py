@@ -12,11 +12,14 @@ Sources
   our FT8 log    ~/influ/ft8/auto.jsonl: CQs we sent and QSOs completed since Monday 00:00
                  local time.
   WSPR.live     regional weak-signal reception reports, one bounded query per 10 min.
+  SDO           the sun as HamClock's SDO pane shows it (the same file, from HamClock's copy or
+                its backend), every 30 min, for the sun in the map's HUD.
 
 Writes, atomically, ~/influ/model/activity.png (transparent layer for HamClock's map box, same
 projection as rangemap.png) and ~/influ/model/ft8week.png (tally for the foot of the left
-column); hcdisplay lays both over the clock.
+column); hcdisplay lays both over the clock. Also sdo.png, the sun's disc.
 """
+import io
 import json
 import logging
 from email.utils import parsedate_to_datetime
@@ -29,6 +32,7 @@ import urllib.error
 import urllib.request
 import urllib.parse
 import xml.etree.ElementTree as ET
+import zlib
 
 import aprslib
 from PIL import Image, ImageDraw, ImageFont
@@ -44,6 +48,10 @@ APRS_SHOW_S = 3600                     # stations heard within the last hour
 PSK_URL = ("https://retrieve.pskreporter.info/query?callsign={field}&modify=grid"
            "&flowStartSeconds=-1800&appcontact={contact}")
 PSK_EVERY_S = 300                      # one query per 5 min: PSK Reporter's own limit
+HAMCLOCK = os.path.expanduser("~/.hamclock")
+SDO_FILE = "latest_340_HMIIC.bmp"      # HamClock's SDO pane by default: the photosphere, sunspots and all
+SDO_URL = "http://hamclock.com/ham/HamClock/SDO/" + SDO_FILE + ".z"   # HamClock's backend, zlib'd
+SDO_EVERY_S = 1800                     # as HamClock refreshes it
 log = logging.getLogger(__name__)
 
 
@@ -364,6 +372,54 @@ class Wspr(Psk):
             return json.load(response)["data"]
 
 
+class Sdo(threading.Thread):
+    """SDO's latest picture of the sun as HamClock's SDO pane shows it, cut round to its disc,
+    into sdo.png for the sun in the map's HUD: HamClock's own copy while that is fresh, else the
+    same file from HamClock's backend; every SDO_EVERY_S."""
+
+    def __init__(self):
+        super().__init__(daemon=True)
+
+    def run(self):
+        while True:
+            try:
+                save(sun_disc(self.picture()), "sdo.png")
+                wait = SDO_EVERY_S
+            except (OSError, ValueError, zlib.error) as e:
+                wait = 300
+                log.warning("SDO %s; retry in %ds", type(e).__name__, wait)
+            time.sleep(wait)
+
+    @staticmethod
+    def picture():
+        path = os.path.join(HAMCLOCK, SDO_FILE)
+        if os.path.exists(path) and time.time() - os.path.getmtime(path) < SDO_EVERY_S:
+            with open(path, "rb") as f:
+                data = f.read()
+        else:
+            with urllib.request.urlopen(urllib.request.Request(SDO_URL, headers=UA), timeout=60) as response:
+                data = zlib.decompress(response.read())
+        return Image.open(io.BytesIO(data)).convert("RGB")
+
+
+def sun_disc(img, size=96):
+    """The sun's disc out of a full-disc picture (found along its middle row and column),
+    `size` px square, clear outside the disc."""
+    lit = img.convert("L").point(lambda v: 255 if v > 40 else 0)
+    w, h = img.size
+    across = lit.crop((0, h // 2, w, h // 2 + 1)).getbbox()
+    down = lit.crop((w // 2, 0, w // 2 + 1, h)).getbbox()
+    if not across or not down:
+        raise ValueError("no disc")
+    cx, cy = (across[0] + across[2]) / 2, (down[1] + down[3]) / 2
+    r = max(across[2] - across[0], down[3] - down[1]) / 2
+    out = img.resize((size, size), Image.Resampling.LANCZOS, box=(cx - r, cy - r, cx + r, cy + r)).convert("RGBA")
+    mask = Image.new("L", (4 * size, 4 * size))
+    ImageDraw.Draw(mask).ellipse([0, 0, 4 * size - 1, 4 * size - 1], fill=255)
+    out.putalpha(mask.resize((size, size), Image.Resampling.LANCZOS))
+    return out
+
+
 class LivePsk(threading.Thread):
     """Regional MQTT push through this connection's proxy; never changes Clash's selectors."""
 
@@ -636,6 +692,7 @@ def main():
     psk.start()
     wspr.start()
     backup.start()
+    Sdo().start()
     solar_minute = None
     while True:
         cq, qsos, monday = ft8_week()
