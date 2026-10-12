@@ -8,6 +8,13 @@
 
 莫斯科号无法同时使用通信和雷达设备，rtl-sdr v4无法同时接收adsb和民用频段。
 
+<p align="center">
+  <picture>
+    <source media="(prefers-color-scheme: dark)" srcset="fanghao-dark.png">
+    <img src="fanghao.png" width="300" alt="無數的電波正在空中怒湧，啊啊！好幅壯麗的蛤木（ham）的圖景喲！小小的UV-K5提起他全身的功率來要把西南接通。啊啊！我眼前來了的密密的航跡喲！啊啊！不斷的交媾，不斷的呼號，不斷的革命喲！啊啊！波喲！波喲！波的地圖，波的頻譜，波的遙測，波的通聯，波的律呂喲！">
+  </picture>
+</p>
+
 这是一个业余电台站的软件，跑在一台 Debian 笔记本（ThinkPad X230）上，项目代号 influ。
 
 - **接收**：站里只有一个 RTL-SDR V4，平时守在 1090 MHz，给 FlightAware 和 Flightradar24 喂 ADS-B。调度器在不影响喂数的空当，把它切到 2 米波段听十几秒，收 FT8、看频段活动。
