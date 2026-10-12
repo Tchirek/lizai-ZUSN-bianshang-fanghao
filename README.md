@@ -66,6 +66,8 @@
 
 ## 数据来源与许可
 
+本项目的原创代码采用 [GNU Affero General Public License v3.0](LICENSE)（AGPL-3.0-only）。第三方代码与数据遵循各自的许可证。
+
 - 地图数据 © [OpenStreetMap](https://www.openstreetmap.org/copyright) 贡献者，ODbL，经 Overpass API 获取。
 - OSM 里没有的无线电管理机构，地址取自各级政府网站和政务服务网，出处逐条写在 `hamclock/radio_regulators.json`。
 - 政府机关：`hamclock/government.json`，取自 OSM 与高德、百度、腾讯地图的 POI 和地理编码，已换算为 WGS-84；监管场所只有 OSM 标注的那些（地图商的检索不返回）。
