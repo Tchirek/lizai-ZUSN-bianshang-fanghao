@@ -168,7 +168,7 @@ out geom;"""
 # names that carry an office's word without being one
 NOT_GOVERNMENT = re.compile("邮政|邮局|电信|移动|联通|银行|信用社|酒店|宾馆|饭店|餐厅|招待所|书店|超市|药(?!品监督管理)|宿舍|小区|家属|公寓|"
                             "旧址|遗址|纪念|博物|学院|公司|集团|广场|公园|站台|车站|加油|维修|商店|"
-                            "专卖|门市|营业|网点|服务部|经营部|门诊|诊所|殡仪|陵园|出版|支部|党组|居民委员会|村民"
+                            "专卖|门市|营业|网点|服务部|经营部|服务窗口|停车场|放映|门诊|诊所|殡仪|陵园|出版|支部|党组|居民委员会|村民"
                             "委员会|居委会|村委会|社区委员会|社区党委|社区工作委员会|社区纪律检查|市场(?!监督|监管)|"
                             "共青团|青年团|关心下一代|林长制|河长制|残疾人|工会|离退休|学会|协会|基金会|"
                             "国民党革命委员会|民主同盟|民主建国会|民主促进会|农工民主党|致公党|九三学社|台湾民主自治同盟")
@@ -197,8 +197,10 @@ PARTY = re.compile("党委|党工委|市委|县委|区委|镇委|乡委|州委|�
 
 
 def wanted(name):
-    """Whether the government layer shows this office."""
-    if "中共" in name and not PARTY.search(name):
+    """Whether the government layer shows this office. A name's bracketed part is left aside:
+    it may be a branch (XX司法局(黄洋司法所)) or only somewhere nearby (XX幼儿园(XX镇人民政府北))."""
+    name = re.sub(r"[（(][^）)]*[）)]", "", name)
+    if NOT_GOVERNMENT.search(name) or "中共" in name and not PARTY.search(name):
         return False
     return bool(WANTED.search(name))
 REGULATORS = os.path.join(os.path.dirname(os.path.abspath(__file__)), "radio_regulators.json")
@@ -380,7 +382,7 @@ def amap_offices():
                 continue
             seen.add(p["id"])
             radio = "无线电" in p["name"]
-            if not radio and (not wanted(p["name"]) or NOT_GOVERNMENT.search(p["name"])):
+            if not radio and not wanted(p["name"]):
                 continue
             lat, lon = wgs84(p["lat"], p["lng"])
             out.append(dict(name=p["name"], rings=[], point=[lat, lon], radio=radio,
@@ -420,7 +422,7 @@ def geocoded_offices():
                 for part in g.get("parts") or []:
                     if part and name.startswith(part) and name[len(part):].endswith(q):
                         name = name[len(part):]
-                if "无线电" not in name and (not wanted(name) or NOT_GOVERNMENT.search(name)):
+                if "无线电" not in name and not wanted(name):
                     continue
                 lat, lon = wgs84(g["location"][1], g["location"][0])
                 if math.dist((lat, lon), (lat0, lon0)) > 0.8 or (name, round(lat, 4), round(lon, 4)) in seen:
@@ -446,7 +448,7 @@ def place_offices():
                     continue
                 seen.add(p["uid"])
                 radio = "无线电" in p["name"]
-                if not radio and (not wanted(p["name"]) or NOT_GOVERNMENT.search(p["name"])):
+                if not radio and not wanted(p["name"]):
                     continue
                 lat, lon = wgs84(p["lat"], p["lng"])
                 out.append(dict(name=p["name"], rings=[], point=[lat, lon], radio=radio, zoom=name_zoom(p["name"])))
@@ -468,8 +470,7 @@ def write_government():
         name = tags.get("name:zh") or tags.get("name") or tags.get("name:en") or ""
         radio = "无线电" in name
         # the wanted departments, less the bus stop, bus route or shop that merely carries one's name
-        if not radio and (NOT_GOVERNMENT.search(name) or not wanted(name)
-                          or tags.get("highway") or tags.get("railway") or tags.get("route")
+        if not radio and (not wanted(name) or tags.get("highway") or tags.get("railway") or tags.get("route")
                           or tags.get("public_transport") or tags.get("shop")):
             continue
         if e["type"] == "node":
@@ -497,7 +498,7 @@ def write_government():
         json.dump(out, f, ensure_ascii=False)
     os.replace(os.path.join(a.MODEL, "government.json.tmp"), os.path.join(a.MODEL, "government.json"))
     print(f"government: {sum(bool(c['rings']) for c in out)} outlined, {sum(not c['rings'] for c in out)} points "
-          f"({len(amap)} from AMap), {sum(c['radio'] for c in out)} radio regulators", flush=True)
+          f"({len(amap)} from AMap, Baidu and Tencent), {sum(c['radio'] for c in out)} radio regulators", flush=True)
 
 
 def admin(rounds=30):
