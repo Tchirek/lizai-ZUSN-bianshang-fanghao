@@ -10,7 +10,8 @@ narrow ones. Answers are kept per county in ~/influ/model/<provider>/<code>.json
 stop and go on; both give GCJ-02 coordinates, which build_tiles.py government converts.
 
 Requests go one at a time and well under each key's rate: a rate refusal waits and asks again,
-the day's quota spent stops the run.
+the day's quota spent stops the run. A free key answers only some hundreds a day, so the
+custodial and media kinds go first, county after county, then the rest.
 
 usage: place_gov.py baidu|tencent
 """
@@ -162,26 +163,26 @@ def main():
     out = os.path.join(MODEL, a.provider)
     os.makedirs(out, exist_ok=True)
     searcher = Searcher(PROVIDERS[a.provider]())
-    todo = counties()
-    print(f"{len(todo)} counties", flush=True)
+    todo = [(county, word) for words in (NEW, EVERY) for county in counties()
+            for word in words if word in county["words"]]
+    print(f"{len(todo)} searches", flush=True)
     try:
-        for i, county in enumerate(todo, 1):
+        for i, (county, word) in enumerate(todo, 1):
             path = os.path.join(out, county["code"] + ".json")
             have = json.load(open(path)) if os.path.exists(path) else \
                 dict(region=county["region"], centre=county["centre"], found={})
-            for word in county["words"]:
-                if word in have["found"]:
-                    continue
-                try:
-                    have["found"][word] = searcher.search(word, county)
-                except OSError as ex:
-                    print(ex, flush=True)
-                    continue
-                with open(path + ".tmp", "w") as f:
-                    json.dump(have, f, ensure_ascii=False)
-                os.replace(path + ".tmp", path)
-            if i % 25 == 0:
-                print(f"{i}/{len(todo)} counties", flush=True)
+            if word in have["found"]:
+                continue
+            try:
+                have["found"][word] = searcher.search(word, county)
+            except OSError as ex:
+                print(ex, flush=True)
+                continue
+            with open(path + ".tmp", "w") as f:
+                json.dump(have, f, ensure_ascii=False)
+            os.replace(path + ".tmp", path)
+            if i % 100 == 0:
+                print(f"{i}/{len(todo)} searches", flush=True)
     except Spent as ex:
         print(f"{a.provider} quota spent, stopped:", ex, flush=True)
         return
