@@ -55,6 +55,7 @@ MILITARY_ZOOM = 4             # military areas (outline, dot) from this zoom on,
 MILITARY = (255, 85, 70)
 GOVERNMENT, REGULATOR = (235, 190, 70), (90, 215, 255)   # offices; radio regulators: as military
 EMBASSY = (150, 250, 170)     # consulates and embassies: named with a mini flag at the left
+LEAD = (160, 160, 150)        # the hairline tying a label placed off its point back to it
 EMBASSY_ZOOM = 6              # their names show from this zoom on, as the regulators' do
 EMBASSIES = os.path.join(os.path.dirname(os.path.abspath(__file__)), "embassies.json")
 OUTLINE_PX = 4                # an area this small on screen (physical px) is drawn as its dot
@@ -226,9 +227,9 @@ def text_size(text, size, scale):
     return (r.width + 2) / scale, (r.height + 2) / scale
 
 
-FAN = 9                       # rows a fan column holds; 2 columns a side
-SPOTS = 15 + 4 * FAN          # spot() places: 0..8 beside and on the point, 9..14 a ladder,
-                              # then the fan's columns, for many labels on one point
+FAN = 9                       # rows a fan column holds, one column each side
+SPOTS = 15 + 2 * FAN          # spot() places: 0..8 beside and on the point, 9..14 a ladder,
+                              # then the fan's two columns, for many labels on one point
 
 
 def spot(k, tw, th=0):
@@ -244,10 +245,9 @@ def spot(k, tw, th=0):
         return (tw / 2 + 7, (-33, 19, -59, 45, -85, 71)[k - 9])
     col, row = divmod(k - 15, FAN)
     dy = -7 + (row - (FAN - 1) / 2) * 26
-    far = (tw + 12) * (col // 2)
-    if col % 2 == 0:                                # the right-hand columns, near then far
-        return (tw / 2 + 7 + far, dy)
-    return (-tw / 2 - 7 - far - tw, dy)
+    if col % 2 == 0:                                # the right-hand column, then the left
+        return (tw / 2 + 7, dy)
+    return (-tw / 2 - 7 - tw, dy)
 
 
 def offsets(k, tw, th):
@@ -257,9 +257,9 @@ def offsets(k, tw, th):
         return spot(int(k), float(tw), float(th))
     k = np.asarray(k)
     fan, col, row = k >= 15, (k - 15) // FAN, (k - 15) % FAN
-    right, far = col % 2 == 0, (tw + 12) * (col // 2)
+    right = col % 2 == 0
     dx = np.select([k == 0, k == 1, k == 4, k == 5, (k >= 9) & ~fan, fan & right, fan],
-                   [7, -tw - 7, 18, -tw - 18, tw / 2 + 7, tw / 2 + 7 + far, -tw / 2 - 7 - far - tw],
+                   [7, -tw - 7, 18, -tw - 18, tw / 2 + 7, tw / 2 + 7, -tw / 2 - 7 - tw],
                    -tw / 2)
     dy = np.select([k == 2, k == 3, k == 6, k == 7, k == 8, (k >= 9) & ~fan, fan],
                    [-22, 7, -33, 18, -th / 2,
@@ -919,13 +919,14 @@ class Scene:
             self.glyph(text, kind[1], size)
         self.budget = saved
 
-    def mark(self, shape, colour):
-        """A marker sprite at the physical size, and the offset of its centre."""
-        key = shape, colour
+    def mark(self, shape, colour, grow=1.0):
+        """A marker sprite at the physical size (grown `grow` times as the map zooms in), and
+        the offset of its centre."""
+        key = shape, colour, round(grow, 2)
         if key not in self.marks:
             s = self.scale
             r = {"diamond": 5, "dot": 4, "ring": 5, "square": 4, "campus": 3, "consulate": 4,
-                 "city": 2, "town": 1}[shape] * s
+                 "city": 2, "town": 1}[shape] * s * grow
             n = math.ceil(2 * r) + 3
             pic = pygame.Surface((n, n), pygame.SRCALPHA)
             c = n / 2
@@ -945,20 +946,21 @@ class Scene:
             self.marks[key] = (pic.convert_alpha() if pygame.display.get_surface() else pic), c
         return self.marks[key]
 
-    def stamp(self, surface, shape, colour, xy):
+    def stamp(self, surface, shape, colour, xy, grow=1.0):
         """The marker at each view px point of `xy` (an array)."""
-        pic, c = self.mark(shape, colour)
+        pic, c = self.mark(shape, colour, grow)
         s = self.scale
         surface.blits([(pic, (x, y)) for x, y in np.round(xy * s - c).astype(int).tolist()], False)
 
-    def dots(self, surface, colour, xy):
-        """A 3 px square at each view px point of `xy`, written as pixels all at once."""
+    def dots(self, surface, colour, xy, grow=1.0):
+        """A small square at each view px point of `xy`, written as pixels all at once."""
+        r = max(1, round(grow))
         p = np.round(xy * self.scale).astype(int)
         w, h = surface.get_size()
-        p = p[(p[:, 0] >= 1) & (p[:, 0] < w - 1) & (p[:, 1] >= 1) & (p[:, 1] < h - 1)]
+        p = p[(p[:, 0] >= r) & (p[:, 0] < w - r) & (p[:, 1] >= r) & (p[:, 1] < h - r)]
         pixels, value = pygame.surfarray.pixels2d(surface), surface.map_rgb(colour) & 0xFFFFFFFF
-        for dx in (-1, 0, 1):
-            for dy in (-1, 0, 1):
+        for dx in range(-r, r + 1):
+            for dy in range(-r, r + 1):
                 pixels[p[:, 0] + dx, p[:, 1] + dy] = value
         del pixels                                           # unlock the surface
 
@@ -1098,6 +1100,7 @@ class Scene:
         if d is None:
             return []
         left, top, right, bottom = view.rect()
+        grow = min(2.0, 1 + 0.22 * max(0.0, math.log2(view.zoom / 6)))     # dots stay findable
         if view.zoom < RING_ZOOM:
             airports = view.points(d["airport_xy"])
             self.stamp(surface, "ring", AIRPORT, airports[inside(airports)])
@@ -1111,12 +1114,12 @@ class Scene:
                     and (colour != GOVERNMENT or view.zoom >= max(MILITARY_ZOOM, found[i]["zoom"] - 2))]
             xy = view.points(np.array(dots, dtype=float).reshape(-1, 2))
             if len(xy) > DOTS:
-                self.dots(surface, colour, xy)
+                self.dots(surface, colour, xy, grow)
             else:
-                self.stamp(surface, "square" if colour == REGULATOR else "campus", colour, xy)
+                self.stamp(surface, "square" if colour == REGULATOR else "campus", colour, xy, grow)
         if view.zoom >= MILITARY_ZOOM:
             emb = view.points(d["embassy_xy"])
-            self.stamp(surface, "consulate", EMBASSY, emb[inside(emb)])
+            self.stamp(surface, "consulate", EMBASSY, emb[inside(emb)], grow)
         st = view.points(d["station_xy"])
         shown_st = np.flatnonzero(inside(st))
         for i in shown_st[::-1]:                                     # senders on top
@@ -1163,7 +1166,7 @@ class Scene:
         shown = (k >= 0) & (x + tw > 0) & (x < W) & (y + th > 0) & (y < H)
         if view.zoom < CAMPUS_ZOOM:
             shown &= ~d["label_campus"]
-        jobs = []
+        jobs, leads = [], []
         for i, px, py in zip(np.flatnonzero(shown).tolist(), np.round(x[shown] * s - 1).astype(int).tolist(),
                              np.round(y[shown] * s - 1).astype(int).tolist()):
             text, _, size = d["labels"][i]
@@ -1174,7 +1177,13 @@ class Scene:
             if kind[0] == "embassy":                 # a consulate's flag at the label's left
                 w, gap, _ = flag_box(s, size)
                 jobs.append((flags.flag(kind[2], text_px(size, s)), (px - w - gap - 1, py + 1)))
+            if k[i] >= 9:                            # placed away from its point: show the tie
+                ax, ay = at[i, 0] * s, at[i, 1] * s
+                mid = py + th[i] * s / 2
+                leads.append(((ax, ay), (px - 3, mid) if x[i] > at[i, 0] else (px + tw[i] * s + 3, mid)))
             jobs.append((pic, (px, py)))
+        for a, b in leads:
+            pygame.draw.aaline(surface, LEAD, a, b)
         surface.blits(jobs, False)
 
     def draw_hud(self, view, surface, s, metres, legend):
