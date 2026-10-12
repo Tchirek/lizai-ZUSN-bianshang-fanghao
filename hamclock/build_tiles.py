@@ -165,11 +165,11 @@ GOVERNMENT_QUERY = """[out:json][timeout:240];
  nwr["name"~"(人民政府|政府|管委会|委员会|办事处|局|厅|署|法院|检察院|公安|派出所|税务所|海关|人大|政协|党委|党工委|县委|市委|区委|管理所|管理站)$"]({box});
  nwr["name"~"无线电"]({box}););
 out geom;"""
-# names ending like an office that are not one
+# names that carry an office's word without being one
 NOT_GOVERNMENT = re.compile("邮政|邮局|电信|移动|联通|银行|信用社|酒店|宾馆|饭店|餐厅|招待所|书店|超市|药(?!品监督管理)|宿舍|小区|家属|公寓|"
                             "旧址|遗址|纪念|博物|学院|公司|集团|广场|公园|站台|车站|加油|维修|商店|"
                             "专卖|门市|营业|网点|服务部|经营部|门诊|诊所|殡仪|陵园|出版|支部|党组|居民委员会|村民"
-                            "委员会|居委会|村委会|社区委员会|社区党委|社区工作委员会|社区纪律检查|市场(?!监督|监管)|=>|路：|->|"
+                            "委员会|居委会|村委会|社区委员会|社区党委|社区工作委员会|社区纪律检查|市场(?!监督|监管)|"
                             "共青团|青年团|关心下一代|林长制|河长制|残疾人|工会|离退休|学会|协会|基金会|"
                             "国民党革命委员会|民主同盟|民主建国会|民主促进会|农工民主党|致公党|九三学社|台湾民主自治同盟")
 # the departments the layer keeps, by the map's categories: the party and government organs;
@@ -395,15 +395,15 @@ def write_government():
     """government.json: only the departments WANTED names (the yellow areas and points, by
     the map's categories), outlined or a point, each with its name; radio regulators (无线电
     in the name) are flagged and kept whatever the list says, and those OSM lacks added from
-    radio_regulators.json unless one is mapped within ~500 m."""
+    radio_regulators.json unless one is mapped within ~2 km."""
     out = []
     for e in kept(OLD_GOVERNMENT_CELLS, GOVERNMENT_CELLS).values():
         tags = e.get("tags", {})
         name = tags.get("name:zh") or tags.get("name") or tags.get("name:en") or ""
         radio = "无线电" in name
-        # the wanted departments, less the bus stop or market that merely carries one's name
+        # the wanted departments, less the bus stop, bus route or shop that merely carries one's name
         if not radio and (NOT_GOVERNMENT.search(name) or not wanted(name)
-                          or tags.get("highway") or tags.get("railway")
+                          or tags.get("highway") or tags.get("railway") or tags.get("route")
                           or tags.get("public_transport") or tags.get("shop")):
             continue
         if e["type"] == "node":
