@@ -9,8 +9,10 @@ not carry, from the AMap services the Web (JS API) key still has.
              XX县融媒体中心 ...): every kind for the places place search never reached, the
              custodial and media kinds it does not carry everywhere. Prisons come by name from
              the provinces' lists (PRISONS).
-  geocode    The Geocoder places each name, one request at a time; every answer is kept in
-             ~/influ/model/amap_names/geo.jsonl, so a run can stop and go on.
+  geocode    The Geocoder places the names, ten of a county in one request and a few requests
+             at once; every answer is kept in ~/influ/model/amap_names/geo.jsonl, so a run can
+             stop and go on. A batch answers in no fixed order (some names get two candidates,
+             some none), so each candidate goes to the name its address ends with.
 
 build_tiles.py government takes an answer only if it is a point of interest whose own name ends
 with the name asked for; one resolved to a district or a street, or to some other office (a
@@ -26,12 +28,14 @@ import json
 import os
 import re
 import threading
+import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 OUT = os.path.expanduser("~/influ/model/amap_names")
 CELLS = os.path.expanduser("~/influ/model/amap_cells")       # amap_gov.py's searched areas
 ENV = os.path.expanduser("~/influ/private/amap.env")
 EXTENT = (27.75, 99.27, 33.21, 111.98)                       # the range map's, south west north east
+BATCH, WORKERS = 10, 4         # names a request, requests at once
 PROVINCES = ("四川省", "重庆市", "贵州省", "陕西省", "甘肃省", "湖北省", "湖南省", "云南省")
 
 # the offices each kind of place has, as they are named; {p} the prefecture, {c} the county,
@@ -80,9 +84,10 @@ function district(name) {
     .search(name, (s, r) => resolve(s === 'complete' ? {ok: true, tree: tree(r.districtList[0])}
                                                      : {ok: false, error: (r && (r.info || r.type)) || s})));
 }
-function geocode(q, city) {
-  return new Promise(resolve => new AMap.Geocoder({city: city}).getLocation(q, (s, r) => {
-    if (s === 'complete') resolve({ok: true, found: r.geocodes.map(g => ({address: g.formattedAddress, level: g.level,
+function geocode(qs, city) {
+  return new Promise(resolve => new AMap.Geocoder({city: city, batch: true}).getLocation(qs, (s, r) => {
+    if (s === 'complete') resolve({ok: true, found: r.geocodes.filter(g => g && g.formattedAddress).map(g => ({
+      address: g.formattedAddress, level: g.level,
       location: ll(g.location), parts: g.addressComponent && [g.addressComponent.province, g.addressComponent.city,
       g.addressComponent.district, g.addressComponent.township]}))});
     else if (s === 'no_data') resolve({ok: true, found: []});
@@ -93,9 +98,10 @@ async function run() {
   let tries = 0, failing = 0;                         // on this job; jobs failed in a row
   while (true) {
     const job = await (await fetch('/next')).json();
+    if (job.wait) { await wait(2000); continue; }
     if (!job.kind) { say('done: ' + job.done); return; }
     say(`${job.done} done, ${job.left} to go: ${job.q}`);
-    let r = await within(15000, job.kind === 'district' ? district(job.q) : geocode(job.q, job.city));
+    let r = await within(15000, job.kind === 'district' ? district(job.q) : geocode(job.qs, job.city));
     if (!r.ok) {
       log(job.q + ': ' + r.error + ', try ' + (tries + 1));
       if (++tries < 3) { await wait(2000 * 3 ** tries); continue; }
@@ -108,10 +114,10 @@ async function run() {
     tries = 0;
     await fetch('/result', {method: 'POST', headers: {'Content-Type': 'application/json'},
                             body: JSON.stringify(Object.assign({job}, r))});
-    await wait(350);
+    await wait(250);
   }
 }
-AMap.plugin(['AMap.DistrictSearch', 'AMap.Geocoder'], run);
+AMap.plugin(['AMap.DistrictSearch', 'AMap.Geocoder'], () => { for (let i = 0; i < @WORKERS@; i++) run(); });
 </script></html>"""
 
 
@@ -141,6 +147,10 @@ def searched():
 def inside(point, areas):
     lon, lat = point
     return any(s <= lat < s + size and w <= lon < w + size for s, w, size in areas)
+
+
+def plain(name):
+    return re.sub(r"[（(][^）)]*[）)]|\s", "", name)
 
 
 def short(township):
@@ -220,20 +230,41 @@ class Work:
                     except (ValueError, KeyError):
                         continue
         self.jobs = None
+        self.out = {}             # job -> when a worker took it
 
     def next(self):
+        """A job for one of the page's workers: a province's districts, or up to BATCH names of
+        one county none of the others has in hand (or has kept over a minute)."""
         with self.lock:
+            now = time.time()
             todo = [p for p in PROVINCES if p not in self.trees]
             if todo:
-                return dict(kind="district", q=todo[0], done=len(self.trees), left=len(todo))
+                free = [p for p in todo if self.out.get(p, 0) < now - 60]
+                if not free:
+                    return dict(wait=True)
+                self.out[free[0]] = now
+                return dict(kind="district", q=free[0], done=len(self.trees), left=len(todo))
             if self.jobs is None:
-                self.jobs = [j for j in names([self.trees[p] for p in PROVINCES])
-                             if (j[0], j[1]) not in self.answered]
+                self.jobs = {(j[0], j[1]): j for j in names([self.trees[p] for p in PROVINCES])
+                             if (j[0], j[1]) not in self.answered}
                 print(f"{len(self.jobs)} names to geocode, {len(self.answered)} done before", flush=True)
             if not self.jobs:
                 return dict(kind=None, done=len(self.answered))
-            q, city, centre, unit = self.jobs[0]
-            return dict(kind="geocode", q=q, city=city, centre=centre, unit=unit,
+            batch = []
+            for key, job in self.jobs.items():
+                if self.out.get(key, 0) > now - 60 or (batch and job[1] != batch[0][1]):
+                    if batch:
+                        break
+                    continue
+                batch.append(job)
+                if len(batch) == BATCH:
+                    break
+            if not batch:
+                return dict(wait=True)
+            for job in batch:
+                self.out[(job[0], job[1])] = now
+            return dict(kind="geocode", city=batch[0][1], q=batch[0][0], qs=[j[0] for j in batch],
+                        jobs=[dict(q=q, city=city, centre=centre, unit=unit) for q, city, centre, unit in batch],
                         done=len(self.answered), left=len(self.jobs))
 
     def result(self, r):
@@ -246,10 +277,11 @@ class Work:
                 os.replace(os.path.join(OUT, "districts.json.tmp"), os.path.join(OUT, "districts.json"))
                 return
             with open(os.path.join(OUT, "geo.jsonl"), "a") as f:
-                f.write(json.dumps(dict(job=job, found=r["found"], error=r.get("error")), ensure_ascii=False) + "\n")
-            self.answered.add((job["q"], job["city"]))
-            if self.jobs and (self.jobs[0][0], self.jobs[0][1]) == (job["q"], job["city"]):
-                self.jobs.pop(0)
+                for one in job["jobs"]:              # each candidate to the name it ends with
+                    mine = [g for g in r["found"] if plain(g["address"]).endswith(plain(one["q"]))]
+                    f.write(json.dumps(dict(job=one, found=mine, error=r.get("error")), ensure_ascii=False) + "\n")
+                    self.answered.add((one["q"], one["city"]))
+                    self.jobs.pop((one["q"], one["city"]), None)
 
 
 class Handler(BaseHTTPRequestHandler):
@@ -265,7 +297,8 @@ class Handler(BaseHTTPRequestHandler):
     def do_GET(self):
         if self.path == "/":
             k, secret = key()
-            self.reply(PAGE_HTML.replace("@KEY@", k).replace("@SECRET@", secret), "text/html; charset=utf-8")
+            self.reply(PAGE_HTML.replace("@KEY@", k).replace("@SECRET@", secret).replace("@WORKERS@", str(WORKERS)),
+                       "text/html; charset=utf-8")
         elif self.path == "/next":
             self.reply(json.dumps(self.server.work.next(), ensure_ascii=False))
         else:
