@@ -16,6 +16,9 @@ admin   province (admin level 4), prefecture (5) and county (6) boundaries under
 military  every military area under the map from OpenStreetMap, live (landuse military, or a
         military base, barracks, airfield, naval base, range or training area): outlines with
         their name if mapped, else a point, the same way, into ~/influ/model/military.json.
+government  government offices and town halls under the map from OpenStreetMap, live, the
+        same way, radio regulators among them marked; the regulators OSM lacks come from
+        radio_regulators.json (official addresses), into ~/influ/model/government.json.
 render  the ground as build_rangemap.py draws it (relief, line-of-sight coverage) as a tile
         pyramid in the map's own projection: level L is the W x H base map at L times its
         scale, cut into 256 px tiles, ~/influ/model/tiles/L/col_row.png. The map window only
@@ -24,7 +27,8 @@ render  the ground as build_rangemap.py draws it (relief, line-of-sight coverage
 Both steps skip what is already there; rerun render (with --force) after build_rangemap.py,
 which redoes the viewshed. Tiles past the map's edge repeat the edge.
 
-usage: build_tiles.py [dem] [campuses] [airports] [admin] [military] [render] [--workers 3] [--force]
+usage: build_tiles.py [dem] [campuses] [airports] [admin] [military] [government] [render]
+                      [--workers 3] [--force]
 """
 import argparse
 import io
@@ -146,6 +150,14 @@ MILITARY_QUERY = """[out:json][timeout:180];
 (nwr["landuse"="military"]({box});
  nwr["military"~"^(base|barracks|airfield|naval_base|range|training_area)$"]({box}););
 out geom;"""
+GOVERNMENT_CELLS = os.path.join(a.MODEL, "government_cells")
+GOVERNMENT_QUERY = """[out:json][timeout:180];
+(nwr["office"="government"]({box});
+ nwr["amenity"="townhall"]({box});
+ nwr["government"]({box});
+ nwr["name"~"无线电"]({box}););
+out geom;"""
+REGULATORS = os.path.join(os.path.dirname(os.path.abspath(__file__)), "radio_regulators.json")
 ADMIN_CELLS = os.path.join(a.MODEL, "admin_cells")
 # the areas' relations (members only), then their boundary ways in the cell with geometry
 ADMIN_QUERY = """[out:json][timeout:180];
@@ -257,6 +269,37 @@ def write_military():
     os.replace(os.path.join(a.MODEL, "military.json.tmp"), os.path.join(a.MODEL, "military.json"))
     print(f"military: {sum(bool(c['rings']) for c in out)} outlined, {sum(not c['rings'] for c in out)} points, "
           f"{sum(bool(c['name']) for c in out)} named", flush=True)
+
+
+def government(rounds=30):
+    return fetch_cells(GOVERNMENT_CELLS, GOVERNMENT_QUERY, write_government, "government", rounds)
+
+
+def write_government():
+    """government.json: government offices and town halls, outlined or a point, with their
+    names; radio regulators (无线电 in the name) flagged, and those OSM lacks added from
+    radio_regulators.json unless one is mapped within ~500 m."""
+    out = []
+    for e in kept(GOVERNMENT_CELLS).values():
+        tags = e.get("tags", {})
+        name = tags.get("name:zh") or tags.get("name") or tags.get("name:en") or ""
+        radio = "无线电" in name
+        if e["type"] == "node":
+            out.append(dict(name=name, rings=[], point=[e["lat"], e["lon"]], radio=radio))
+        elif found := outer_rings(e):
+            out.append(dict(name=name, rings=[[list(p) for p in r] for r in found],
+                            point=middle(max(found, key=lambda r: abs(area(r)))), radio=radio))
+    inner = nested(out)                      # an office inside a compound is part of it ...
+    out = [c for i, c in enumerate(out) if i not in inner or c["radio"]]     # ... unless a regulator
+    with open(REGULATORS, encoding="utf-8") as f:
+        for r in json.load(f):
+            if not any(c["radio"] and math.dist(c["point"], r["point"]) < 0.005 for c in out):
+                out.append(dict(name=r["name"], rings=[], point=r["point"], radio=True))
+    with open(os.path.join(a.MODEL, "government.json.tmp"), "w") as f:
+        json.dump(out, f, ensure_ascii=False)
+    os.replace(os.path.join(a.MODEL, "government.json.tmp"), os.path.join(a.MODEL, "government.json"))
+    print(f"government: {sum(bool(c['rings']) for c in out)} outlined, {sum(not c['rings'] for c in out)} points, "
+          f"{sum(c['radio'] for c in out)} radio regulators", flush=True)
 
 
 def admin(rounds=30):
@@ -512,7 +555,8 @@ def render(workers, force):
 
 def main():
     ap = argparse.ArgumentParser()
-    ap.add_argument("steps", nargs="*", default=["dem", "campuses", "airports", "admin", "military", "render"])
+    ap.add_argument("steps", nargs="*",
+                    default=["dem", "campuses", "airports", "admin", "military", "government", "render"])
     ap.add_argument("--workers", type=int, default=3)
     ap.add_argument("--force", action="store_true")
     args = ap.parse_args()
@@ -526,6 +570,8 @@ def main():
         print("some admin boundary cells are still missing; run admin again later", flush=True)
     if "military" in args.steps and not military():
         print("some military cells are still missing; run military again later", flush=True)
+    if "government" in args.steps and not government():
+        print("some government cells are still missing; run government again later", flush=True)
     if "render" in args.steps:
         render(args.workers, args.force)
 

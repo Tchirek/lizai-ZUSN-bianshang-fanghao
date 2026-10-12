@@ -1,0 +1,17 @@
+[
+  {"name": "四川省无线电办公室", "address": "成都市青羊区人民东路66号（四川省经济和信息化厅）",
+   "point": [30.6608, 104.0650], "located": "street",
+   "source": "https://jxt.sc.gov.cn/scjxt/newjgzn/ldcs_new.shtml"},
+  {"name": "成都市无线电监测站", "address": "成都市花牌坊街1号附12号",
+   "point": [30.6814, 104.0457], "located": "street",
+   "source": "https://baike.baidu.com/item/%E6%88%90%E9%83%BD%E5%B8%82%E6%97%A0%E7%BA%BF%E7%94%B5%E7%9B%91%E6%B5%8B%E7%AB%99/22076756"},
+  {"name": "遂宁市无线电管理", "address": "遂宁市经济和信息化局。台站许可窗口：河东新区东升街道38号市民中心3418；经信局：东升路7号环岛商务中心3号楼8楼",
+   "point": [30.53162, 105.59004], "located": "window",
+   "source": "http://www.sczwfw.gov.cn/jiq/front/transition/ywTransToDetail?areaCode=510900000000&itemCode=511A0022300005-510000000000-000-699166855-1-00&taskType=1&deptCode=4559432238072274944"},
+  {"name": "南充市无线电管理", "address": "南充市经济和信息化局，顺庆区北湖街道农科巷118号（台站许可窗口）",
+   "point": [30.8021, 106.0721], "located": "street",
+   "source": "http://www.sczwfw.gov.cn/jiq/front/transition/ywTransToDetail?areaCode=511300000000&itemCode=511A0022300005-510000000000-000-699166855-1-00&taskType=1&deptCode=4559419289207250944"},
+  {"name": "重庆市无线电管理局", "address": "渝北区云杉南路12号（重庆市经济和信息化委员会）",
+   "point": [29.6120, 106.5143], "located": "street",
+   "source": "https://jjxxw.cq.gov.cn/zwgk_213/fdzdgknr/zfcggk/fscg/202412/W020241210433014898641.docx"}
+]
