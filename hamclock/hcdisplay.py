@@ -283,6 +283,8 @@ def main():
     except (OSError, ValueError):
         inspector = None
     fw, fh = screen.view.size
+    # Wayland scrolls come in the window's own px; SDL scales the frame onto it
+    surface_k = screen.surface.get_width() / pygame.display.get_window_size()[0]
     strips = [pygame.Rect(0, 0, fw, box.top), pygame.Rect(0, box.bottom, fw, fh - box.bottom),
               pygame.Rect(0, box.top, box.left, box.h), pygame.Rect(box.right, box.top, fw - box.right, box.h)]
 
@@ -314,6 +316,8 @@ def main():
                     canvas.scroll(ev.precise_y * (-1 if ev.flipped else 1), map_xy(at))
             elif ev.type == pygame.MOUSEBUTTONDOWN and ev.button in (1, 2, 3):
                 pressed, drag = screen.app_xy(ev.pos), None
+                if canvas:
+                    canvas.fling = None                         # a touch stops the glide
                 on_panel = inspector and inspector.box and pressed and \
                     inspector.box.collidepoint(pressed[0] * k, pressed[1] * k)
                 if ev.button == 1 and canvas and on_map(pressed) and not on_panel:
@@ -355,14 +359,17 @@ def main():
         if gestures:
             for e in gestures.poll():
                 last_input = time.time()
+                if e[0] == "scroll_end":                 # fingers lifted: momentum, as in a browser
+                    canvas.release(e[1])
+                    continue
                 at = screen.app_xy(pygame.mouse.get_pos())
                 if not on_map(at):
                     continue
                 if e[0] == "pinch":                      # fingers spread, and their middle moved
                     canvas.pinch(e[1], map_xy(at))
-                    canvas.pan(e[2] * MAP_W / box.w, e[3] * MAP_H / box.h)
+                    canvas.pan(e[2] * surface_k * MAP_W / box.w, e[3] * surface_k * MAP_H / box.h)
                 elif e[0] == "scroll":                   # two fingers or the TrackPoint: pan
-                    canvas.pan(-e[1] * MAP_W / box.w, -e[2] * MAP_H / box.h)
+                    canvas.swipe(-e[1] * surface_k * MAP_W / box.w, -e[2] * surface_k * MAP_H / box.h, e[3])
                 elif e[0] == "wheel":
                     canvas.scroll(e[1], map_xy(at))
         if canvas:

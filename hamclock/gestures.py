@@ -107,7 +107,7 @@ class Gestures:
     def _capabilities(self, seat, caps):
         if caps & WlSeat.capability.pointer and not self.pointer:
             self.pointer = seat.get_pointer()
-            for event in ("axis", "axis_source", "axis_discrete", "axis_value120", "frame"):
+            for event in ("axis", "axis_source", "axis_stop", "axis_discrete", "axis_value120", "frame"):
                 self.pointer.dispatcher[event] = getattr(self, "_" + event)
             self.pinch = self.manager.get_pinch_gesture(self.pointer)
             # no "begin": it names SDL's surface, which pywayland has no object for and so
@@ -130,7 +130,12 @@ class Gestures:
         self.source = source
 
     def _axis(self, pointer, time, axis, value):
-        self.events.append(("axis", self.source, axis, value))
+        self.events.append(("axis", self.source, axis, value, time))
+
+    def _axis_stop(self, pointer, time, axis):
+        # the fingers lifted (once for each axis): where browsers start their momentum
+        if not self.events or self.events[-1][0] != "scroll_end":
+            self.events.append(("scroll_end", time / 1000))
 
     def _axis_discrete(self, pointer, axis, discrete):
         self.events.append(("clicks", axis, discrete))
@@ -143,17 +148,18 @@ class Gestures:
 
     def poll(self):
         """What happened since the last call: ("pinch", ratio, dx, dy), ("pinch_end",),
-        ("scroll", dx, dy) from fingers or a TrackPoint (surface px), ("wheel", clicks)."""
+        ("scroll", dx, dy, t) from fingers or a TrackPoint (surface px, at compositor time t
+        s), ("scroll_end", t) as the fingers lift, ("wheel", clicks)."""
         self.display.dispatch(block=False, queue=self.queue)
         out, clicks = [], {}
         for e in self.events:
             if e[0] == "clicks":
                 clicks[e[1]] = clicks.get(e[1], 0) + e[2]
             elif e[0] == "axis":
-                _, source, axis, value = e
+                _, source, axis, value, time = e
                 if source in (FINGER, CONTINUOUS):
                     vertical = axis == WlPointer.axis.vertical_scroll
-                    out.append(("scroll", 0 if vertical else value, value if vertical else 0))
+                    out.append(("scroll", 0 if vertical else value, value if vertical else 0, time / 1000))
                 elif source is None and axis == WlPointer.axis.vertical_scroll and not clicks:
                     clicks[axis] = value / 15                    # an old compositor: no source
             else:
