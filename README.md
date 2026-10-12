@@ -1,3 +1,5 @@
+<p align="center"><img src="hamclock/influ-hamclock.svg" width="128" alt=""></p>
+
 # 立在 ZUSN 边上放号
 
 <p align="center">
