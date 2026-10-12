@@ -17,7 +17,11 @@ committees (130106) are left out: they are not government offices, and outnumber
 The page carries the key, so the server listens on this host only: reach it through an SSH
 tunnel (ssh -L 8074:127.0.0.1:8074 <station>) and open http://localhost:8074/ there.
 
-usage: amap_gov.py [--port 8074] [--cell 0.5]
+Passes, each with its own folder of areas: offices (by the types above, the default), media
+(broadcasters and news media, type 141100) and custody (看守所, 拘留所, 监狱, 戒毒所 by keyword,
+for AMap files them under no type of their own).
+
+usage: amap_gov.py [--pass offices|media|custody] [--port 8074] [--cell 0.5]
 """
 import argparse
 import json
@@ -30,6 +34,10 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 OUT = os.path.expanduser("~/influ/model/amap_cells")
 ENV = os.path.expanduser("~/influ/private/amap.env")
 TYPES = "130101|130102|130103|130104|130105|130107|130300|130500|130600|130700"
+KEYWORD = ""
+PASSES = {"offices": (OUT, TYPES, ""),
+          "media": (os.path.expanduser("~/influ/model/amap_media"), "141100", ""),
+          "custody": (os.path.expanduser("~/influ/model/amap_custody"), "", "看守所|拘留所|监狱|戒毒所")}
 PAGE = 50                     # PlaceSearch's largest page
 DEEPEST = 200                 # dense searches sometimes return an empty fifth page; split sooner
 EXTENT = (27.75, 99.27, 33.21, 111.98)                    # the range map's, south west north east
@@ -40,14 +48,14 @@ PAGE_HTML = """<!doctype html><html><meta charset="utf-8"><title>AMap government
 <script>window._AMapSecurityConfig = {securityJsCode: "@SECRET@"};</script>
 <script src="https://webapi.amap.com/maps?v=2.0&key=@KEY@&plugin=AMap.PlaceSearch"></script>
 <script>
-const TYPES = "@TYPES@", PAGE = @PAGE@;
+const TYPES = "@TYPES@", KEYWORD = "@KEYWORD@", PAGE = @PAGE@;
 const say = t => { document.getElementById('state').textContent = t; };
 const log = t => { const l = document.getElementById('log'); l.textContent = (t + '\\n' + l.textContent).slice(0, 4000); };
 const wait = ms => new Promise(r => setTimeout(r, ms));
 function search(b, page) {
   return new Promise(resolve => {
     const ps = new AMap.PlaceSearch({type: TYPES, pageSize: PAGE, pageIndex: page, extensions: 'base'});
-    ps.searchInBounds('', new AMap.Bounds([b[1], b[0]], [b[3], b[2]]), (status, r) => {
+    ps.searchInBounds(KEYWORD, new AMap.Bounds([b[1], b[0]], [b[3], b[2]]), (status, r) => {
       if (status === 'complete') resolve({ok: true, count: r.poiList.count, pois: r.poiList.pois.map(p => (
         {id: p.id, name: p.name, type: p.type, address: p.address, lng: p.location.lng, lat: p.location.lat}))});
       else if (status === 'no_data') resolve({ok: true, count: 0, pois: []});
@@ -205,7 +213,7 @@ class Handler(BaseHTTPRequestHandler):
     def do_GET(self):
         if self.path == "/":
             k, secret = key()
-            self.reply(PAGE_HTML.replace("@KEY@", k).replace("@SECRET@", secret).replace("@TYPES@", TYPES)
+            self.reply(PAGE_HTML.replace("@KEY@", k).replace("@SECRET@", secret).replace("@TYPES@", TYPES).replace("@KEYWORD@", KEYWORD)
                        .replace("@PAGE@", str(PAGE)), "text/html; charset=utf-8")
         elif self.path == "/next":
             self.reply(json.dumps(self.server.areas.next()))
@@ -228,7 +236,10 @@ def main():
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--port", type=int, default=8074)
     ap.add_argument("--cell", type=float, default=0.5, help="starting area size, degrees")
+    ap.add_argument("--pass", dest="what", choices=sorted(PASSES), default="offices")
     a = ap.parse_args()
+    global OUT, TYPES, KEYWORD
+    OUT, TYPES, KEYWORD = PASSES[a.what]
     server = ThreadingHTTPServer(("127.0.0.1", a.port), Handler)
     server.areas = Areas(a.cell)
     print(f"{server.areas.done} areas done, {len(server.areas.todo)} to search on 127.0.0.1:{a.port}", flush=True)
