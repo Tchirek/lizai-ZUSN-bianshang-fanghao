@@ -23,7 +23,7 @@ from urllib.parse import parse_qs, urlsplit
 os.environ['SDL_VIDEODRIVER'] = 'dummy'
 os.environ.setdefault('PYGAME_HIDE_SUPPORT_PROMPT', '1')
 import pygame
-from PIL import Image
+from PIL import Image, ImageChops
 
 from hcdisplay import APP_W, APP_H, MAP_BOX, Fitted, Link, Mirror, Scene, on_map
 
@@ -32,6 +32,8 @@ IDLE_S = 120
 MAX_SESSIONS = 8
 MAP_KEYS = {'ArrowLeft', 'ArrowRight', 'ArrowUp', 'ArrowDown', '+', '=', '-', 'PageUp', 'PageDown'}
 KEYS = MAP_KEYS | {'Enter', 'Tab', 'Escape', 'Backspace', 'Space'}
+BAND = 32                                  # rows per band when looking for changed pixels
+WHOLE = 0.6                                # changes over this share of the frame go whole
 log = logging.getLogger(__name__)
 
 
@@ -112,13 +114,57 @@ def apply_event(scene, event):
                 scene.canvas.pinch(event['ratio'], scene.map_xy(at))
 
 
+def changed_rects(old, new):
+    """Rectangles (x, y, w, h) where `new` differs from `old`: [] if none, None if most of it."""
+    if old is None:
+        return None
+    diff = ImageChops.difference(old, new)
+    bbox = diff.getbbox()
+    if bbox is None:
+        return []
+    rects = []
+    for top in range(bbox[1] // BAND * BAND, bbox[3], BAND):
+        box = diff.crop((0, top, new.width, min(new.height, top + BAND))).getbbox()
+        if box is None:
+            continue
+        x0, y0, x1, y1 = box[0], top + box[1], box[2], top + box[3]
+        if rects:
+            px, py, pw, ph = rects[-1]
+            if py + ph == y0 and x0 < px + pw and px < x1:   # touches the band above: join
+                x0, x1 = min(px, x0), max(px + pw, x1)
+                rects[-1] = (x0, py, x1 - x0, y1 - py)
+                continue
+        rects.append((x0, y0, x1 - x0, y1 - y0))
+    if sum(w * h for _, _, w, h in rects) > WHOLE * new.width * new.height:
+        return None
+    return rects
+
+
+def strip(image, rects):
+    """The rectangles stacked top to bottom in one lossless PNG."""
+    out = Image.new('RGB', (max(w for _, _, w, _ in rects), sum(h for _, _, _, h in rects)))
+    y = 0
+    for x0, y0, w, h in rects:
+        out.paste(image.crop((x0, y0, x0 + w, y0 + h)), (0, y))
+        y += h
+    return png(out)
+
+
+def png(image):
+    out = io.BytesIO()
+    image.save(out, format='PNG', compress_level=1)
+    return out.getvalue()
+
+
 class Session:
     def __init__(self, scene):
         self.scene = scene
         self.seen = self.input_at = time.monotonic()
         self.clock_revision = -1
         self.revision = 0
-        self.png = None
+        self.image = None                  # the page's latest frame
+        self.full = None                   # its PNG, encoded only when a page needs it whole
+        self.delta = None                  # (rects, PNG strip) from revision - 1 to revision
 
 
 class Renderer(threading.Thread):
@@ -184,15 +230,23 @@ class Renderer(threading.Thread):
                 scene.clock_dirty = True
                 session.clock_revision = self.revision
             if scene.draw():
-                # Lossless, encoded only when a page asks for a changed frame.
+                # Lossless, drawn only when a page asks; only the changed parts are encoded.
                 image = Image.frombytes('RGB', SIZE, pygame.image.tobytes(scene.frame, 'RGB'))
-                out = io.BytesIO()
-                image.save(out, format='PNG', compress_level=1)
-                session.png = out.getvalue()
-                session.revision += 1
-            if session.png is None:
+                rects = changed_rects(session.image, image)
+                if rects != []:
+                    session.delta = (rects, strip(image, rects)) if rects else None
+                    session.image, session.full = image, None
+                    session.revision += 1
+            if session.image is None:
                 raise Busy('waiting for HamClock')
-            return (session.revision, session.png) if payload['after'] != session.revision else None
+            after = payload['after']
+            if after == session.revision:
+                return None
+            if after == session.revision - 1 and session.delta:
+                return session.revision, session.delta[1], session.delta[0]
+            if session.full is None:
+                session.full = png(session.image)
+            return session.revision, session.full, None
 
     def run(self):
         pygame.display.init()
@@ -267,7 +321,7 @@ class Handler(BaseHTTPRequestHandler):
         super().setup()
         self.connection.settimeout(10)
 
-    def reply(self, status, body=b'', content_type='text/plain; charset=utf-8', revision=None):
+    def reply(self, status, body=b'', content_type='text/plain; charset=utf-8', revision=None, rects=None):
         self.send_response(status)
         self.send_header('Content-Type', content_type)
         self.send_header('Content-Length', str(len(body)))
@@ -275,6 +329,9 @@ class Handler(BaseHTTPRequestHandler):
         self.send_header('X-Content-Type-Options', 'nosniff')
         if revision is not None:
             self.send_header('X-Frame-Revision', str(revision))
+        if rects is not None:                # a strip of these rectangles over revision - 1
+            self.send_header('X-Frame-Base', str(revision - 1))
+            self.send_header('X-Frame-Rects', ';'.join(','.join(map(str, r)) for r in rects))
         self.end_headers()
         self.wfile.write(body)
 
@@ -290,8 +347,8 @@ class Handler(BaseHTTPRequestHandler):
                 if result is None:
                     self.reply(204)
                 else:
-                    revision, png = result
-                    self.reply(200, png, 'image/png', revision)
+                    revision, body, rects = result
+                    self.reply(200, body, 'image/png', revision, rects)
             else:
                 self.reply(404)
         except (KeyError, ValueError):

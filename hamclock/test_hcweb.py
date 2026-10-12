@@ -221,6 +221,64 @@ class Tests(unittest.TestCase):
             self.assertEqual(f.request('/close', dict(session=second))[0], 204)
             self.assertTrue(f.open())
 
+    def test_follow_up_frames_carry_only_changed_rectangles_and_rebuild_exactly(self):
+        f = self.fixture
+        token = f.open()
+        status, headers, png = f.frame(token)
+        self.assertEqual(status, 200)
+        self.assertNotIn('X-Frame-Rects', headers)
+        page = Image.open(io.BytesIO(png)).convert('RGB')
+        revision = int(headers['X-Frame-Revision'])
+        # The clock changes in one small corner, away from the map.
+        pygame.draw.rect(f.source, (240, 240, 20), (20, 20, 60, 30))
+        f.renderer.frames.put(('update', [(0, 0, f.source.subsurface((0, 0, 160, 80)).copy())]))
+        time.sleep(.2)
+        status, headers, png = f.frame(token, revision)
+        self.assertEqual(status, 200)
+        self.assertEqual(int(headers['X-Frame-Base']), revision)
+        rects = [tuple(map(int, r.split(','))) for r in headers['X-Frame-Rects'].split(';')]
+        piece = Image.open(io.BytesIO(png)).convert('RGB')
+        self.assertLess(piece.width * piece.height, web.SIZE[0] * web.SIZE[1] / 20)
+        y = 0
+        for x0, y0, w, h in rects:
+            page.paste(piece.crop((0, y, w, y + h)), (x0, y0))
+            y += h
+        whole = f.renderer.sessions[token].image
+        self.assertEqual(page.tobytes(), whole.tobytes())
+        # A page that missed a frame gets it whole.
+        status, headers, png = f.frame(token, revision - 1)
+        self.assertEqual(status, 200)
+        self.assertNotIn('X-Frame-Rects', headers)
+        self.assertEqual(Image.open(io.BytesIO(png)).convert('RGB').tobytes(), whole.tobytes())
+
+    def test_changed_rects(self):
+        old = Image.new('RGB', (200, 100))
+        self.assertIsNone(web.changed_rects(None, old))
+        self.assertEqual(web.changed_rects(old, old.copy()), [])
+        new = old.copy()
+        new.paste((255, 0, 0), (10, 5, 20, 40))          # crosses a band boundary: one rectangle
+        new.paste((0, 255, 0), (150, 90, 160, 95))
+        self.assertEqual(web.changed_rects(old, new), [(10, 5, 10, 35), (150, 90, 10, 5)])
+        self.assertIsNone(web.changed_rects(old, Image.new('RGB', (200, 100), (1, 1, 1))))
+
+    def test_gamepad_stick_hat_and_shoulders_move_the_map(self):
+        class Pad:
+            def __init__(self, axes=(0, 0), hat=(0, 0), buttons=()):
+                self.axes, self.hat, self.buttons = axes, hat, buttons
+            get_numaxes = lambda self: len(self.axes)
+            get_axis = lambda self, i: self.axes[i]
+            get_numhats = lambda self: 1
+            get_hat = lambda self, i: self.hat
+            get_numbuttons = lambda self: 11
+            get_button = lambda self, i: i in self.buttons
+        self.assertEqual(display.pad_motion(Pad((.1, -.15))), (0, 0, 0))
+        self.assertEqual(display.pad_motion(Pad(hat=(-1, 1))), (1, 1, 0))     # as ArrowLeft + ArrowUp
+        vx, vy, _ = display.pad_motion(Pad((1, .6)))
+        self.assertEqual(vx, -1)
+        self.assertAlmostEqual(vy, -.5)
+        self.assertEqual(display.pad_motion(Pad(buttons={5}))[2], 1)
+        self.assertEqual(display.pad_motion(Pad(buttons={4, 5}))[2], 0)
+
     @unittest.skipUnless(socket.has_dualstack_ipv6(), 'dual-stack IPv6 unavailable')
     def test_all_interface_listener_accepts_ipv4_and_ipv6(self):
         with web.Server(('::', 0), self.fixture.renderer) as server:

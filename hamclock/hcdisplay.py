@@ -15,7 +15,8 @@ behaves like a HamClock window. Reconnects by itself whenever HamClock restarts.
 Over HamClock's world map goes the UV-K5 range map with the live amateur activity (map_view.py;
 if it cannot start, the pictures build_rangemap.py and activity.py leave in ~/influ/model stand
 in). A touchpad pinch or the wheel zooms it, a two-finger scroll or a drag pans it (touchpad
-gestures come from Wayland, gestures.py), and so do the arrow keys, + and - (or PgUp, PgDn). Over the foot of
+gestures come from Wayland, gestures.py), and so do the arrow keys, + and - (or PgUp, PgDn), and a
+gamepad (pygame.joystick: left stick or D-pad pans, shoulders zoom, A is Enter, B Escape). Over the foot of
 the left column goes this week's FT8 tally. Taps, drags and pointer moves over them stay here
 instead of reaching what they cover.
 
@@ -53,6 +54,9 @@ ZOOM_KEYS = {pygame.K_EQUALS: 1, pygame.K_PLUS: 1, pygame.K_KP_PLUS: 1, pygame.K
              pygame.K_MINUS: -1, pygame.K_KP_MINUS: -1, pygame.K_PAGEDOWN: -1}
 KEY_PAN = 700                   # view px a second the arrow keys move the map
 KEY_ZOOM = 3                    # wheel notches a second + and - zoom
+PAD_DEAD = 0.2                  # stick travel ignored around the centre
+PAD_ZOOM = {5: 1, 4: -1}        # gamepad buttons held to zoom: right / left shoulder
+PAD_KEYS = {0: "Enter", 1: "Escape"}   # gamepad buttons sent as keys: A, B
 KEYS = {pygame.K_RETURN: "Enter", pygame.K_KP_ENTER: "Enter", pygame.K_TAB: "Tab",
         pygame.K_ESCAPE: "Escape", pygame.K_BACKSPACE: "Backspace", pygame.K_SPACE: "Space",
         pygame.K_LEFT: "ArrowLeft", pygame.K_RIGHT: "ArrowRight",
@@ -376,6 +380,19 @@ def key_name(ev):
     return ch if len(ch) == 1 and 33 <= ord(ch) <= 126 else None
 
 
+def pad_motion(pad):
+    """How a gamepad moves the map: (vx, vy, zoom), each in -1..1, as the arrow keys and + / -.
+    The left stick moves it in proportion, the D-pad (hat) at full speed."""
+    def stick(axis):
+        v = pad.get_axis(axis) if pad.get_numaxes() > axis else 0.0
+        return 0.0 if abs(v) < PAD_DEAD else (abs(v) - PAD_DEAD) / (1 - PAD_DEAD) * (1 if v > 0 else -1)
+    hx, hy = pad.get_hat(0) if pad.get_numhats() else (0, 0)
+    vx = max(-1.0, min(1.0, -hx - stick(0)))
+    vy = max(-1.0, min(1.0, hy - stick(1)))
+    zoom = sum(v for b, v in PAD_ZOOM.items() if b < pad.get_numbuttons() and pad.get_button(b))
+    return vx, vy, zoom
+
+
 def on_map(at):
     x, y, w, h = MAP_BOX
     return at is not None and x <= at[0] < x + w and y <= at[1] < y + h
@@ -399,6 +416,8 @@ def main():
     # Wayland scrolls come in the window's own px; SDL scales the frame onto it
     surface_k = screen.surface.get_width() / pygame.display.get_window_size()[0]
     map_xy = scene.map_xy
+    pygame.joystick.init()
+    pads = {}                            # plugged-in gamepads by instance id (hot-plug events)
 
     clock, dt = pygame.time.Clock(), 0.0
     pressed = drag = None                # app px of the press; (last window px, dragging?)
@@ -442,6 +461,13 @@ def main():
             elif ev.type == pygame.KEYDOWN and (name := key_name(ev)):
                 mods = pygame.key.get_mods()
                 scene.key(name, bool(mods & pygame.KMOD_CTRL), bool(mods & pygame.KMOD_SHIFT))
+            elif ev.type == pygame.JOYDEVICEADDED:
+                pad = pygame.joystick.Joystick(ev.device_index)
+                pads[pad.get_instance_id()] = pad
+            elif ev.type == pygame.JOYDEVICEREMOVED:
+                pads.pop(ev.instance_id, None)
+            elif ev.type == pygame.JOYBUTTONDOWN and ev.button in PAD_KEYS:
+                scene.key(PAD_KEYS[ev.button])
             if ev.type == pygame.MOUSEMOTION and not drag and time.time() - last_move > POLL:
                 last_move = time.time()
                 at = screen.app_xy(ev.pos)
@@ -465,6 +491,9 @@ def main():
             vx = sum(v[0] for key, v in MAP_KEYS.items() if held[key])
             vy = sum(v[1] for key, v in MAP_KEYS.items() if held[key])
             zoom = sum(v for key, v in ZOOM_KEYS.items() if held[key])
+            for pad in pads.values():
+                px, py, pz = pad_motion(pad)
+                vx, vy, zoom = vx + px, vy + py, zoom + pz
             if vx or vy:
                 canvas.pan(vx * KEY_PAN * dt, vy * KEY_PAN * dt)
             if zoom:
