@@ -16,13 +16,6 @@ admin   province (admin level 4), prefecture (5) and county (6) boundaries under
 military  every military area under the map from OpenStreetMap, live (landuse military, or a
         military base, barracks, airfield, naval base, range or training area): outlines with
         their name if mapped, else a point, the same way, into ~/influ/model/military.json.
-government  the wanted government departments under the map (WANTED: party and government
-        organs, congress and CPPCC, public security, courts and procuratorates, custodial
-        facilities, emergency response and fire, enforcement and regulation bureaus,
-        livelihood and public services, broadcasters and news media) from OpenStreetMap, the
-        AMap offices tools/amap_gov.py collected and those tools/amap_names.py named and
-        geocoded, live, radio regulators (a layer of their own) marked; the regulators OSM lacks come from radio_regulators.json (official
-        addresses), into ~/influ/model/government.json.
 render  the ground as build_rangemap.py draws it (relief, line-of-sight coverage) as a tile
         pyramid in the map's own projection: level L is the W x H base map at L times its
         scale, cut into 256 px tiles, ~/influ/model/tiles/L/col_row.png. The map window only
@@ -31,7 +24,7 @@ render  the ground as build_rangemap.py draws it (relief, line-of-sight coverage
 Both steps skip what is already there; rerun render (with --force) after build_rangemap.py,
 which redoes the viewshed. Tiles past the map's edge repeat the edge.
 
-usage: build_tiles.py [dem] [campuses] [airports] [admin] [military] [government] [render]
+usage: build_tiles.py [dem] [campuses] [airports] [admin] [military] [render]
                       [--workers 3] [--force]
 """
 import argparse
@@ -154,64 +147,6 @@ MILITARY_QUERY = """[out:json][timeout:180];
 (nwr["landuse"="military"]({box});
  nwr["military"~"^(base|barracks|airfield|naval_base|range|training_area)$"]({box}););
 out geom;"""
-OLD_GOVERNMENT_CELLS = os.path.join(a.MODEL, "government_cells")
-GOVERNMENT_CELLS = os.path.join(a.MODEL, "government_cells2")
-# by tag, and by the name ending most offices carry whatever they are tagged as
-GOVERNMENT_QUERY = """[out:json][timeout:240];
-(nwr["office"="government"]({box});
- nwr["amenity"~"^(townhall|courthouse|police)$"]({box});
- nwr["government"]({box});
- nwr["building"="government"]({box});
- nwr["name"~"(人民政府|政府|管委会|委员会|办事处|局|厅|署|法院|检察院|公安|派出所|税务所|海关|人大|政协|党委|党工委|县委|市委|区委|管理所|管理站)$"]({box});
- nwr["name"~"无线电"]({box}););
-out geom;"""
-# names that carry an office's word without being one
-NOT_GOVERNMENT = re.compile("邮政|邮局|电信|移动|联通|银行|信用社|酒店|宾馆|饭店|餐厅|招待所|书店|超市|药(?!品监督管理)|宿舍|小区|家属|公寓|"
-                            "旧址|遗址|纪念|博物|学院|公司|集团|广场|公园|站台|车站|加油|维修|商店|"
-                            "专卖|门市|营业|网点|服务部|经营部|服务窗口|停车场|放映|门诊|诊所|殡仪|陵园|出版|支部|党组|居民委员会|村民"
-                            "委员会|居委会|村委会|社区委员会|社区党委|社区工作委员会|社区纪律检查|市场(?!监督|监管)|"
-                            "共青团|青年团|关心下一代|林长制|河长制|残疾人|工会|离退休|学会|协会|基金会|"
-                            "国民党革命委员会|民主同盟|民主建国会|民主促进会|农工民主党|致公党|九三学社|台湾民主自治同盟")
-# the departments the layer keeps, by the map's categories: the party and government organs;
-# congress and the CPPCC; public security; the courts and procuratorates; the custodial and
-# treatment facilities; emergency response and fire; the enforcement and regulatory bureaus;
-# the livelihood and public service bureaus; and broadcasters and news media. Anything else
-# mapped as an office is left out; the radio regulators (cyan) are a layer of their own.
-WANTED = re.compile(
-    "党委|党工委|市委|县委|区委|镇委|乡委|州委|省委|盟委|"                        # 党政机关
-    "政府|街道办事处|街道办|机关工作委员会|街道工作委员会|新区工作委员会|"
-    "开发区工作委员会|园区工作委员会|纪律检查委员会|纪律检查工作委员会|政法委员会|"
-    "人大|人民代表大会|政协(?!助)|"                                             # 权力与协商机关
-    "公安|派出所|交警|交通警察|警务|车管所|车辆管理所|"                            # 公安机关
-    "法院|人民法庭|检察|司法局|司法所|"                                          # 司法与法律监督机关
-    "看守所|拘留所|监狱|戒毒|"                                                  # 监管场所
-    "应急管理|消防|防汛|抗旱|"                                                  # 应急救援机关
-    "市场监管|市场监督管理|药品监督管理|城管(?!理)|城市管理|综合行政执法|生态环境|环境保护局|环保局|交通执法|交通运输.*?执法|税务|"   # 行政执法与监管机关
-    "卫生健康|卫生和计划生育|卫生局|民政|教育|信访|疾病预防控制|疾控|政务服务中心|"   # 民生与公共服务机关
-    "广播电视局|广播电视台|广播电视总台|广播电台|电视台|融媒体|新闻传媒|报社|日报")   # 宣传与新闻传媒机构
-# a 中共 committee counts only for a jurisdiction's own (市委, 县委, 纪委, 机关工委 ...), not
-# for the committee or the branch inside some other unit (中共XX局委员会, 中共XX学校支部委员会)
-PARTY = re.compile("党委|党工委|市委|县委|区委|镇委|乡委|州委|省委|盟委|"
-                   "机关工作委员会|街道工作委员会|新区工作委员会|开发区工作委员会|园区工作委员会|"
-                   "纪律检查委员会|纪律检查工作委员会|政法委员会")
-
-
-def wanted(name):
-    """Whether the government layer shows this office. A name's bracketed part is left aside:
-    it may be a branch (XX司法局(黄洋司法所)) or only somewhere nearby (XX幼儿园(XX镇人民政府北))."""
-    name = re.sub(r"[（(][^）)]*[）)]", "", name)
-    if NOT_GOVERNMENT.search(name) or "中共" in name and not PARTY.search(name):
-        return False
-    return bool(WANTED.search(name))
-REGULATORS = os.path.join(os.path.dirname(os.path.abspath(__file__)), "radio_regulators.json")
-AMAP_CELLS = os.path.join(a.MODEL, "amap_cells")          # tools/amap_gov.py's passes
-AMAP_PASSES = (AMAP_CELLS, os.path.join(a.MODEL, "amap_media"), os.path.join(a.MODEL, "amap_custody"))
-AMAP_NAMES = os.path.join(a.MODEL, "amap_names", "geo.jsonl")   # tools/amap_names.py's
-PLACES = [os.path.join(a.MODEL, p) for p in ("baidu", "tencent")]   # tools/place_gov.py's
-# where an office's name shows from: city level and up as military areas do, then counties
-HIGH = re.compile("(省|自治州|市|州|地区)(人民政府|政府|委员会|中级人民法院|人民检察院|公安局)$")
-COUNTY = re.compile("(县|区|市|旗)(人民政府|政府|委员会|人民法院|人民检察院|公安局|税务局)$")
-HIGH_LEVELS = ("国家级机关及事业单位", "省直辖市级政府及事业单位", "地市级政府及事业单位")
 ADMIN_CELLS = os.path.join(a.MODEL, "admin_cells")
 # the areas' relations (members only), then their boundary ways in the cell with geometry
 ADMIN_QUERY = """[out:json][timeout:180];
@@ -323,182 +258,6 @@ def write_military():
     os.replace(os.path.join(a.MODEL, "military.json.tmp"), os.path.join(a.MODEL, "military.json"))
     print(f"military: {sum(bool(c['rings']) for c in out)} outlined, {sum(not c['rings'] for c in out)} points, "
           f"{sum(bool(c['name']) for c in out)} named", flush=True)
-
-
-def government(rounds=30):
-    ok = fetch_cells(GOVERNMENT_CELLS, GOVERNMENT_QUERY, write_government, "government", rounds)
-    write_government()                       # AMap's may have come in since
-    return ok
-
-
-def name_zoom(name, level=""):
-    """The zoom an office's name shows from: 6 (as military areas) for radio regulators and
-    city level and up, 8 for counties, 12 for townships and everything else."""
-    if "无线电" in name or level in HIGH_LEVELS or HIGH.search(name):
-        return 6
-    if level == "区县级政府及事业单位" or COUNTY.search(name):
-        return 8
-    return 12
-
-
-def gcj_offset(lat, lon):
-    """GCJ-02 minus WGS-84 at a WGS-84 point, degrees: the published transform."""
-    x, y = lon - 105.0, lat - 35.0
-    dlat = (-100 + 2 * x + 3 * y + 0.2 * y * y + 0.1 * x * y + 0.2 * math.sqrt(abs(x))
-            + (20 * math.sin(6 * x * math.pi) + 20 * math.sin(2 * x * math.pi)) * 2 / 3
-            + (20 * math.sin(y * math.pi) + 40 * math.sin(y / 3 * math.pi)) * 2 / 3
-            + (160 * math.sin(y / 12 * math.pi) + 320 * math.sin(y * math.pi / 30)) * 2 / 3)
-    dlon = (300 + x + 2 * y + 0.1 * x * x + 0.1 * x * y + 0.1 * math.sqrt(abs(x))
-            + (20 * math.sin(6 * x * math.pi) + 20 * math.sin(2 * x * math.pi)) * 2 / 3
-            + (20 * math.sin(x * math.pi) + 40 * math.sin(x / 3 * math.pi)) * 2 / 3
-            + (150 * math.sin(x / 12 * math.pi) + 300 * math.sin(x / 30 * math.pi)) * 2 / 3)
-    a_, ee = 6378245.0, 0.00669342162296594323
-    rad = math.radians(lat)
-    magic = 1 - ee * math.sin(rad) ** 2
-    dlat = dlat * 180 / (a_ * (1 - ee) / (magic * math.sqrt(magic)) * math.pi)
-    dlon = dlon * 180 / (a_ / math.sqrt(magic) * math.cos(rad) * math.pi)
-    return dlat, dlon
-
-
-def wgs84(lat, lon):
-    """A GCJ-02 point (as AMap gives) back in WGS-84, to well under a metre."""
-    wlat, wlon = lat, lon
-    for _ in range(4):
-        dlat, dlon = gcj_offset(wlat, wlon)
-        wlat, wlon = lat - dlat, lon - dlon
-    return wlat, wlon
-
-
-def amap_offices():
-    """AMap's offices (every pass of tools/amap_gov.py), each once, in WGS-84."""
-    out, seen = [], set()
-    files = [os.path.join(folder, name) for folder in AMAP_PASSES if os.path.isdir(folder)
-             for name in sorted(os.listdir(folder)) if name.endswith(".json")]
-    for path in files:
-        with open(path) as f:
-            pois = json.load(f).get("pois", [])
-        for p in pois:
-            if p["id"] in seen or not p.get("name"):
-                continue
-            seen.add(p["id"])
-            radio = "无线电" in p["name"]
-            if not radio and not wanted(p["name"]):
-                continue
-            lat, lon = wgs84(p["lat"], p["lng"])
-            out.append(dict(name=p["name"], rings=[], point=[lat, lon], radio=radio,
-                            zoom=name_zoom(p["name"], p.get("type", "").split(";")[-1])))
-    return out
-
-
-def geocoded_offices():
-    """The offices tools/amap_names.py named and AMap's Geocoder placed: only answers that are
-    a point of interest whose address ends with the very name asked for (a county's police
-    asked for and the city's found does not count), within 80 km of the place it was asked for,
-    each named as AMap names it, once, in WGS-84; named from the zoom its level deserves (a
-    prefecture's offices as city level, a county's as county level)."""
-    out, seen = [], set()
-    if not os.path.exists(AMAP_NAMES):
-        return out
-    levels = {}
-    with open(os.path.join(os.path.dirname(AMAP_NAMES), "districts.json"), encoding="utf-8") as f:
-        stack = list(json.load(f).values())
-    while stack:
-        d = stack.pop()
-        levels.setdefault(d["name"], d["level"])
-        stack += d["districts"]
-    tier = {"province": 8, "city": 6, "district": 8}
-    with open(AMAP_NAMES, encoding="utf-8") as f:
-        for line in f:
-            try:
-                r = json.loads(line)
-            except ValueError:
-                continue
-            q, (lon0, lat0) = plain(r["job"]["q"]), r["job"]["centre"]
-            for g in r["found"]:                          # the first candidate that is the office
-                address = plain(g["address"])
-                if g["level"] != "兴趣点" or not address.endswith(q) or not g["location"]:
-                    continue
-                name = address                                # less the province, city, ... it starts with
-                for part in g.get("parts") or []:
-                    if part and name.startswith(part) and name[len(part):].endswith(q):
-                        name = name[len(part):]
-                if "无线电" not in name and not wanted(name):
-                    continue
-                lat, lon = wgs84(g["location"][1], g["location"][0])
-                if math.dist((lat, lon), (lat0, lon0)) > 0.8 or (name, round(lat, 4), round(lon, 4)) in seen:
-                    continue
-                seen.add((name, round(lat, 4), round(lon, 4)))
-                zoom = min(name_zoom(name), tier.get(levels.get(r["job"]["unit"]), 12))
-                out.append(dict(name=name, rings=[], point=[lat, lon], radio="无线电" in name, zoom=zoom))
-                break
-    return out
-
-
-def place_offices():
-    """The offices tools/place_gov.py found county by county, each once, in WGS-84."""
-    out, seen = [], set()
-    for path in [os.path.join(d, n) for d in PLACES if os.path.isdir(d) for n in sorted(os.listdir(d))]:
-        if not path.endswith(".json"):
-            continue
-        with open(path, encoding="utf-8") as f:
-            county = json.load(f)
-        for places in county["found"].values():
-            for p in places:
-                if p["uid"] in seen:
-                    continue
-                seen.add(p["uid"])
-                radio = "无线电" in p["name"]
-                if not radio and not wanted(p["name"]):
-                    continue
-                lat, lon = wgs84(p["lat"], p["lng"])
-                out.append(dict(name=p["name"], rings=[], point=[lat, lon], radio=radio, zoom=name_zoom(p["name"])))
-    return out
-
-
-def plain(name):
-    return re.sub(r"[（(][^）)]*[）)]|\s", "", name)
-
-
-def write_government():
-    """government.json: only the departments WANTED names (the yellow areas and points, by
-    the map's categories), outlined or a point, each with its name; radio regulators (无线电
-    in the name) are flagged and kept whatever the list says, and those OSM lacks added from
-    radio_regulators.json unless one is mapped within ~2 km."""
-    out = []
-    for e in kept(OLD_GOVERNMENT_CELLS, GOVERNMENT_CELLS).values():
-        tags = e.get("tags", {})
-        name = tags.get("name:zh") or tags.get("name") or tags.get("name:en") or ""
-        radio = "无线电" in name
-        # the wanted departments, less the bus stop, bus route or shop that merely carries one's name
-        if not radio and (not wanted(name) or tags.get("highway") or tags.get("railway") or tags.get("route")
-                          or tags.get("public_transport") or tags.get("shop")):
-            continue
-        if e["type"] == "node":
-            out.append(dict(name=name, rings=[], point=[e["lat"], e["lon"]], radio=radio, zoom=name_zoom(name)))
-        elif found := outer_rings(e):
-            out.append(dict(name=name, rings=[[list(p) for p in r] for r in found],
-                            point=middle(max(found, key=lambda r: abs(area(r)))), radio=radio, zoom=name_zoom(name)))
-    inner = nested(out)                      # an office inside a compound is part of it ...
-    out = [c for i, c in enumerate(out) if i not in inner or c["radio"]]     # ... unless a regulator
-    # AMap's offices, less those OSM has under the same name within ~400 m
-    mapped = {}
-    for c in out:
-        mapped.setdefault(plain(c["name"]), []).append(c["point"])
-    amap = []
-    for c in amap_offices() + geocoded_offices() + place_offices():
-        if not any(math.dist(c["point"], p) < 0.004 for p in mapped.get(plain(c["name"]), ())):
-            amap.append(c)
-            mapped.setdefault(plain(c["name"]), []).append(c["point"])
-    out += amap
-    with open(REGULATORS, encoding="utf-8") as f:     # those found nowhere else, placed by hand
-        for r in json.load(f):
-            if not any(c["radio"] and math.dist(c["point"], r["point"]) < 0.02 for c in out):
-                out.append(dict(name=r["name"], rings=[], point=r["point"], radio=True, zoom=6))
-    with open(os.path.join(a.MODEL, "government.json.tmp"), "w") as f:
-        json.dump(out, f, ensure_ascii=False)
-    os.replace(os.path.join(a.MODEL, "government.json.tmp"), os.path.join(a.MODEL, "government.json"))
-    print(f"government: {sum(bool(c['rings']) for c in out)} outlined, {sum(not c['rings'] for c in out)} points "
-          f"({len(amap)} from AMap, Baidu and Tencent), {sum(c['radio'] for c in out)} radio regulators", flush=True)
 
 
 def admin(rounds=30):
@@ -762,7 +521,7 @@ def render(workers, force):
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("steps", nargs="*",
-                    default=["dem", "campuses", "airports", "admin", "military", "government", "render"])
+                    default=["dem", "campuses", "airports", "admin", "military", "render"])
     ap.add_argument("--workers", type=int, default=3)
     ap.add_argument("--force", action="store_true")
     args = ap.parse_args()
@@ -776,8 +535,6 @@ def main():
         print("some admin boundary cells are still missing; run admin again later", flush=True)
     if "military" in args.steps and not military():
         print("some military cells are still missing; run military again later", flush=True)
-    if "government" in args.steps and not government():
-        print("some government cells are still missing; run government again later", flush=True)
     if "render" in args.steps:
         render(args.workers, args.force)
 

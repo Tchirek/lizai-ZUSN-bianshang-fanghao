@@ -58,6 +58,7 @@ EMBASSY = (150, 250, 170)     # consulates and embassies: named with a mini flag
 LEAD = (160, 160, 150)        # the hairline tying a label placed off its point back to it
 EMBASSY_ZOOM = 6              # their names show from this zoom on, as the regulators' do
 EMBASSIES = os.path.join(os.path.dirname(os.path.abspath(__file__)), "embassies.json")
+OFFICES = os.path.join(os.path.dirname(os.path.abspath(__file__)), "government.json")
 OUTLINE_PX = 4                # an area this small on screen (physical px) is drawn as its dot
 DOTS = 300                    # past this many dots in view, they are written as pixels
 NEW_GLYPHS = 12               # labels first rendered in one frame while the view moves
@@ -333,7 +334,7 @@ def airport_label(code, name):
 
 
 def areas(base, path):
-    """Named areas (campuses, military, government) from build_tiles.py's file: outlines and the
+    """Named areas (campuses, military, government) from their file: outlines and the
     point for the name, in base px; those on the map."""
     out = []
     if os.path.exists(path):
@@ -352,7 +353,7 @@ def static_scene(base):
     and embassies, airports with their runways, and the farthest point in base px; kept while
     their files stay."""
     paths = [os.path.join(a.MODEL, f) for f in ("rangemap_osm.json", "rangemap.json", "campuses.json",
-                                                 "airports.json", "military.json", "government.json")]
+                                                 "airports.json", "military.json")] + [OFFICES]
     key = tuple(os.path.getmtime(p) if os.path.exists(p) else 0 for p in paths + [EMBASSIES])
     if _static.get("key") == key:
         return _static
