@@ -26,6 +26,7 @@ import multiprocessing
 import os
 import time
 from collections import OrderedDict
+from itertools import islice
 from concurrent.futures import ProcessPoolExecutor
 from concurrent.futures.process import BrokenProcessPool
 
@@ -53,6 +54,7 @@ MILITARY_ZOOM = 4             # military areas (outline, dot) from this zoom on,
 MILITARY = (255, 85, 70)
 GOVERNMENT, REGULATOR = (235, 190, 70), (90, 215, 255)   # offices; radio regulators: as military
 OUTLINE_PX = 4                # an area this small on screen (physical px) is drawn as its dot
+DOTS = 300                    # past this many dots in view, they are written as pixels
 NEW_GLYPHS = 12               # labels first rendered in one frame while the view moves
 FONTS = {"latin": ("/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf", 0),
          "cjk": ("/usr/share/fonts/opentype/noto/NotoSansCJK-Bold.ttc", 2)}   # 2: SC
@@ -298,7 +300,8 @@ def areas(base, path):
                 rings = [r for r in (np.array([base.xy(*p) for p in ring]) for ring in c["rings"]) if len(r) > 2]
                 point = base.xy(*c["point"])
                 if 0 <= point[0] < W and 0 <= point[1] < H:
-                    out.append(dict(name=c["name"], rings=rings, point=point, radio=c.get("radio", False)))
+                    out.append(dict(name=c["name"], rings=rings, point=point, radio=c.get("radio", False),
+                                    zoom=c.get("zoom", 6)))
     return out
 
 
@@ -342,9 +345,77 @@ def static_scene(base):
     return _static
 
 
-def load_scene(base, scale):
-    """activity.json and the static layers -> everything the scene draws, in base px, with
-    the labels placed for every zoom step."""
+_part = {}
+
+
+def static_part(static, scale):
+    """Everything static the scene draws, with its labels (campuses, military areas and
+    government offices from the zoom each is named at, the larger area first, then towns)
+    placed for every zoom step; worked out once for each version of static_scene's files."""
+    key = (static["key"], scale)
+    if _part.get("key") == key:
+        return _part
+    items, kinds = [], []
+    for c in static["campuses"]:
+        if c["name"]:
+            items.append((c["name"], c["point"], 15, CAMPUS_ZOOM, math.inf))
+            kinds.append(("campus", CAMPUS))
+    size = lambda c: max((abs(r[:, 0] @ np.roll(r[:, 1], -1) - np.roll(r[:, 0], -1) @ r[:, 1]) for r in c["rings"]),
+                         default=0)
+    for kind, colour, c in sorted([("military", MILITARY, c) for c in static["military"] if c["name"]]
+                                  + [("government", GOVERNMENT, c) for c in static["government"] if c["name"]],
+                                  key=lambda k: (k[2]["zoom"], -size(k[2]))):
+        items.append((c["name"], c["point"], 13, c["zoom"], math.inf))
+        kinds.append((kind, colour))
+    places(static, items, kinds, False)
+    sizes, spots = place_labels(items, scale)
+    part = dict(key=key, places=static["place_xy"], campuses=static["campuses"], military=static["military"],
+                government=static["government"], regulators=static["regulators"],
+                airports=[x["point"] for x in static["airports"]], runways=static["runways"], far=static["far"][0],
+                labels=[(text, xy, size) for text, xy, size, *_ in items], kinds=kinds, sizes=sizes, spots=spots)
+    _part.clear()
+    _part.update(static_arrays(part))
+    return _part
+
+
+def places(static, items, kinds, cities):
+    """Place names (cities, else towns) as labels; on the whole map only those within our reach
+    are named, as on build_rangemap.py's."""
+    for i, (name, xy, km, city) in enumerate(zip(static["place_names"], static["place_xy"],
+                                                 static["place_km"], static["place_city"])):
+        if city == cities:
+            items.append((name, tuple(xy), 14, 1 if km <= static["name_km"] else 2, CITY_ZOOM))
+            kinds.append(("place", CITY, i))
+
+
+def label_boxes(xy, sizes, k, z):
+    """The boxes (zoomed px) place_labels gives labels at base px `xy` in spots `k` at zoom `z`."""
+    tw, th = sizes[:, 0], sizes[:, 1]
+    dx = np.select([k == 0, k == 1, k == 4, k == 5], [7, -tw - 7, 18, -tw - 18], -tw / 2)
+    dy = np.select([k == 2, k == 3, k == 6, k == 7, k == 8], [-22, 7, -33, 18, -th / 2], -7)   # spot()
+    x0, y0 = xy[:, 0] * z + dx - 1, xy[:, 1] * z + dy
+    return np.stack([x0, y0, x0 + tw + 2, y0 + th + 2], axis=1)
+
+
+def overlapping(boxes, others):
+    """Which of `boxes` overlap any of `others` (both (n, 4))."""
+    hit = np.zeros(len(boxes), bool)
+    if not len(boxes) or not len(others):
+        return hit
+    order = np.argsort(boxes[:, 0])
+    x0 = boxes[order, 0]
+    widest = (boxes[:, 2] - boxes[:, 0]).max()
+    for b in others:
+        near = order[np.searchsorted(x0, b[0] - widest):np.searchsorted(x0, b[2])]
+        hit[near[(boxes[near, 2] > b[0]) & (boxes[near, 1] < b[3]) & (boxes[near, 3] > b[1])]] = True
+    return hit
+
+
+def load_scene(base, scale, have=None):
+    """activity.json and the static layers -> everything the scene draws, in base px, with the
+    labels placed for every zoom step: the dynamic ones (and cities, airports, regulators) now,
+    over the static part's, which they hide where they meet. The static part itself goes along
+    only if `have` (the key of the one the display holds) is not it."""
     with open(os.path.join(a.MODEL, "activity.json")) as f:
         data = json.load(f)
     static = static_scene(base)
@@ -365,15 +436,7 @@ def load_scene(base, scale):
         if x["text"]:
             items.append((x["text"], x["point"], 13, 1, math.inf))
             kinds.append(("airport", AIRPORT))
-
-    def places(cities):
-        # on the whole map only places within our reach are named, as on build_rangemap.py's
-        for i, (name, xy, km, city) in enumerate(zip(static["place_names"], static["place_xy"],
-                                                     static["place_km"], static["place_city"])):
-            if city == cities:
-                items.append((name, tuple(xy), 14, 1 if km <= static["name_km"] else 2, CITY_ZOOM))
-                kinds.append(("place", CITY, i))
-    places(True)                               # cities come before APRS calls, towns after all
+    places(static, items, kinds, True)         # cities come before APRS calls, towns after all
     for c in static["regulators"]:             # radio regulators: never crowded out
         if c["name"]:
             items.append((c["name"], c["point"], 13, 6, math.inf))
@@ -384,30 +447,24 @@ def load_scene(base, scale):
             kinds.append(("aprs", a.APRS_RF if rf else a.APRS_NET))
     items.append((static["far"][1], static["far"][0], 13, 1, math.inf))
     kinds.append(("far", terrain.SEEN))
-    for c in static["campuses"]:
-        if c["name"]:
-            items.append((c["name"], c["point"], 15, CAMPUS_ZOOM, math.inf))
-            kinds.append(("campus", CAMPUS))
-    # military and government names on an equal footing: the larger area first
-    size = lambda c: max((abs(r[:, 0] @ np.roll(r[:, 1], -1) - np.roll(r[:, 0], -1) @ r[:, 1]) for r in c["rings"]),
-                         default=0)
-    for kind, colour, c in sorted([("military", MILITARY, c) for c in static["military"] if c["name"]]
-                                  + [("government", GOVERNMENT, c) for c in static["government"] if c["name"]],
-                                  key=lambda k: -size(k[2])):
-        items.append((c["name"], c["point"], 13, 6, math.inf))
-        kinds.append((kind, colour))
-    places(False)
     sizes, spots = place_labels(items, scale)
-    return arrays(dict(
+    part = static_part(static, scale)
+    xy = np.array([xy for _, xy, *_ in items], dtype=float).reshape(-1, 2)
+    part_spots = part["spots"].copy()
+    for li, z in enumerate(LABEL_ZOOMS):
+        mine, theirs = spots[:, li] >= 0, np.flatnonzero(part_spots[:, li] >= 0)
+        if mine.any() and len(theirs):
+            under = overlapping(label_boxes(part["label_xy"][theirs], part["sizes"][theirs], part_spots[theirs, li], z),
+                                label_boxes(xy[mine], sizes[mine], spots[mine, li], z))
+            part_spots[theirs[under], li] = -1
+    return dynamic_arrays(dict(
+        key=part["key"], part=None if have == part["key"] else part, part_spots=part_spots,
         stations=[((x, y), colour) for _, (x, y, colour, _) in senders_first],
         lines=[(p["ends"], p["colour"], 155 if len(p["local"]) == 2 else 48) for p in chosen],
         total=total, bands=dict(bands), aprs=[(xy, rf) for _, xy, rf in aprs],
         links=[(base.xy(*positions[x][:2]), base.xy(*positions[y][:2]))
                for x, y in data.get("aprs_links", []) if x in positions and y in positions],
-        qsos=[xy for _, xy in qsos], places=static["place_xy"], campuses=static["campuses"],
-        military=static["military"], government=static["government"], regulators=static["regulators"],
-        airports=[x["point"] for x in static["airports"]], runways=static["runways"],
-        far=static["far"][0], labels=[(text, xy, size) for text, xy, size, *_ in items],
+        qsos=[xy for _, xy in qsos], labels=[(text, xy, size) for text, xy, size, *_ in items],
         kinds=kinds, sizes=sizes, spots=spots))
 
 
@@ -433,12 +490,33 @@ def load_admin(base):
     return out
 
 
-def arrays(d):
-    """A scene's points as arrays, for projecting all at once (worked out in the worker, so
-    taking a new scene costs a frame nothing)."""
-    def points(rows):
-        return np.array(rows, dtype=float).reshape(-1, 2)
+def points(rows):
+    return np.array(rows, dtype=float).reshape(-1, 2)
 
+
+def place_rows(kinds):
+    """Rows of `kinds` that label places, and which place each labels."""
+    rows = [i for i, kind in enumerate(kinds) if kind[0] == "place"]
+    return np.array(rows, dtype=int), np.array([kinds[i][2] for i in rows], dtype=int)
+
+
+def static_arrays(d):
+    """The static part's points and boxes as arrays, for projecting all at once."""
+    d["label_xy"] = points([xy for _, xy, _ in d["labels"]])
+    d["airport_xy"] = points(d["airports"])
+    d["runway_box"] = np.array([(*r["line"].min(0), *r["line"].max(0)) for r in d["runways"]]).reshape(-1, 4)
+    d["label_campus"] = np.array([kind[0] == "campus" for kind in d["kinds"]], dtype=bool)
+    for kind, key in (("campus", "campuses"), ("military", "military"), ("government", "government"),
+                      ("regulator", "regulators")):
+        boxes = [np.vstack(c["rings"]) if c["rings"] else np.array([c["point"]]) for c in d[key]]
+        d[kind + "_box"] = np.array([(*b.min(0), *b.max(0)) for b in boxes]).reshape(-1, 4)
+    d["place_rows"], d["place_index"] = place_rows(d["kinds"])
+    return d
+
+
+def dynamic_arrays(d):
+    """The same for a scene's dynamic layers (worked out in the worker, so taking a new scene
+    costs a frame nothing)."""
     d["station_xy"] = points([xy for xy, _ in d["stations"]])
     d["line_ends"] = np.array([ends for ends, _, _ in d["lines"]], dtype=float).reshape(-1, 2, 2)
     d["aprs_xy"] = points([xy for xy, _ in d["aprs"]])
@@ -446,20 +524,29 @@ def arrays(d):
     d["link_ends"] = np.array(d["links"], dtype=float).reshape(-1, 2, 2)
     d["qso_xy"] = points(d["qsos"])
     d["label_xy"] = points([xy for _, xy, _ in d["labels"]])
-    d["airport_xy"] = points(d.get("airports", []))
-    d["runway_box"] = np.array([(*r["line"].min(0), *r["line"].max(0)) for r in d.get("runways", [])]).reshape(-1, 4)
-    d["label_campus"] = np.array([kind[0] == "campus" for kind in d["kinds"]], dtype=bool)
-    for kind, key in (("campus", "campuses"), ("military", "military"), ("government", "government"),
-                      ("regulator", "regulators")):
-        found = d.get(key, [])
-        boxes = [np.vstack(c["rings"]) if c["rings"] else np.array([c["point"]]) for c in found]
-        d[kind + "_box"] = np.array([(*b.min(0), *b.max(0)) for b in boxes]).reshape(-1, 4)
-    labelled = np.zeros((len(d["places"]), len(LABEL_ZOOMS)), bool)
-    for i, kind in enumerate(d["kinds"]):
-        if kind[0] == "place":
-            labelled[kind[2]] = d["spots"][i] >= 0
-    d["place_labelled"] = labelled
+    d["place_rows"], d["place_index"] = place_rows(d["kinds"])
     return d
+
+
+STATIC = ("key", "places", "campuses", "military", "government", "regulators", "airports", "runways", "far",
+          "airport_xy", "runway_box", "campus_box", "military_box", "government_box", "regulator_box")
+
+
+def combined(d, part):
+    """A scene to draw: the dynamic layers and labels first, then the static part's."""
+    out = dict(d)
+    out.update({k: part[k] for k in STATIC})
+    n = len(d["labels"])
+    out["labels"], out["kinds"] = d["labels"] + part["labels"], d["kinds"] + part["kinds"]
+    out["sizes"] = np.vstack([d["sizes"].reshape(-1, 2), part["sizes"]])
+    out["spots"] = np.vstack([d["spots"], d["part_spots"]])
+    out["label_xy"] = np.vstack([d["label_xy"], part["label_xy"]])
+    out["label_campus"] = np.concatenate([np.zeros(n, bool), part["label_campus"]])
+    labelled = np.zeros((len(part["places"]), len(LABEL_ZOOMS)), bool)
+    labelled[d["place_index"]] = d["spots"][d["place_rows"]] >= 0
+    labelled[part["place_index"]] = d["part_spots"][part["place_rows"]] >= 0
+    out["place_labelled"] = labelled
+    return out
 
 
 # ------------------------------------------------- picture worker: the ground ----
@@ -647,6 +734,7 @@ class Scene:
         self.base, self.scale = base, scale
         self.glyphs = OrderedDict()
         self.data, self.future, self.mtime, self.checked = None, None, None, 0
+        self.part = None                      # the static part of the scene, kept between loads
         self.admin, self.admin_future, self.admin_mtime = {}, None, None
         self.layer = None
         self.budget = math.inf                # glyphs this frame may still render
@@ -696,7 +784,7 @@ class Scene:
                 mtime = None
             if mtime and mtime != self.mtime:
                 self.mtime = mtime
-                self.future = submit(load_scene, self.base, self.scale)
+                self.future = submit(load_scene, self.base, self.scale, self.part and self.part["key"])
         return self.poll_admin(submit) or changed
 
     def poll_admin(self, submit):
@@ -721,8 +809,13 @@ class Scene:
         return changed
 
     def take(self, d):
-        """A loaded scene (with its arrays, see arrays())."""
-        self.data = d if "label_xy" in d else arrays(d)
+        """A loaded scene: its dynamic layers, with the static part it came with or the one kept."""
+        if d["part"] is not None:
+            self.part = d["part"]
+        if self.part is None or self.part["key"] != d["key"]:
+            self.mtime = None                 # the worker's part is newer than ours: load again
+            return
+        self.data = combined(d, self.part)
 
     # -------------------------------------------------------------------- text ----
 
@@ -753,7 +846,7 @@ class Scene:
         if self.data is None:
             return
         saved, self.budget = self.budget, count
-        for (text, _, size), kind in zip(self.data["labels"], self.data["kinds"]):
+        for (text, _, size), kind in islice(zip(self.data["labels"], self.data["kinds"]), 3000):
             if self.budget <= 0:
                 break
             self.glyph(text, kind[1], size)
@@ -789,6 +882,17 @@ class Scene:
         pic, c = self.mark(shape, colour)
         s = self.scale
         surface.blits([(pic, (x, y)) for x, y in np.round(xy * s - c).astype(int).tolist()], False)
+
+    def dots(self, surface, colour, xy):
+        """A 3 px square at each view px point of `xy`, written as pixels all at once."""
+        p = np.round(xy * self.scale).astype(int)
+        w, h = surface.get_size()
+        p = p[(p[:, 0] >= 1) & (p[:, 0] < w - 1) & (p[:, 1] >= 1) & (p[:, 1] < h - 1)]
+        pixels, value = pygame.surfarray.pixels2d(surface), surface.map_rgb(colour) & 0xFFFFFFFF
+        for dx in (-1, 0, 1):
+            for dy in (-1, 0, 1):
+                pixels[p[:, 0] + dx, p[:, 1] + dy] = value
+        del pixels                                           # unlock the surface
 
     def text(self, surface, text, at, colour, size=12):
         """HUD text at view px `at` (top left)."""
@@ -934,9 +1038,14 @@ class Scene:
                 continue
             here = (box[:, 2] >= left) & (box[:, 0] <= right) & (box[:, 3] >= top) & (box[:, 1] <= bottom)
             big = self.big(box, view, s)
-            dots = [found[i]["point"] for i in np.flatnonzero(here) if not (found[i]["rings"] and big[i])]
-            self.stamp(surface, "square" if colour == REGULATOR else "campus", colour,
-                       view.points(np.array(dots, dtype=float).reshape(-1, 2)))
+            dots = [found[i]["point"] for i in np.flatnonzero(here)
+                    if not (found[i]["rings"] and big[i])
+                    and (colour != GOVERNMENT or view.zoom >= max(MILITARY_ZOOM, found[i]["zoom"] - 2))]
+            xy = view.points(np.array(dots, dtype=float).reshape(-1, 2))
+            if len(xy) > DOTS:
+                self.dots(surface, colour, xy)
+            else:
+                self.stamp(surface, "square" if colour == REGULATOR else "campus", colour, xy)
         st = view.points(d["station_xy"])
         shown_st = np.flatnonzero(inside(st))
         for i in shown_st[::-1]:                                     # senders on top
