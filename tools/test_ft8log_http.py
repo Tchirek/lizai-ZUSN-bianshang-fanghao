@@ -1,9 +1,10 @@
+from datetime import datetime
 import json
 from pathlib import Path
 import tempfile
 import unittest
 
-from ft8log_http import content, tail
+from ft8log_http import TZ, content, outlook, tail
 
 
 class Tests(unittest.TestCase):
@@ -24,6 +25,20 @@ class Tests(unittest.TestCase):
             self.assertIn('receive  CQ W1ABC FN42', content(root, '/events').decode())
             (root/'qsos.adi').write_bytes(b'<CALL:5>W1ABC <EOR>')
             self.assertEqual(content(root, '/qsos.adi'), b'<CALL:5>W1ABC <EOR>')
+
+    def test_a_sked_shows_on_the_day_and_in_words(self):
+        with tempfile.TemporaryDirectory() as work:
+            home = Path(work)
+            (home/'ft8').mkdir()
+            now = datetime(2026, 10, 12, 20, 0, tzinfo=TZ).timestamp()
+            t = now + 3600
+            (home/'ft8'/'skeds.json').write_text(json.dumps(dict(skeds=[
+                dict(call='W1ABC', t=t, start=t - 300, end=t + 900, worked=None),
+                dict(call='W2DEF', t=now - 3600, start=now - 3900, end=now - 2700, worked=None)])))
+            o = outlook(home, now)
+            self.assertEqual([i for i, c in enumerate(o['cells']) if c['sked']], [41, 42])   # 20:55-21:15
+            self.assertIn('约定 W1ABC：10-12 21:00（13:00Z），20:55–21:15 守在 2 米。', o['text'])
+            self.assertNotIn('W2DEF', o['text'])                                            # over
 
 
 if __name__ == '__main__':

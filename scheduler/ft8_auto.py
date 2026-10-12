@@ -53,6 +53,7 @@ class QSO:
         self.recent = {}
         self.log = []               # this exchange's frames, both ways, as the chat's context
         self.cq = None              # (slot, message) of our latest CQ
+        self.prefer = set()         # stations answered first: those we have a sked with now
 
     def reset(self):
         self.peer, self.pending, self.rx_parity = None, None, None
@@ -83,7 +84,7 @@ class QSO:
                 directed.append((src, body, d["snr"], d.get("df", 0)))
             elif dst == "CQ" and is_grid(body):
                 cq.append((src, body, d["snr"], d.get("df", 0)))
-        choices = directed or (cq if not self.peer else [])
+        choices = sorted(directed or (cq if not self.peer else []), key=lambda c: c[0] not in self.prefer)
         if not choices:
             return
         src, body, snr, self.peer_df = choices[0]
@@ -195,11 +196,13 @@ class Auto:
         self.last_cq = 0
         os.makedirs(out, exist_ok=True)
         from ft8_memory import Memory
+        from ft8_sked import Skeds
         self.memory = Memory(os.path.join(out, "memory.json"), os.path.join(out, "auto.jsonl"))
+        self.skeds = Skeds(os.path.join(out, "skeds.json"))
         self.chat = None
         if llm:
             from ft8_llm import Chat
-            self.chat = Chat(self.call, self.write, self.memory)
+            self.chat = Chat(self.call, self.write, self.memory, self.skeds)
         from ft8_web import Control, serve
         self.web = Control(self.call, self.grid, self.validate_manual)
         self.restore_cq(time.time())
@@ -276,6 +279,7 @@ class Auto:
             self.qso.last_tx = slot
             self.qso.rx_parity = 1 - int(slot // 15) % 2
             if self.chat:
+                from ft8_llm import said
                 previous = self.chat.peer if self.chat.active(slot) else {}
                 peer = self.qso.peer or previous.get("call", "UNKNOWN")
                 df = (self.qso.peer_df if self.qso.peer else 0) or previous.get("df", self.tx_df)
@@ -291,7 +295,7 @@ class Auto:
                     if self.chat.future:
                         self.chat.future.cancel()
                     self.chat.future, self.chat.peer = None, context
-                self.chat.history = (self.chat.history + [dict(role="assistant", content=message)])[-8:]
+                self.chat.history = (self.chat.history + [said("chat", message)])[-8:]
 
     def write(self, event, **values):
         rec = dict(t=time.time(), event=event, **values)
@@ -303,7 +307,9 @@ class Auto:
         with open(os.path.splitext(path)[0] + ".json") as f:
             meta = json.load(f)
         for rec in ft8.decode_recording(path, meta, dials=[self.dial]):
+            sked = self.skeds.open(rec["slot"])
             with self.lock:
+                self.qso.prefer = {sked["call"]} if sked else set()
                 if self.qso.peer or can_start:
                     self.qso.receive(rec["slot"], rec["decodes"])
                 chatting = self.chat is not None and self.chat.active(rec["slot"])
@@ -397,6 +403,7 @@ class Auto:
                     f.write(adif(qso, self.call, self.grid, self.dial))
                 self.write("qso", **qso)
                 self.memory.record_qso(qso)
+                self.skeds.worked(qso["call"], qso["end"])
                 if self.chat:
                     self.chat.start(qso, opening=True)
             self.qso.completed.clear()

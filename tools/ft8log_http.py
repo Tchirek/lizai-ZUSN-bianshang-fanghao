@@ -7,8 +7,8 @@ makes it), every request needs HTTP Basic Auth: the browser asks once and rememb
 HTTP that keeps other people on the LAN from transmitting; it is no protection beyond the LAN.
 
 The outlook is read from the scheduler's own models and state: arrivals the hazard model
-expects each hour, the half-hours the training model protects, today's budget and the
-scheduler's latest decision.
+expects each hour, the half-hours the training model protects, today's budget, the
+scheduler's latest decision and the skeds agreed over the chat.
 """
 import argparse
 import base64
@@ -32,7 +32,7 @@ TZ = timezone(timedelta(hours=8))
 PAGE = '''<!doctype html><html lang="zh-CN"><meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1"><title>FT8</title>
 <style>body{max-width:680px;margin:32px auto;padding:0 16px;font:15px system-ui;line-height:1.5}button,input{font:inherit;padding:7px 10px}button{cursor:pointer}input{width: min(60%,380px)}pre{white-space:pre-wrap;font-size:13px}small{color:#666}#error{color:#b22}#draft{padding:12px;background:#f3f4f5}
-#hours{display:grid;grid-template-columns:repeat(48,1fr);gap:1px;height:16px;margin:6px 0 2px}#hours i{background:#3a4a5c}#hours i.p{background:#c0392b}#hours i.now{outline:2px solid #111;outline-offset:1px}#axis{display:flex;justify-content:space-between;font-size:12px;color:#666}</style>
+#hours{display:grid;grid-template-columns:repeat(48,1fr);gap:1px;height:16px;margin:6px 0 2px}#hours i{background:#3a4a5c}#hours i.p{background:#c0392b}#hours i.s{background:#d4a017}#hours i.now{outline:2px solid #111;outline-offset:1px}#axis{display:flex;justify-content:space-between;font-size:12px;color:#666}</style>
 <h3>FT8 · @CALL@</h3><p id="mode">连接中…</p>
 <button id="cq" onclick="act('cq')">一键 CQ</button>
 <form onsubmit="event.preventDefault();act('send',{message:document.querySelector('input').value})">
@@ -52,7 +52,7 @@ async function act(action,extra={}){
  }catch(e){document.querySelector('#error').textContent=e.message}}
 function outlook(o){
  const max=Math.max(1,...o.cells.map(c=>c.lam||0));
- document.querySelector('#hours').innerHTML=o.cells.map((c,i)=>'<i class="'+(c.protected?'p':'')+(i===o.slot?' now':'')+'" style="opacity:'+(0.2+0.8*(c.lam||0)/max).toFixed(2)+'" title="'+String(i>>1).padStart(2,'0')+(i%2?':30':':00')+(c.lam==null?'':' 预计 '+c.lam.toFixed(0)+' 架/时')+(c.protected?' · 训练保护':'')+'"></i>').join('');
+ document.querySelector('#hours').innerHTML=o.cells.map((c,i)=>'<i class="'+(c.sked?'s':c.protected?'p':'')+(i===o.slot?' now':'')+'" style="opacity:'+(c.sked?1:0.2+0.8*(c.lam||0)/max).toFixed(2)+'" title="'+String(i>>1).padStart(2,'0')+(i%2?':30':':00')+(c.lam==null?'':' 预计 '+c.lam.toFixed(0)+' 架/时')+(c.protected?' · 训练保护':'')+(c.sked?' · 约定守听':'')+'"></i>').join('');
  document.querySelector('#gate').textContent=o.text;
 }
 function render(s){
@@ -188,7 +188,8 @@ def limits(home):
 
 
 def outlook(home, now=None):
-    """Today's half-hours as the scheduler's models see them, and its latest decision."""
+    """Today's half-hours as the scheduler's models see them, its latest decision, and the skeds
+    not yet over (ft8_sked.py) with the spans they are kept for."""
     now = now or time.time()
     local = datetime.fromtimestamp(now, TZ)
     hazard = read_json(home / 'model' / 'hazard.json') or {}
@@ -196,8 +197,12 @@ def outlook(home, now=None):
     budget = read_json(home / 'sched' / 'budget.json') or {}
     lam = hazard.get('lam_mean_per_h') or [None] * 24
     protected = set(training.get('protected_bins') or [])
+    skeds = [s for s in (read_json(home / 'ft8' / 'skeds.json') or {}).get('skeds', []) if s['end'] > now]
     slot = local.hour * 2 + local.minute // 30
-    cells = [dict(lam=lam[i // 2], protected=i in protected) for i in range(48)]
+    midnight = local.replace(hour=0, minute=0, second=0, microsecond=0).timestamp()
+    cells = [dict(lam=lam[i // 2], protected=i in protected,
+                  sked=any(s['start'] < midnight + 1800 * (i + 1) and midnight + 1800 * i < s['end'] for s in skeds))
+             for i in range(48)]
     day_blind, per_hour = limits(home)
     today = budget.get('day') == local.strftime('%Y-%m-%d')
     used = budget.get('blind', 0.0) if today else 0.0
@@ -213,6 +218,11 @@ def outlook(home, now=None):
     if last:
         when = datetime.fromtimestamp(last['t'], TZ).strftime('%H:%M:%S')
         lines.append(f"{when} 的判定：{'切到 2 米收听' if last.get('approve') else '留在 1090'}。")
+    for s in skeds:
+        at = datetime.fromtimestamp(s['t'], TZ)
+        lines.append(f"约定 {s['call']}：{at:%m-%d %H:%M}（{datetime.fromtimestamp(s['t'], timezone.utc):%H:%M}Z），"
+                     + ('已通联。' if s.get('worked') else
+                        f"{datetime.fromtimestamp(s['start'], TZ):%H:%M}–{datetime.fromtimestamp(s['end'], TZ):%H:%M} 守在 2 米。"))
     return dict(slot=slot, cells=cells, text=' '.join(lines))
 
 

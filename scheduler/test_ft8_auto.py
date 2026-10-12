@@ -78,6 +78,12 @@ class Tests(unittest.TestCase):
         self.assertEqual(q.completed[0]["rst_rcvd"], "-09")
         self.assertIn("<RST_SENT:3>-12", auto.adif(q.completed[0], q.call, q.grid, 144174000))
 
+    def test_a_sked_station_is_answered_first(self):
+        q = auto.QSO("K1ABC", "FN31")
+        q.prefer = {"W2DEF"}
+        q.receive(0, [dict(message="CQ W1ABC FN42", snr=0), dict(message="CQ W2DEF FN20", snr=-20)])
+        self.assertEqual(q.peer, "W2DEF")
+
     def test_cq_responder(self):
         q = auto.QSO("K1ABC", "FN31")
         self.receive(q, 0, "K1ABC W1ABC FN42")

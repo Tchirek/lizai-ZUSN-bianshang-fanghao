@@ -17,6 +17,7 @@
 - 解码赶不上下一个发射时隙，就等下一个同奇偶的时隙。每条消息最多发三次，一次通联最长四分钟。
 - 完成双向交换才写进 `~/influ/ft8/qsos.adi`；全过程记在 `auto.jsonl`，没完成的不算 QSO。
 - 发射时 V4 留在 1090 MHz。接收窗口按调度策略审批（见 [TRAFFIC-POLICY.md](TRAFFIC-POLICY.md)），通联开始后优先完成。开始一次通联前，先确认今天的切出秒数和本小时的窗口数还够再收两次。
+- 和电台约定的时段里（见 [FT8-LLM.md](FT8-LLM.md)），接收窗口不受飞机和配额限制，CQ 照常每两分钟一次，约定的电台优先应答。
 
 服务日志：`journalctl --user -u influ-scheduler`。
 

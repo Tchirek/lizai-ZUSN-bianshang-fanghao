@@ -99,7 +99,7 @@ class Tests(unittest.TestCase):
         slot = second['end'] - 13.2 + 45                       # their parity
         with patch.object(llm, 'ask', return_value='YES 2ND QSO') as ask:
             chat.receive(dict(slot=slot, decodes=[dict(df=1200, message='WKD B4?')]))
-            self.assertEqual(chat.future.result(timeout=5), 'YES 2ND QSO')
+            self.assertEqual(chat.future.result(timeout=5), dict(kind='chat', text='YES 2ND QSO'))
         self.assertIn('Earlier contacts with W1ABC: 1.', ask.call_args.args[0])
         self.assertEqual(self.memory.stations['W1ABC']['episodes'][-1]['chat'][-1][:2], [False, 'WKD B4?'])
 

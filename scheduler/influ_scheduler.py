@@ -105,14 +105,15 @@ def dump1090_fresh():
         return False
 
 
-def window_reasons(a, mux, fresh, snap, hz, risk, budget, hour, D, traffic, in_qso):
+def window_reasons(a, mux, fresh, snap, hz, risk, budget, hour, D, traffic, focus):
+    """Why the SDR stays on 1090 now ([] to go). `focus`: a QSO under way or a sked being kept."""
     reasons = []
     if not (mux.get("ok") and mux.get("sdr_ok") and mux.get("fifo_connected")):
         reasons.append("sdrmux_unhealthy")
     if not fresh:
         reasons.append("dump1090_stale")
-    if a.policy == "traffic" and in_qso:
-        return reasons                # finish a finite QSO despite arriving aircraft or budgets
+    if a.policy == "traffic" and focus:
+        return reasons                # finish a finite QSO, keep a sked, despite aircraft or budgets
     if a.policy == "traffic":
         reasons += traffic["reasons"]
     else:
@@ -240,6 +241,8 @@ def main():
         except Exception as e:
             mux = {"ok": False, "error": str(e)}
         in_qso = auto.in_qso(now) if auto else False
+        sked = auto.skeds.open(now) if auto else None      # a time agreed with a station, kept now
+        focus = in_qso or sked is not None
         traffic = {"reasons": [], "threats": []}
         if traffic_policy:
             try:
@@ -248,7 +251,7 @@ def main():
                 traffic = traffic_policy.assess(now, local)
             except (OSError, ValueError, KeyError, TypeError):
                 traffic["reasons"] = ["traffic_data_unavailable"]
-        tx_allowed = (a.policy != "traffic" or in_qso or not traffic["reasons"]
+        tx_allowed = (a.policy != "traffic" or focus or not traffic["reasons"]
                       or (auto and auto.has_manual()))
         if (auto and tx_allowed and mux.get("sdr_ok") and mux.get("fifo_connected")
                 and mux.get("mode") == "adsb"):
@@ -264,7 +267,7 @@ def main():
         hour = int(local_hour(now))
         exp_hidden = hz.expected_hidden(now, D) if hz else 1.0
         reasons = window_reasons(a, mux, dump1090_fresh(), snap, hz, exp_hidden,
-                                 budget, hour, D, traffic, in_qso)
+                                 budget, hour, D, traffic, focus)
         if auto and not auto.want_receive(int(now // 15) * 15):
             reasons.append("ft8_transmit_parity")
         approve = not reasons
@@ -273,6 +276,7 @@ def main():
                    exp_hidden_mean=round(hz.expected_hidden(now, D, False), 6) if hz else None,
                    p_any_new=round(hz.p_any_new(now, D), 5) if hz else None,
                    policy=a.policy, in_qso=in_qso, traffic=traffic,
+                   sked=sked and dict(call=sked["call"], t=sked["t"]),
                    budget_risk=round(budget.risk, 5), budget_blind=round(budget.blind, 1),
                    **{k: round(v, 1) for k, v in snap.items()})
         if approve and a.mode == "live":
@@ -287,12 +291,14 @@ def main():
                 w0, w1 = res["t_start"], res["t_start"] + res["off_1090_s"]
                 threading.Thread(target=follow_up, args=(tr, w0, w1, a, rec), daemon=True).start()
                 if auto:
-                    # Start only if two more RX windows fit the same risk budgets.
+                    # Start only if two more RX windows fit the same risk budgets; while a sked
+                    # is kept, CQ goes out and an exchange may start whatever the budgets.
                     can_start = (budget.blind + 2 * D <= a.day_blind
                                  and budget.per_hour.get(hour, 0) + 2 <= a.max_per_hour)
                     if a.policy == "hazard":
                         can_start = (can_start and budget.risk + 2 * exp_hidden <= a.day_risk
                                      and budget.hour_risk.get(hour, 0) + 2 * exp_hidden <= a.hour_risk)
+                    can_start = can_start or sked is not None
                     auto.decoding.set()
                     threading.Thread(target=decode_then_post,
                                      args=(auto, res["file"], a.post_hook, can_start), daemon=True).start()

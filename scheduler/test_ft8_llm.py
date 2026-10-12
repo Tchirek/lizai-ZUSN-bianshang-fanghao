@@ -1,8 +1,10 @@
+import calendar
 import io
 import json
 from concurrent.futures import Future
 import tempfile
 import threading
+import time
 import unittest
 from unittest.mock import ANY, Mock, patch
 from pathlib import Path
@@ -10,19 +12,25 @@ from pathlib import Path
 import ft8_auto
 import ft8_llm as llm
 import k5ft8
+from ft8_sked import Skeds
 from ft8_web import Control
 
 
 class Tests(unittest.TestCase):
-    def chat(self):
+    def chat(self, skeds=None, found=None):
         with patch.dict('os.environ', OPENAI_API_KEY='test-key', OPENAI_MODEL='test-model'):
-            chat = llm.Chat('K1ABC', Mock())
+            chat = llm.Chat('K1ABC', Mock(), skeds=skeds)
         self.addCleanup(chat.close)
         chat.start(dict(call='W1ABC', end=13.2, rx_parity=0, df=1200))
         future = Future()
-        future.set_result('FINE TNX')
+        future.set_result(found or dict(kind='chat', text='FINE TNX'))
         chat.pool.submit = Mock(return_value=future)
         return chat
+
+    def skeds(self):
+        work = tempfile.TemporaryDirectory()
+        self.addCleanup(work.cleanup)
+        return Skeds(f'{work.name}/skeds.json')
 
     def test_only_free_text(self):
         self.assertEqual(llm.free_text('how r u?'), 'HOW R U?')
@@ -35,7 +43,8 @@ class Tests(unittest.TestCase):
         response = dict(status='completed', output=[dict(type='message', role='assistant',
                         content=[dict(type='output_text', text='FINE TNX')])])
         with patch.object(llm.urllib.request, 'urlopen', return_value=io.BytesIO(json.dumps(response).encode())) as send:
-            self.assertEqual(llm.reply('HOW R U?', [], 'K1ABC', 'W1ABC', 'fake', 'test-model'), 'FINE TNX')
+            self.assertEqual(llm.reply('HOW R U?', [], 'K1ABC', 'W1ABC', 'fake', 'test-model'),
+                             dict(kind='chat', text='FINE TNX'))
             request = send.call_args.args[0]
             body = json.loads(request.data)
             self.assertEqual(request.full_url, 'https://api.openai.com/v1/responses')
@@ -67,11 +76,12 @@ class Tests(unittest.TestCase):
                         content=[dict(type='output_text', text='TNX 73')])])
         with patch.dict('os.environ', FT8_LLM_CONTACT='TG EXAMPLE'), \
                 patch.object(llm.urllib.request, 'urlopen', return_value=io.BytesIO(json.dumps(response).encode())) as send:
-            self.assertEqual(llm.reply('TNX QSO', [], 'K1ABC', 'W1ABC', 'fake', 'test-model', qso), 'TNX 73')
+            self.assertEqual(llm.reply('TNX QSO', [], 'K1ABC', 'W1ABC', 'fake', 'test-model', qso)['text'], 'TNX 73')
         text = json.loads(send.call_args.args[0].data)['instructions']
         for part in ('their grid FN42', 'report sent -12', 'report received -09', 'K1ABC sent: CQ K1ABC FN31',
-                     'heard: K1ABC W1ABC R-09 (-10 dB)', 'K1ABC sent: W1ABC K1ABC RR73', 'reply exactly TG EXAMPLE'):
+                     'heard: K1ABC W1ABC R-09 (-10 dB)', 'K1ABC sent: W1ABC K1ABC RR73', '"personal" when they want to meet'):
             self.assertIn(part, text)
+        self.assertNotIn('TG EXAMPLE', text)       # the operator's channel is sent by us, never told to the model
 
     def test_standard_frames_never_call_api(self):
         chat = self.chat()
@@ -84,7 +94,7 @@ class Tests(unittest.TestCase):
                         content=[dict(type='output_text', text='FINE TNX')])])
         with patch.dict('os.environ', OPENAI_BASE_URL='https://api.deepseek.com', OPENAI_REASONING_EFFORT='none'):
             with patch.object(llm.urllib.request, 'urlopen', return_value=io.BytesIO(json.dumps(response).encode())) as send:
-                self.assertEqual(llm.reply('HI', [], 'K1ABC', 'W1ABC', 'fake', 'deepseek-flash'), 'FINE TNX')
+                self.assertEqual(llm.reply('HI', [], 'K1ABC', 'W1ABC', 'fake', 'deepseek-flash')['text'], 'FINE TNX')
                 self.assertEqual(send.call_args.args[0].full_url, 'https://api.deepseek.com/responses')
                 self.assertEqual(json.loads(send.call_args.args[0].data)['reasoning'], dict(effort='none'))
 
@@ -97,7 +107,7 @@ class Tests(unittest.TestCase):
         chat.sent('FINE TNX')
         chat.receive(dict(rec, slot=60))
         self.assertEqual(chat.pool.submit.call_count, 1)
-        self.assertEqual(chat.history[-1], dict(role='assistant', content='FINE TNX'))
+        self.assertEqual(chat.history[-1], llm.said('chat', 'FINE TNX'))
 
     def test_unrelated_tones_and_stale_replies(self):
         chat = self.chat()
@@ -124,6 +134,7 @@ class Tests(unittest.TestCase):
         controller.chat = self.chat()
         controller.last_cq, controller.call, controller.grid = 0, 'K1ABC', 'FN31'
         controller.dial, controller.write = 144174000, Mock()
+        controller.skeds = self.skeds()
         rec = dict(slot=30, decodes=[dict(message='HI', snr=-12, df=1200)])
         with tempfile.TemporaryDirectory() as work:
             path = Path(work) / 'test.cu8'
@@ -135,6 +146,74 @@ class Tests(unittest.TestCase):
         controller.decoding, controller.radio = threading.Event(), Mock()
         self.assertTrue(controller.transmit(45))
         controller.radio.transmit.assert_called_once_with('FINE TNX', 45, free_text=True, guard=ANY)
+
+    def test_answers_are_read_leniently(self):
+        self.assertEqual(llm.answer('```json\n{"kind": "sked", "reply": "OK", "utc": "2026-10-12 13:00"}\n```'),
+                         dict(kind='sked', reply='OK', utc='2026-10-12 13:00'))
+        self.assertEqual(llm.answer('FINE TNX'), dict(kind='chat', reply='FINE TNX'))
+        self.assertEqual(llm.answer('{"kind": "voice"}'), dict(kind='voice', reply=''))
+
+    def test_personal_voice_and_skeds_get_fixed_replies(self):
+        now = calendar.timegm((2026, 10, 12, 10, 0, 0))
+        settle = lambda kind, reply='X', **more: llm.settle(dict(kind=kind, reply=reply, **more), [], now)
+        with patch.dict('os.environ', FT8_LLM_CONTACT='TG EXAMPLE'):
+            self.assertEqual(settle('personal', 'NAME IS BOB'), dict(kind='personal', text='TG EXAMPLE'))
+        self.assertEqual(settle('voice', 'OK QSY FM'), dict(kind='voice', text='FT8 ONLY SRY'))
+        again = llm.settle(dict(kind='voice', reply='OK'), [llm.said('voice', 'FT8 ONLY SRY')], now)
+        self.assertEqual(again['text'], 'SRY FT8 ONLY')
+        self.assertEqual(settle('sked', utc='2026-10-12 13:00'), dict(kind='sked', text='OK 1300Z CU', t=now + 3 * 3600))
+        self.assertEqual(settle('sked', utc='2026-10-13T08:30Z')['text'], 'OK TMW 0830Z')
+        self.assertEqual(settle('sked', utc='2026-10-15 13:00')['text'], '1300Z 15 OCT')
+        self.assertEqual(settle('sked', utc='2026-10-12 09:00')['text'], 'OK TMW 0900Z')   # gone today
+        for utc in ('2026-10-11 09:00', '2026-10-12 10:01', '2026-10-30 10:00', 'TMW', None):
+            with self.subTest(utc=utc):          # long past, too soon, too far, not a time
+                self.assertEqual(settle('sked', utc=utc), dict(kind='chat', text='TIME IN UTC?'))
+        self.assertEqual(settle('chat', 'FINE TNX'), dict(kind='chat', text='FINE TNX'))
+        self.assertEqual(settle('unsked', 'OK NP CUL'), dict(kind='unsked', text='OK NP CUL'))
+        self.assertEqual(settle('unsked', 'NO WORRIES SEE YOU SOON'), dict(kind='unsked', text='OK NP 73'))
+        for text in ('OK 1300Z CU', 'OK TMW 0830Z', '1300Z 15 OCT', *llm.VOICE, llm.ASK_TIME, llm.NO_ROOM,
+                     llm.CALLED_OFF):
+            self.assertEqual(llm.free_text(text), text)
+
+    def test_a_sked_is_booked_once_on_the_air_and_kept_around_its_time(self):
+        skeds = self.skeds()
+        t = time.time() + 3600
+        chat = self.chat(skeds, dict(kind='sked', text='OK 1300Z CU', t=t))
+        chat.receive(dict(slot=30, decodes=[dict(df=1200, message='CU 13Z?')]))
+        self.assertEqual(chat.due(45), 'OK 1300Z CU')
+        self.assertIsNone(skeds.open(t))                     # not until the OK has gone out
+        chat.sent('OK 1300Z CU')
+        chat.write.assert_any_call('sked', peer='W1ABC', at=t, message=ANY)
+        kept = Skeds(skeds.path)                             # as the scheduler finds it after a restart
+        self.assertEqual(kept.open(t - 300)['said'], 'CU 13Z?')
+        self.assertIsNone(kept.open(t - 301))
+        self.assertIsNotNone(kept.open(t + 900))
+        self.assertIsNone(kept.open(t + 901))
+        kept.worked('W1ABC', t + 60)
+        self.assertIsNone(kept.open(t + 120))                # worked: no need to keep it any longer
+
+    def test_a_full_day_declines_and_a_called_off_sked_is_dropped(self):
+        skeds = self.skeds()
+        day = (int(time.time() // 86400) + 2) * 86400 + 12 * 3600
+        for k in range(4):
+            self.assertTrue(skeds.book(f'W{k + 2}AB', day + 600 * k, 'SKED?', time.time()))
+        chat = self.chat(skeds, dict(kind='sked', text='OK', t=day + 3000))
+        chat.receive(dict(slot=30, decodes=[dict(df=1200, message='SKED 1250Z?')]))
+        self.assertEqual(chat.due(45), 'SRY NOT THEN')
+        chat.sent('SRY NOT THEN')
+        self.assertFalse(any(s['call'] == 'W1ABC' for s in skeds.items))
+        self.assertTrue(skeds.cancel('W2AB', time.time()))
+        self.assertFalse(skeds.cancel('W2AB', time.time()))
+
+    def test_the_voice_decline_and_the_contact_go_out_as_settled(self):
+        skeds = self.skeds()
+        chat = self.chat(skeds, dict(kind='voice', text='FT8 ONLY SRY'))
+        chat.receive(dict(slot=30, decodes=[dict(df=1200, message='PSE QSY FM')]))
+        self.assertEqual(chat.due(45), 'FT8 ONLY SRY')
+        chat.sent('FT8 ONLY SRY')
+        chat.write.assert_any_call('llm_transmit', peer='W1ABC', message='FT8 ONLY SRY', kind='voice')
+        self.assertEqual(llm.answer(chat.history[-1]['content'])['kind'], 'voice')
+        self.assertEqual(skeds.items, [])
 
 
 if __name__ == '__main__':

@@ -9,6 +9,7 @@ from unittest.mock import Mock, patch
 from ft8_auto import Auto, QSO
 from ft8_llm import Chat
 from ft8_memory import Memory
+from ft8_sked import Skeds
 from ft8_web import Control
 import k5ft8
 
@@ -58,6 +59,7 @@ class Tests(unittest.TestCase):
         self.addCleanup(self.tmp.cleanup)
         c.out = self.tmp.name
         c.memory = Memory(str(Path(self.tmp.name)/'memory.json'))
+        c.skeds = Skeds(str(Path(self.tmp.name)/'skeds.json'))
         c.chat = None
         if chat:
             with patch.dict('os.environ',OPENAI_API_KEY='test',OPENAI_MODEL='test'):
@@ -139,7 +141,7 @@ class Tests(unittest.TestCase):
         self.assertTrue(c.transmit(0))
         self.assertEqual(c.chat.peer['df'],1127)
         future = Future()
-        future.set_result('FINE TNX')
+        future.set_result(dict(kind='chat',text='FINE TNX'))
         c.chat.pool.submit = Mock(return_value=future)
         c.chat.receive(dict(slot=15,decodes=[dict(message='HI',df=1127)]))
         self.assertFalse(c.transmit(30))
@@ -160,7 +162,7 @@ class Tests(unittest.TestCase):
         c = self.controller(chat=True)
         c.chat.start(dict(call='W2XYZ',end=13.2,df=1500,rx_parity=1))
         c.chat.future = Future()
-        c.chat.future.set_result('OLD REPLY')
+        c.chat.future.set_result(dict(kind='chat',text='OLD REPLY'))
         c.web.handle(dict(action='send',session=SID,message='W1ABC K1ABC FN31'))
         self.assertTrue(c.transmit(0))
         self.assertIsNone(c.chat.future)
