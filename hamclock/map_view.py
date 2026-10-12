@@ -38,6 +38,7 @@ from PIL import Image
 import activity as a
 import build_rangemap as terrain
 import build_tiles as tiles
+import flags
 from map_panel import night_rgba, solar_elevation
 
 W, H = a.W, a.H
@@ -53,6 +54,9 @@ CAMPUS_ZOOM = 8               # campuses (outline, dot, name) show from this zoo
 MILITARY_ZOOM = 4             # military areas (outline, dot) from this zoom on, named from 6x
 MILITARY = (255, 85, 70)
 GOVERNMENT, REGULATOR = (235, 190, 70), (90, 215, 255)   # offices; radio regulators: as military
+EMBASSY = (150, 250, 170)     # consulates and embassies: named with a mini flag at the left
+EMBASSY_ZOOM = 6              # their names show from this zoom on, as the regulators' do
+EMBASSIES = os.path.join(os.path.dirname(os.path.abspath(__file__)), "embassies.json")
 OUTLINE_PX = 4                # an area this small on screen (physical px) is drawn as its dot
 DOTS = 300                    # past this many dots in view, they are written as pixels
 NEW_GLYPHS = 12               # labels first rendered in one frame while the view moves
@@ -222,21 +226,68 @@ def text_size(text, size, scale):
     return (r.width + 2) / scale, (r.height + 2) / scale
 
 
+FAN = 9                       # rows a fan column holds; 2 columns a side
+SPOTS = 15 + 4 * FAN          # spot() places: 0..8 beside and on the point, 9..14 a ladder,
+                              # then the fan's columns, for many labels on one point
+
+
 def spot(k, tw, th=0):
-    """Label offset from its point (view px): right, left, above, below; then the same again
-    further out, for a point crowded close (as by our own marker); 8,
-    centred on it (a town's name once its dot is gone)."""
-    return ((7, -7), (-tw - 7, -7), (-tw / 2, -22), (-tw / 2, 7),
-            (18, -7), (-tw - 18, -7), (-tw / 2, -33), (-tw / 2, 18), (-tw / 2, -th / 2))[k]
+    """Where a label in spot `k` puts its top left, from its point (view px). 0..8: right,
+    left, above, below, the same again further out, and centred; 9..14: one 26 px ladder step
+    at a time, right of all those; 15..: the fan — a column near and one far, right and left,
+    one row at a time, for places where label after label sits on one point (a consulate's
+    building)."""
+    if k < 9:
+        return ((7, -7), (-tw - 7, -7), (-tw / 2, -22), (-tw / 2, 7),
+                (18, -7), (-tw - 18, -7), (-tw / 2, -33), (-tw / 2, 18), (-tw / 2, -th / 2))[k]
+    if k < 15:
+        return (tw / 2 + 7, (-33, 19, -59, 45, -85, 71)[k - 9])
+    col, row = divmod(k - 15, FAN)
+    dy = -7 + (row - (FAN - 1) / 2) * 26
+    far = (tw + 12) * (col // 2)
+    if col % 2 == 0:                                # the right-hand columns, near then far
+        return (tw / 2 + 7 + far, dy)
+    return (-tw / 2 - 7 - far - tw, dy)
 
 
-def place_labels(items, scale):
+def offsets(k, tw, th):
+    """spot() over arrays of spots: (dx, dy) each; a scalar goes through spot() itself (this
+    runs for every label and every try, so it must not pay the array machinery)."""
+    if np.ndim(k) == 0:
+        return spot(int(k), float(tw), float(th))
+    k = np.asarray(k)
+    fan, col, row = k >= 15, (k - 15) // FAN, (k - 15) % FAN
+    right, far = col % 2 == 0, (tw + 12) * (col // 2)
+    dx = np.select([k == 0, k == 1, k == 4, k == 5, (k >= 9) & ~fan, fan & right, fan],
+                   [7, -tw - 7, 18, -tw - 18, tw / 2 + 7, tw / 2 + 7 + far, -tw / 2 - 7 - far - tw],
+                   -tw / 2)
+    dy = np.select([k == 2, k == 3, k == 6, k == 7, k == 8, (k >= 9) & ~fan, fan],
+                   [-22, 7, -33, 18, -th / 2,
+                    np.array([-33, 19, -59, 45, -85, 71])[np.clip(k - 9, 0, 5)],
+                    -7 + (row - (FAN - 1) / 2) * 26], -7)
+    return dx, dy
+
+
+def flag_box(scale, size=13):
+    """The mini flag at the left of a consulate's label, physical px: (width, gap, pad), the
+    pad in view px by which the label's box reaches further left."""
+    height = text_px(size, scale)
+    width, gap = round(height * flags.RATIO), max(2, round(2 * scale))
+    return width, gap, (width + gap) / scale + 1
+
+
+def place_labels(items, scale, pads=None, limits=None):
     """For labels in priority order, each (text, base xy, size, from zoom, centred from zoom):
     their sizes (view px) and, per LABEL_ZOOMS step, the spot each takes (0..8) or -1. At each
     step a label keeps its earlier spot if that is still clear, else takes the first clear one,
-    else waits; nothing overlaps, and no label leaves the map."""
+    else waits; nothing overlaps, and no label leaves the map. `pads` widens a label's box to
+    the left by that much (view px), for what is drawn there — a consulate's flag; `limits`
+    says how many spots each label may try, the fan's beyond the usual fifteen being for the
+    few that need them."""
     pygame.freetype.init()
     sizes = [text_size(text, size, scale) for text, _, size, *_ in items]
+    pads = [0.0] * len(items) if pads is None else pads
+    limits = [15] * len(items) if limits is None else limits
     spots = np.full((len(items), len(LABEL_ZOOMS)), -1, np.int8)
     cell = 128
     for li, z in enumerate(LABEL_ZOOMS):
@@ -260,12 +311,12 @@ def place_labels(items, scale):
             if z < start * 0.999:
                 continue
             before = int(spots[i, li - 1]) if li else -1
-            order = ([before] if 0 <= before < 8 else []) + [k for k in range(8) if k != before]
+            order = ([before] if before >= 0 else []) + [k for k in range(limits[i]) if k != before]
             if z >= centred * 0.999:                     # centred if it can be, else beside
                 order = [8] + order
             for k in order:
                 dx, dy = spot(k, tw, th)
-                box = (x * z + dx - 1, y * z + dy, x * z + dx + tw + 1, y * z + dy + th + 2)
+                box = (x * z + dx - pads[i] - 1, y * z + dy, x * z + dx + tw + 1, y * z + dy + th + 2)
                 if box[0] >= 0 and box[1] >= 0 and box[2] <= W * z and box[3] <= H * z and free(box):
                     take(box)
                     spots[i, li] = k
@@ -306,11 +357,12 @@ def areas(base, path):
 
 
 def static_scene(base):
-    """Places, campuses, military areas, government offices and radio regulators, airports with
-    their runways, and the farthest point in base px; kept while their files stay."""
+    """Places, campuses, military areas, government offices and radio regulators, consulates
+    and embassies, airports with their runways, and the farthest point in base px; kept while
+    their files stay."""
     paths = [os.path.join(a.MODEL, f) for f in ("rangemap_osm.json", "rangemap.json", "campuses.json",
                                                  "airports.json", "military.json", "government.json")]
-    key = tuple(os.path.getmtime(p) if os.path.exists(p) else 0 for p in paths)
+    key = tuple(os.path.getmtime(p) if os.path.exists(p) else 0 for p in paths + [EMBASSIES])
     if _static.get("key") == key:
         return _static
     with open(paths[0]) as f:
@@ -322,6 +374,13 @@ def static_scene(base):
                     key=lambda p: (rank.get(p.get("capital", ""), 4), -p.get("pop", 0)))
     xy = np.array([base.xy(p["lat"], p["lon"]) for p in places]).reshape(-1, 2)
     campuses, military, offices = areas(base, paths[2]), areas(base, paths[4]), areas(base, paths[5])
+    embassies = []
+    if os.path.exists(EMBASSIES):
+        with open(EMBASSIES, encoding="utf-8") as f:
+            for e in json.load(f):
+                point = base.xy(*e["point"])
+                if 0 <= point[0] < W and 0 <= point[1] < H:
+                    embassies.append(dict(name=e["name"], code=e["code"], point=point))
     airports, runways = [], []
     if os.path.exists(paths[3]):
         with open(paths[3]) as f:
@@ -339,7 +398,7 @@ def static_scene(base):
                    place_km=np.hypot(*(xy - (W / 2, H / 2)).T) * base.km_per_px,
                    name_km=info["reach_km"] * 1.1, campuses=campuses, military=military,
                    government=[c for c in offices if not c["radio"]],
-                   regulators=[c for c in offices if c["radio"]],
+                   regulators=[c for c in offices if c["radio"]], embassies=embassies,
                    far=(base.xy(info["far_lat"], info["far_lon"]),
                         f"{info['reach_km']:.0f} km {info['bearing']:.0f} deg {info['far_elev_m']:.0f} m"))
     return _static
@@ -371,6 +430,7 @@ def static_part(static, scale):
     sizes, spots = place_labels(items, scale)
     part = dict(key=key, places=static["place_xy"], campuses=static["campuses"], military=static["military"],
                 government=static["government"], regulators=static["regulators"],
+                embassies=static["embassies"],
                 airports=[x["point"] for x in static["airports"]], runways=static["runways"], far=static["far"][0],
                 labels=[(text, xy, size) for text, xy, size, *_ in items], kinds=kinds, sizes=sizes, spots=spots)
     _part.clear()
@@ -388,13 +448,12 @@ def places(static, items, kinds, cities):
             kinds.append(("place", CITY, i))
 
 
-def label_boxes(xy, sizes, k, z):
+def label_boxes(xy, sizes, k, z, pads=None):
     """The boxes (zoomed px) place_labels gives labels at base px `xy` in spots `k` at zoom `z`."""
-    tw, th = sizes[:, 0], sizes[:, 1]
-    dx = np.select([k == 0, k == 1, k == 4, k == 5], [7, -tw - 7, 18, -tw - 18], -tw / 2)
-    dy = np.select([k == 2, k == 3, k == 6, k == 7, k == 8], [-22, 7, -33, 18, -th / 2], -7)   # spot()
-    x0, y0 = xy[:, 0] * z + dx - 1, xy[:, 1] * z + dy
-    return np.stack([x0, y0, x0 + tw + 2, y0 + th + 2], axis=1)
+    dx, dy = offsets(k, sizes[:, 0], sizes[:, 1])
+    pad = np.zeros(len(xy)) if pads is None else pads
+    x0, y0 = xy[:, 0] * z + dx - pad - 1, xy[:, 1] * z + dy
+    return np.stack([x0, y0, x0 + sizes[:, 0] + 2, y0 + sizes[:, 1] + 2], axis=1)
 
 
 def overlapping(boxes, others):
@@ -441,13 +500,18 @@ def load_scene(base, scale, have=None):
         if c["name"]:
             items.append((c["name"], c["point"], 13, 6, math.inf))
             kinds.append(("regulator", REGULATOR))
+    for e in static["embassies"]:              # consulates: the same, each with its flag
+        items.append((e["name"], e["point"], 13, EMBASSY_ZOOM, math.inf))
+        kinds.append(("embassy", EMBASSY, e["code"]))
     for call, xy, rf in aprs:
         if 0 <= xy[0] < W and 0 <= xy[1] < H:
             items.append((call, xy, 13, 1, math.inf))
             kinds.append(("aprs", a.APRS_RF if rf else a.APRS_NET))
     items.append((static["far"][1], static["far"][0], 13, 1, math.inf))
     kinds.append(("far", terrain.SEEN))
-    sizes, spots = place_labels(items, scale)
+    pads = np.array([flag_box(scale)[2] if kind[0] == "embassy" else 0.0 for kind in kinds])
+    limits = [SPOTS if kind[0] == "embassy" else 15 for kind in kinds]
+    sizes, spots = place_labels(items, scale, pads, limits)
     part = static_part(static, scale)
     xy = np.array([xy for _, xy, *_ in items], dtype=float).reshape(-1, 2)
     part_spots = part["spots"].copy()
@@ -455,7 +519,7 @@ def load_scene(base, scale, have=None):
         mine, theirs = spots[:, li] >= 0, np.flatnonzero(part_spots[:, li] >= 0)
         if mine.any() and len(theirs):
             under = overlapping(label_boxes(part["label_xy"][theirs], part["sizes"][theirs], part_spots[theirs, li], z),
-                                label_boxes(xy[mine], sizes[mine], spots[mine, li], z))
+                                label_boxes(xy[mine], sizes[mine], spots[mine, li], z, pads[mine]))
             part_spots[theirs[under], li] = -1
     return dynamic_arrays(dict(
         key=part["key"], part=None if have == part["key"] else part, part_spots=part_spots,
@@ -506,6 +570,7 @@ def static_arrays(d):
     d["airport_xy"] = points(d["airports"])
     d["runway_box"] = np.array([(*r["line"].min(0), *r["line"].max(0)) for r in d["runways"]]).reshape(-1, 4)
     d["label_campus"] = np.array([kind[0] == "campus" for kind in d["kinds"]], dtype=bool)
+    d["embassy_xy"] = points([e["point"] for e in d["embassies"]])
     for kind, key in (("campus", "campuses"), ("military", "military"), ("government", "government"),
                       ("regulator", "regulators")):
         boxes = [np.vstack(c["rings"]) if c["rings"] else np.array([c["point"]]) for c in d[key]]
@@ -528,8 +593,9 @@ def dynamic_arrays(d):
     return d
 
 
-STATIC = ("key", "places", "campuses", "military", "government", "regulators", "airports", "runways", "far",
-          "airport_xy", "runway_box", "campus_box", "military_box", "government_box", "regulator_box")
+STATIC = ("key", "places", "campuses", "military", "government", "regulators", "embassies", "airports",
+          "runways", "far", "airport_xy", "embassy_xy", "runway_box", "campus_box", "military_box",
+          "government_box", "regulator_box")
 
 
 def combined(d, part):
@@ -1046,6 +1112,9 @@ class Scene:
                 self.dots(surface, colour, xy)
             else:
                 self.stamp(surface, "square" if colour == REGULATOR else "campus", colour, xy)
+        if view.zoom >= MILITARY_ZOOM:
+            emb = view.points(d["embassy_xy"])
+            self.stamp(surface, "diamond", EMBASSY, emb[inside(emb)])
         st = view.points(d["station_xy"])
         shown_st = np.flatnonzero(inside(st))
         for i in shown_st[::-1]:                                     # senders on top
@@ -1087,8 +1156,8 @@ class Scene:
             return
         k, (tw, th) = d["spots"][:, li], d["sizes"].T
         at = view.points(d["label_xy"])
-        x = at[:, 0] + np.select([k == 0, k == 1, k == 4, k == 5], [7, -tw - 7, 18, -tw - 18], -tw / 2)
-        y = at[:, 1] + np.select([k == 2, k == 3, k == 6, k == 7, k == 8], [-22, 7, -33, 18, -th / 2], -7)   # spot()
+        dx, dy = offsets(k, tw, th)
+        x, y = at[:, 0] + dx, at[:, 1] + dy
         shown = (k >= 0) & (x + tw > 0) & (x < W) & (y + th > 0) & (y < H)
         if view.zoom < CAMPUS_ZOOM:
             shown &= ~d["label_campus"]
@@ -1096,9 +1165,14 @@ class Scene:
         for i, px, py in zip(np.flatnonzero(shown).tolist(), np.round(x[shown] * s - 1).astype(int).tolist(),
                              np.round(y[shown] * s - 1).astype(int).tolist()):
             text, _, size = d["labels"][i]
-            pic = self.glyph(text, d["kinds"][i][1], size)
-            if pic is not None:
-                jobs.append((pic, (px, py)))
+            kind = d["kinds"][i]
+            pic = self.glyph(text, kind[1], size)
+            if pic is None:
+                continue
+            if kind[0] == "embassy":                 # a consulate's flag at the label's left
+                w, gap, _ = flag_box(s, size)
+                jobs.append((flags.flag(kind[2], text_px(size, s)), (px - w - gap - 1, py + 1)))
+            jobs.append((pic, (px, py)))
         surface.blits(jobs, False)
 
     def draw_hud(self, view, surface, s, metres, legend):
