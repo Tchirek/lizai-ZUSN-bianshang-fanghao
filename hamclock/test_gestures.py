@@ -28,18 +28,14 @@ class Tests(unittest.TestCase):
     def test_finger_scrolls_pan_and_wheel_clicks_zoom(self):
         x = fresh()
         x._axis_source(None, g.FINGER)
-        x._axis(None, 1500, g.WlPointer.axis.vertical_scroll, 12.0)
-        x._axis(None, 1500, g.WlPointer.axis.horizontal_scroll, -3.0)
-        x._frame(None)
-        x._axis_stop(None, 1520, g.WlPointer.axis.vertical_scroll)
-        x._axis_stop(None, 1520, g.WlPointer.axis.horizontal_scroll)
+        x._axis(None, 0, g.WlPointer.axis.vertical_scroll, 12.0)
+        x._axis(None, 0, g.WlPointer.axis.horizontal_scroll, -3.0)
         x._frame(None)
         x._axis_source(None, g.WHEEL)
         x._axis_value120(None, g.WlPointer.axis.vertical_scroll, -240)
         x._axis(None, 0, g.WlPointer.axis.vertical_scroll, -30.0)
         x._frame(None)
-        self.assertEqual(x.poll(), [('scroll', 0, 12.0, 1.5), ('scroll', -3.0, 0, 1.5), ('scroll_end', 1.52),
-                                    ('wheel', 2.0)])
+        self.assertEqual(x.poll(), [('scroll', 0, 12.0), ('scroll', -3.0, 0), ('wheel', 2.0)])
         self.assertEqual(x.poll(), [])
 
 

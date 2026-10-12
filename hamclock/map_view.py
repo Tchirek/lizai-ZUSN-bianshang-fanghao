@@ -45,10 +45,6 @@ NOTCH = 0.18                  # log zoom per wheel notch (x1.2)
 EASE_S = 0.065                # the wheel's zoom eases toward its goal with this time constant
 REST_S = 0.09                 # the view must rest this long before it counts as still
 FADE_S = 0.15                 # cross-fade to a sharper picture arriving at rest
-# touchpad momentum, as browsers give it: the fingers' speed over their last SWIPE_S carries
-# on after they lift (unless they had stopped for HELD_S first), easing off with time
-# constant FLING_S until below FLING_MIN view px/s
-SWIPE_S, HELD_S, FLING_S, FLING_MIN, FLING_MAX = 0.1, 0.05, 0.35, 20, 8000
 RETRY_S = 30                  # after a failed picture
 MARGIN = 0.5                  # wide pictures reach this many view widths past each side
 LABEL_ZOOMS = tuple(2 ** (k / 2) for k in range(10))       # label placement steps, 1 .. 22.6
@@ -1072,7 +1068,6 @@ class Canvas:
         self.moved_at = self.loaded_at = -math.inf
         self.retry_at = 0
         self.dirty, self.resting = True, True
-        self.swiped, self.fling = [], None        # (t, dx, dy) of the fingers; momentum (vx, vy)
         self.scene.poll(self.submit_scene, time.monotonic())
 
     def submit(self, which, fn, *args):
@@ -1090,65 +1085,26 @@ class Canvas:
         return self.submit("scene", fn, *args)
 
     def scroll(self, notches, at):
-        self.fling = None
         if self.camera.scroll(notches, at):
             self.moved_at, self.retry_at = time.monotonic(), 0
             return True
         return False
 
     def pinch(self, ratio, at):
-        self.fling, self.swiped = None, []
         if self.camera.pinch(ratio, at):
             self.moved_at, self.dirty = time.monotonic(), True
             return True
         return False
 
     def pan(self, dx, dy):
-        self.fling = None
         if self.camera.pan(dx, dy):
             self.moved_at, self.dirty = time.monotonic(), True
             return True
         return False
 
-    def swipe(self, dx, dy, t):
-        """A touchpad pan of (dx, dy) view px at time t (s, the compositor's clock)."""
-        self.swiped = [x for x in self.swiped if x[0] > t - SWIPE_S] + [(t, dx, dy)]
-        return self.pan(dx, dy)
-
-    def release(self, t):
-        """The fingers lifted at time t: carry on at their speed, unless they had stopped."""
-        recent, self.swiped = [x for x in self.swiped if x[0] > t - SWIPE_S - HELD_S], []
-        if not recent or t - recent[-1][0] > HELD_S:
-            return
-        t0 = recent[0][0]
-        span = recent[-1][0] - t0                # what came at t0 had moved before it
-        if span < 0.015:
-            return
-        vx = sum(dx for t, dx, _ in recent if t > t0) / span
-        vy = sum(dy for t, _, dy in recent if t > t0) / span
-        speed = math.hypot(vx, vy)
-        if speed >= FLING_MIN:
-            k = min(1.0, FLING_MAX / speed)
-            self.fling = vx * k, vy * k
-
-    def glide(self, dt):
-        """Carry the momentum on for dt s; True if the view moved."""
-        if not self.fling:
-            return False
-        vx, vy = self.fling
-        keep = math.exp(-min(dt, 0.05) / FLING_S)
-        # the distance the decaying speed covers over dt, so the glide is the same at any fps
-        if not self.camera.pan(vx * FLING_S * (1 - keep), vy * FLING_S * (1 - keep)):
-            self.fling = None                    # against the map's edge
-            return False
-        self.moved_at = time.monotonic()
-        self.fling = (vx * keep, vy * keep) if math.hypot(vx, vy) * keep >= FLING_MIN else None
-        return True
-
     def tick(self, dt):
         """Advance the zoom and the background work; True if the map box needs drawing."""
-        moved = self.glide(dt)
-        moved = self.camera.tick(dt) or moved
+        moved = self.camera.tick(dt)
         self.view = self.camera.view()
         now = time.monotonic()
         resting = self.camera.zoom == self.camera.goal and now - self.moved_at > REST_S

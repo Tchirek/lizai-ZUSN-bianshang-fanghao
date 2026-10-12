@@ -118,23 +118,6 @@ class CameraTests(unittest.TestCase):
         self.assertAlmostEqual(camera.view().rect()[0], 0)
         self.assertAlmostEqual(camera.view().rect()[1], 0)
 
-    def test_a_swipe_glides_on_after_the_fingers_lift_unless_they_stopped(self):
-        c = object.__new__(v.Canvas)
-        c.camera, c.swiped, c.fling, c.moved_at, c.dirty = v.Camera(base()), [], None, 0, False
-        c.camera.pinch(8, (v.W / 2, v.H / 2))
-        for i in range(6):                                       # 600 view px/s to the left
-            c.swipe(-6, 0, 1 + i / 100)
-        c.release(1.06)
-        self.assertAlmostEqual(c.fling[0], -600)
-        before = c.camera.centre[0]
-        while c.glide(1 / 60):
-            pass
-        self.assertIsNone(c.fling)
-        self.assertAlmostEqual((c.camera.centre[0] - before) * 8, 600 * v.FLING_S, delta=15)
-        c.swipe(-6, 0, 2.0)
-        c.release(2.2)                                           # held still before lifting
-        self.assertIsNone(c.fling)
-
 
 class PictureTests(unittest.TestCase):
     def setUp(self):
