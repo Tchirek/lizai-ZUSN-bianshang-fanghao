@@ -1,5 +1,5 @@
 [Unit]
-Description=Minimal FT8 log HTTP service
+Description=influ - FT8 page: log, CQ and transmit approval on the LAN (login optional)
 After=network-online.target
 
 [Service]

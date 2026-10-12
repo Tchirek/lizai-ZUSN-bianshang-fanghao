@@ -10,8 +10,8 @@ while the tuner settles. dump1090's 12 MHz sample clock therefore stays continuo
 locked to real time, its TCP outputs never close, and feeders/MLAT stay connected; they
 simply receive no messages during a window.
 
-Honesty rule: if the SDR itself fails, sdrmux bridges at most --grace seconds with
-zeros while reopening, then exits so the FIFO closes and the outage becomes visible.
+If the SDR itself fails, sdrmux bridges at most --grace seconds with zeros while
+reopening, then exits, so the FIFO closes and the outage shows instead of passing as silence.
 
 Control: line-delimited JSON on a Unix socket (default /run/sdrmux/ctl.sock)
   {"cmd":"status"}

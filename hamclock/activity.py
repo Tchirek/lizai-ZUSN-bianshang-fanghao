@@ -42,10 +42,22 @@ APRS_SERVER = ("rotate.aprs2.net", 14580)
 APRS_RANGE_KM = 650
 APRS_SHOW_S = 3600                     # stations heard within the last hour
 PSK_URL = ("https://retrieve.pskreporter.info/query?callsign={field}&modify=grid"
-           "&flowStartSeconds=-1800&appcontact=bg8asn")
+           "&flowStartSeconds=-1800&appcontact={contact}")
 PSK_EVERY_S = 300                      # one query per 5 min: PSK Reporter's own limit
-UA = {"User-Agent": "influ-activity/1.0 (BG8ASN)"}
 log = logging.getLogger(__name__)
+
+
+def own_call():
+    """Our callsign (station.json): the APRS-IS login and the contact in API requests."""
+    try:
+        with open(STATION) as f:
+            return json.load(f)["call"]
+    except (OSError, ValueError, KeyError):
+        return "N0CALL"
+
+
+CALL = own_call()
+UA = {"User-Agent": f"influ-activity/1.0 ({CALL})"}
 
 # HamClock's band colours (get_config.txt), keyed by lower band edge in kHz
 BANDS = [(1800, "160", (131, 0, 0)), (3500, "80", (131, 129, 0)), (5300, "60", (230, 24, 74)),
@@ -161,7 +173,7 @@ class Aprs(threading.Thread):
 
     def session(self):
         with socket.create_connection(APRS_SERVER, timeout=60) as s:
-            s.sendall(f"user BG8ASN pass -1 vers influ-activity 1.0 filter {self.filter}\r\n".encode())
+            s.sendall(f"user {CALL} pass -1 vers influ-activity 1.0 filter {self.filter}\r\n".encode())
             buf = b""
             last_filter = time.time()
             while True:
@@ -269,7 +281,7 @@ class Psk(threading.Thread):
         self.state.setdefault("fields", {})                  # field -> {"t": ..., "reports": [...]}
 
     def fetch(self, field):
-        req = urllib.request.Request(PSK_URL.format(field=field), headers=UA)
+        req = urllib.request.Request(PSK_URL.format(field=field, contact=CALL.lower()), headers=UA)
         with urllib.request.urlopen(req, timeout=90) as response:
             root = ET.fromstring(response.read())
         return [{k: r.get(k, "") for k in (

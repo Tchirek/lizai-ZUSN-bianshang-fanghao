@@ -17,7 +17,19 @@ UNIT=/etc/systemd/system/sdrmux.service
 DROPIN_DIR=/etc/systemd/system/dump1090-fa.service.d
 DROPIN=$DROPIN_DIR/influ-sdrmux.conf
 
-OVERRIDE='--device-type ifile --ifile /run/sdrmux/adsb.cu8 --iformat UC8 --fix --lat 30.55 --lon 105.62 --max-range 360 --net-ro-port 30002 --net-sbs-port 30003 --net-bi-port 30004,30104 --net-bo-port 30005 --json-location-accuracy 1'
+LOCATION=/var/cache/piaware/location.env   # the site position piaware keeps from FlightAware
+
+OVERRIDE='--device-type ifile --ifile /run/sdrmux/adsb.cu8 --iformat UC8 --fix --max-range 360 --net-ro-port 30002 --net-sbs-port 30003 --net-bi-port 30004,30104 --net-bo-port 30005 --json-location-accuracy 1'
+
+# The receiver position for dump1090's local position decoding, from piaware's copy; only plain
+# decimal numbers reach the config line, and without them dump1090 runs without a position.
+location() {
+  lat=$(sed -n 's/^PIAWARE_LAT="\{0,1\}\([-0-9.]*\)"\{0,1\}$/\1/p' "$LOCATION" 2>/dev/null || true)
+  lon=$(sed -n 's/^PIAWARE_LON="\{0,1\}\([-0-9.]*\)"\{0,1\}$/\1/p' "$LOCATION" 2>/dev/null || true)
+  case "$lat" in ''|*[!-0-9.]*) return 0 ;; esac
+  case "$lon" in ''|*[!-0-9.]*) return 0 ;; esac
+  echo " --lat $lat --lon $lon"
+}
 
 backup() { [ -f "$ORIG" ] || cp -p "$DEF" "$ORIG"; }
 
@@ -69,7 +81,7 @@ case "${1:-}" in
       sdrmux)
         backup
         write_unit
-        { grep -v '^OVERRIDE_OPTIONS=' "$ORIG"; echo "OVERRIDE_OPTIONS=\"$OVERRIDE\""; } > "$DEF.tmp"
+        { grep -v '^OVERRIDE_OPTIONS=' "$ORIG"; echo "OVERRIDE_OPTIONS=\"$OVERRIDE$(location)\""; } > "$DEF.tmp"
         mv "$DEF.tmp" "$DEF"
         systemctl daemon-reload
         systemctl stop dump1090-fa

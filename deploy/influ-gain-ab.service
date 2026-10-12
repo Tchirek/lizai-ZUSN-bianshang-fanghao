@@ -4,4 +4,4 @@ Description=influ - daytime A/B test of 1090 MHz receive settings
 [Service]
 Type=simple
 WorkingDirectory=%h/influ/analysis
-ExecStart=%h/influ/.venv/bin/python gain_ab.py run --hours 12 --block-min 10 --arms m49.6,m49.6+dagc --restore m49.6+dagc
+ExecStart=%h/influ/.venv/bin/python gain_ab.py run --hours 12 --block-min 10 --arms m49.6,m49.6+dagc --restore m49.6

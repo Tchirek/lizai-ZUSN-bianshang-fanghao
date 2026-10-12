@@ -1,18 +1,64 @@
 #!/usr/bin/env python3
-"""Status + backtest report over everything collected so far.
+"""Status + backtest report over everything collected so far, and what the real listen
+windows cost: the hazard model's prediction for them against the arrivals that followed.
 
 usage: report.py [--hours N] [--listen 20] [--step 30] [--warmup-h 6]
 """
 import argparse
+import glob
+import json
+import os
 import time
 
 import numpy as np
 import pandas as pd
+from scipy import stats as sstats
 
-from influ import backtest, coverage, events, load
+from influ import backtest, coverage, events, hazard, load
 
 pd.set_option("display.width", 160)
 pd.set_option("display.max_columns", 30)
+
+
+def live_windows(model_path, sched_dir):
+    """The scheduler's real windows, merged where their 120 s follow-ups overlap: arrivals there
+    (new visits, as the hazard model counts them: nothing from that aircraft for VISIT_GAP before)
+    against the arrivals the model expects, and the fully hidden ones it predicts, which no one
+    can observe."""
+    rows = []
+    for path in sorted(glob.glob(os.path.join(sched_dir, "windows-*.jsonl"))):
+        with open(path) as f:
+            for line in f:
+                try:
+                    rows.append(json.loads(line))
+                except ValueError:
+                    continue
+    if not rows:
+        print("\n== live windows: none yet")
+        return
+    hz = hazard.Hazard.load(model_path)
+    rows.sort(key=lambda r: r["t_start"])
+    spans = []
+    for r in rows:
+        if spans and r["t_start"] <= spans[-1][1]:
+            spans[-1][1] = max(spans[-1][1], r["t_end"] + 120)
+        else:
+            spans.append([r["t_start"], r["t_end"] + 120])
+    msgs, _ = load.beast(spans[0][0] - events.VISIT_GAP - 60, spans[-1][1] + 60)
+    firsts = np.sort(events.visits(msgs).t_first.values) if len(msgs) else np.array([])
+    expected = sum(hz.lam_mean[hazard.local_hour(a)] * (b - a) for a, b in spans)
+    seen = sum(int(((firsts >= a) & (firsts < b)).sum()) for a, b in spans)
+    lo = sstats.chi2.ppf(0.025, 2 * seen) / 2 if seen else 0.0
+    hi = sstats.chi2.ppf(0.975, 2 * (seen + 1)) / 2
+    blind = sum(r["t_end"] - r["t_start"] for r in rows)
+    hidden_mean = sum(hz.expected_hidden(r["t_start"], r["t_end"] - r["t_start"], conservative=False) for r in rows)
+    days = (rows[-1]["t_end"] - rows[0]["t_start"]) / 86400
+    print(f"\n== live windows: {len(rows)} over {days:.1f} days, {blind / 60:.1f} min off 1090 MHz")
+    print(f"   arrivals during a window or within 120 s of it: {seen}; the hazard model "
+          f"expects {expected:.1f} there (ratio {seen / expected:.2f}, 95% {lo / expected:.2f} .. "
+          f"{hi / expected:.2f})")
+    print(f"   fully hidden (never heard, so not observable): the model puts it at "
+          f"{hidden_mean:.2f} aircraft, {sum(r['exp_hidden'] for r in rows):.2f} at its cautious 90% rate")
 
 
 def main():
@@ -23,6 +69,7 @@ def main():
     ap.add_argument("--warmup-h", type=float, default=6.0)
     ap.add_argument("--risk", type=float, default=0.01)
     a = ap.parse_args()
+    live_windows(os.path.expanduser("~/influ/model/hazard.json"), os.path.expanduser("~/influ/sched"))
 
     t1 = time.time()
     t0 = t1 - a.hours * 3600

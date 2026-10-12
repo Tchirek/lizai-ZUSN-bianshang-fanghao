@@ -220,7 +220,7 @@ def text_size(text, size, scale):
 
 def spot(k, tw, th=0):
     """Label offset from its point (view px): right, left, above, below; then the same again
-    further out, for a point crowded close (as a campus around us is by our own marker); 8,
+    further out, for a point crowded close (as by our own marker); 8,
     centred on it (a town's name once its dot is gone)."""
     return ((7, -7), (-tw - 7, -7), (-tw / 2, -22), (-tw / 2, 7),
             (18, -7), (-tw - 18, -7), (-tw / 2, -33), (-tw / 2, 18), (-tw / 2, -th / 2))[k]

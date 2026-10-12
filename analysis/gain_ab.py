@@ -1,14 +1,16 @@
 #!/usr/bin/env python3
 """A/B test of 1090 MHz receive settings through sdrmux's runtime "set" command.
 
-  gain_ab.py run [--hours 24] [--block-min 10]   rotate settings in randomized blocks
-  gain_ab.py report                               compare blocks using collector data
+  gain_ab.py run [--hours 24] [--block-min 10] [--arms a,b]   rotate settings in randomized blocks
+  gain_ab.py report [--draws 20000]                              the diagnosis (influ/abtest.py)
 
-Traffic varies hour to hour, so each block is compared with the blocks right next to it
-(log ratio of its rate to the mean of its neighbours), which cancels slow traffic trends.
+Each cycle of a run gives every arm one block, in a fresh random order; the report compares
+arms within cycles and tests each difference by redoing that randomization. It prints the
+diagnosis and keeps it in ~/influ/ab/diagnosis.json.
 """
 import argparse
 import json
+import math
 import os
 import random
 import sys
@@ -17,11 +19,16 @@ import time
 HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, os.path.join(HERE, "..", "sdrmux"))
 LOG = os.path.expanduser("~/influ/ab/gain_ab.jsonl")
+OUT = os.path.expanduser("~/influ/ab/diagnosis.json")
+FT8_LOG = os.path.expanduser("~/influ/ft8/auto.jsonl")
+HAZARD = os.path.expanduser("~/influ/model/hazard.json")
 SETTINGS = {
     "m49.6": {"gain": 49.6, "rtl_agc": False},
     "m49.6+dagc": {"gain": 49.6, "rtl_agc": True},
     "tagc+dagc": {"gain": None, "rtl_agc": True},
 }
+LABELS = dict(modes="Mode S/min", adsb="ADS-B/min", positions="positions/min", modeac="Mode A/C/min",
+              aircraft="aircraft", tracked="tracked", false="false frames/h", phantoms="phantoms")
 
 
 def run(a):
@@ -42,41 +49,58 @@ def run(a):
 
 
 def report(a):
-    import numpy as np
     import pandas as pd
-    from influ import load
+    from influ import abtest
 
-    blocks = pd.read_json(LOG, lines=True)
-    blocks = blocks[blocks.set.map(lambda s: s.get("ok", False))].reset_index(drop=True)
-    from influ import events
-    msgs, _ = load.beast(blocks.t0.min(), blocks.t1.max())
-    # address/parity frames yield an "ICAO" for any noise burst, and settings with a higher
-    # noise floor produce more of them: count only addresses confirmed by DF11/17/18 CRC
-    ms = msgs[msgs.icao.isin(events.confirmed_icaos(msgs))]
-    st = load.stats(blocks.t0.min(), blocks.t1.max())
-    rows = []
-    for b in blocks.itertuples():
-        g = ms[(ms.t >= b.t0 + 5) & (ms.t < b.t1)]
-        s = st[(st.t > b.t0 + 60) & (st.t <= b.t1)]
-        dur = (b.t1 - b.t0 - 5) / 60
-        rows.append(dict(name=b.name, t0=b.t0, msg_per_min=len(g) / dur,
-                         df17_per_min=(g.df == 17).sum() / dur, aircraft=g.icao.nunique(),
-                         signal=s.signal.mean(), noise=s.noise.mean()))
-    df = pd.DataFrame(rows).sort_values("t0").reset_index(drop=True)
-    for col in ("msg_per_min", "df17_per_min", "aircraft"):
-        v = np.log(df[col] + 1)
-        neigh = (v.shift(1) + v.shift(-1)) / 2
-        df[col + "_rel"] = v - neigh
-    print(f"{len(df)} blocks, {(df.t0.max() - df.t0.min()) / 3600:.1f} h")
-    agg = df.groupby("name").agg(blocks=("t0", "size"), msg_per_min=("msg_per_min", "mean"),
-                                 df17_per_min=("df17_per_min", "mean"), aircraft=("aircraft", "mean"),
-                                 signal=("signal", "mean"), noise=("noise", "mean"),
-                                 rel_msgs=("msg_per_min_rel", "mean"),
-                                 rel_msgs_se=("msg_per_min_rel", "sem"),
-                                 rel_df17=("df17_per_min_rel", "mean"),
-                                 rel_aircraft=("aircraft_rel", "mean"))
-    print(agg.round(3).to_string())
-    print("rel_* = mean log-ratio vs neighbouring blocks (+0.10 ~ 10% more than neighbours)")
+    d = abtest.diagnose(LOG, FT8_LOG, HAZARD, draws=a.draws)
+    pct = lambda x: f"{100 * (math.exp(x) - 1):+.1f}%"
+    when = lambda t: pd.Timestamp(t, unit="s", tz="Asia/Shanghai").strftime("%m-%d %H:%M")
+    pd.set_option("display.width", 180)
+
+    print("== runs (each cycle holds every arm of its run once, in random order)")
+    for r in d["runs"].itertuples():
+        print(f"  run {r.Index}: {when(r.start)} .. {when(r.end)}  {r.blocks} blocks, "
+              f"{r.cycles} complete cycles, arms {r.arms}")
+    bl = d["blind"]
+    print(f"  taken out as blind: {bl['listen_windows']} sdrmux listen windows, "
+          f"{bl['transmissions']} FT8 transmissions, outages; {bl['blind_h']:.2f} h in all")
+    print(f"  addresses: {d['real']} real aircraft, {d['phantoms']} one-off phantoms, {d['false']} false "
+          f"frames on real addresses; {d['pairs']} same-aircraft pairs across changes; "
+          f"{d['points']} cloud positions within reach")
+
+    print("\n== per arm: block means over exposure (lam_per_h = arrivals the hazard model expects "
+          "then, a check that the arms saw like traffic)")
+    print(d["summary"].round(3).to_string())
+    print("   noise/signal are digital levels: the RTL2832 AGC rescales them, so they compare only "
+          "between arms with the same AGC")
+
+    print("\n== differences within cycles (second arm against first; 95% interval over cycles; "
+          "p from re-randomizing the two arms within cycles)")
+    for res in d["comparisons"]:
+        print(f"\n{res['c']}  vs  {res['a']}   [{res['scope']}]")
+        for key, r in res["metrics"].items():
+            print(f"  {LABELS[key]:16s}{pct(r['est']):>9s}   [{pct(r['lo'])} .. {pct(r['hi'])}]"
+                  f"   p {r['p']:.4f}   {r['cycles']} cycles")
+        if res["boundary"]:
+            r = res["boundary"]
+            print(f"  {'same aircraft':16s}{pct(r['est']):>9s}   frame rate, {r['n']} aircraft across changes"
+                  f"   p {r['p']:.4f}")
+        else:
+            print(f"  {'same aircraft':16s}      n/a   too few aircraft heard across a change")
+        if res["coverage"]:
+            r = res["coverage"]
+            print(f"  {'vs coverage':16s}{pct(r['est']):>9s}   heard/expected {r['oe'][0]:.2f} -> "
+                  f"{r['oe'][1]:.2f} over {r['n'][0]} / {r['n'][1]} cloud positions   p {r['p']:.4f}")
+        else:
+            print(f"  {'vs coverage':16s}      n/a   too few cloud positions where we can hear")
+        print("  =>", abtest.verdict(res))
+
+    keep = dict(at=time.time(), runs=d["runs"].reset_index().to_dict("records"), blind=bl,
+                summary=d["summary"].reset_index().to_dict("records"),
+                comparisons=[dict(res, verdict=abtest.verdict(res)) for res in d["comparisons"]])
+    with open(OUT + ".tmp", "w") as f:
+        json.dump(keep, f, default=float, indent=1)
+    os.replace(OUT + ".tmp", OUT)
 
 
 def main():
@@ -84,8 +108,9 @@ def main():
     ap.add_argument("cmd", choices=["run", "report"])
     ap.add_argument("--hours", type=float, default=24)
     ap.add_argument("--block-min", type=float, default=10)
-    ap.add_argument("--restore", default="m49.6+dagc")
+    ap.add_argument("--restore", default="m49.6")
     ap.add_argument("--arms", help="comma-separated subset of " + ",".join(SETTINGS))
+    ap.add_argument("--draws", type=int, default=20000)
     a = ap.parse_args()
     run(a) if a.cmd == "run" else report(a)
 

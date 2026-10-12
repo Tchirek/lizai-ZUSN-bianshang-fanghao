@@ -158,7 +158,7 @@ class Tests(unittest.TestCase):
             log = Path(tmp) / 'auto.jsonl'
             monday = a.ft8_week()[2]
             rows = [dict(t=monday - 1, event='transmit', message='CQ OLD AA00'),
-                    dict(t=monday + 1, event='transmit', message='CQ BG8ASN OM20'),
+                    dict(t=monday + 1, event='transmit', message='CQ K1ABC FN31'),
                     dict(t=monday + 2, event='receive', decodes=[]),
                     dict(t=monday + 3, event='qso', call='W1ABC', grid='FN42')]
             log.write_text(''.join(json.dumps(r) + '\n' for r in rows))

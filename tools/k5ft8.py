@@ -127,7 +127,7 @@ def main():
     ap.add_argument("action", choices=["probe", "send"])
     ap.add_argument("--port", default=PORT)
     ap.add_argument("--dial", type=int, default=DIALS[0])
-    ap.add_argument("--message", default="CQ BG8ASN OM20")
+    ap.add_argument("--message", help="default: our CQ, from ~/influ/station.json")
     a = ap.parse_args()
     r = Radio(a.port)
     try:
@@ -135,6 +135,10 @@ def main():
         if a.action == "probe":
             print(json.dumps(dict(mode=r.mode(), dial=a.dial)))
         else:
+            if not a.message:
+                with open(os.path.expanduser("~/influ/station.json")) as f:
+                    st = json.load(f)
+                a.message = f"CQ {st['call']} {st['grid'][:4]}"
             slot = (int(time.time() / 15) + 1) * 15
             print(json.dumps(r.transmit(a.message, slot)))
     finally:

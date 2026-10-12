@@ -5,10 +5,14 @@ as "received" if our local decoder has any message from that ICAO within +-tol s
 Local-only positions (aircraft the cloud never saw) are kept separately as evidence of
 coverage the cloud cannot confirm.
 """
+import functools
+import json
+import os
+
 import numpy as np
 import pandas as pd
 
-LAT0, LON0 = 30.55, 105.62
+STATION = os.path.expanduser("~/influ/station.json")
 R_EARTH = 6371.0
 
 AZ_BINS = np.arange(0, 361, 22.5)
@@ -16,8 +20,16 @@ DIST_BINS = np.array([0, 20, 40, 60, 80, 100, 130, 160, 200, 250, 300, 400, 500]
 ALT_BINS = np.array([-1e9, 3000, 10000, 20000, 30000, 1e9])
 
 
+@functools.lru_cache(maxsize=1)
+def station():
+    with open(STATION) as f:
+        s = json.load(f)
+    return s["lat"], s["lon"]
+
+
 def polar(lat, lon):
-    lat1, lon1 = np.radians(LAT0), np.radians(LON0)
+    lat0, lon0 = station()
+    lat1, lon1 = np.radians(lat0), np.radians(lon0)
     lat2, lon2 = np.radians(lat), np.radians(lon)
     dlon = lon2 - lon1
     a = np.sin((lat2 - lat1) / 2) ** 2 + np.cos(lat1) * np.cos(lat2) * np.sin(dlon / 2) ** 2

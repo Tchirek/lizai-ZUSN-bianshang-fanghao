@@ -25,7 +25,7 @@ def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--snr", type=float, default=-12)
     ap.add_argument("--late", type=float, default=0.14, help="recording start after slot start")
-    ap.add_argument("--msg", default="CQ BG8ASN OM20")
+    ap.add_argument("--msg", default="CQ K1ABC FN31")
     a = ap.parse_args()
     os.environ["INFLU_FT8_DRYRUN"] = "1"
     d = tempfile.mkdtemp(prefix="ft8chain_")

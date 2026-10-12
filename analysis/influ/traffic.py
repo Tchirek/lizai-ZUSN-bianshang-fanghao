@@ -3,8 +3,12 @@ from collections import defaultdict
 import json
 import math
 import os
+import statistics
 
 KM_PER_MILE = 1.609344
+# a trainer flies low and slow; an airliner heard only in Mode S (no ident, no category) still
+# reports its altitude, mostly far above this, and its speed when its position comes through
+LIGHT_MAX_FT, LIGHT_MAX_KT = 10_000, 200
 
 
 def ident(a):
@@ -20,6 +24,7 @@ def fit(snapshots, cloud_records):
     """Classify over whole history, so a missed identification packet isn't a small plane."""
     known, categories, reception = set(), defaultdict(set), defaultdict(set)
     exposure, by_minute = set(), defaultdict(set)
+    altitudes, speeds = defaultdict(list), defaultdict(list)
     for rec in cloud_records:
         for a in rec.get("ac", []):
             if ident(a):
@@ -37,10 +42,21 @@ def fit(snapshots, cloud_records):
                 minute = int((now - a["seen"]) // 60)
                 by_minute[minute].add(h)
                 reception[h].add(minute)
+                if isinstance(a.get("alt_baro"), (int, float)):
+                    altitudes[h].append(a["alt_baro"])
+                if isinstance(a.get("gs"), (int, float)):
+                    speeds[h].append(a["gs"])
+
+    def flies_light(h):
+        return ((not altitudes[h] or statistics.median(altitudes[h]) <= LIGHT_MAX_FT)
+                and (not speeds[h] or statistics.median(speeds[h]) <= LIGHT_MAX_KT))
+
     light = {h for h in reception if h not in known and categories[h] == {"A1"}}
-    # Persistent uncategorised Mode S targets may include training aircraft; label them uncertain.
+    # Persistent uncategorised Mode S targets may include training aircraft, if they fly like one.
     untyped = {h for h in reception if h not in known and not categories[h]
-               and len(reception[h]) >= 3}
+               and len(reception[h]) >= 3 and flies_light(h)}
+    airliner_like = sum(1 for h in reception if h not in known and not categories[h]
+                        and len(reception[h]) >= 3 and not flies_light(h))
     counts, observed = [0] * 48, [0] * 48
     for minute in exposure:
         observed[(minute + 480) % 1440 // 30] += 1
@@ -50,7 +66,7 @@ def fit(snapshots, cloud_records):
     busy = {i for i in range(48) if counts[i] >= 2 and counts[i] / max(1, observed[i]) >= 0.02}
     protected = sorted({(i + d) % 48 for i in busy for d in (-1, 0, 1)})
     return dict(known_ident=sorted(known), light_no_ident=sorted(light),
-                untyped_no_ident=sorted(untyped), observed_minutes=observed,
+                untyped_no_ident=sorted(untyped), untyped_high_or_fast=airliner_like, observed_minutes=observed,
                 active_minutes=counts, busy_bins=sorted(busy), protected_bins=protected,
                 exposure_hours=len(exposure) / 60,
                 observed_days=len({(m + 480) // 1440 for m in exposure}))

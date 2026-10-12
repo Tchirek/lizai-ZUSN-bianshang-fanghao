@@ -1,7 +1,7 @@
 [Desktop Entry]
 Type=Application
 Name=HamClock
-Comment=BG8ASN station clock on the built-in screen
+Comment=Station clock on the built-in screen
 Exec=systemctl --user restart hamclock-display
 Icon=influ-hamclock
 Terminal=false

@@ -1,9 +1,9 @@
 #!/usr/bin/env python3
 """Build the UV-K5 range map shown in place of HamClock's world map.
 
-A UV-K5 works VHF/UHF FM: contacts are line of sight, and 5 W is not the limit -- at 145 MHz
-the free-space loss to 350 km is ~127 dB, leaving ~40 dB above a typical -122 dBm receiver.
-So the theoretical reach is the radio viewshed: for 1440 bearings, step out along the ground and
+On VHF/UHF FM the reach is set by line of sight, not by power: at 145 MHz the free-space loss
+to 350 km is ~127 dB, which 5 W still clears by ~40 dB at a typical -122 dBm receiver. The map
+is therefore the radio viewshed: for 1440 bearings, step out along the ground and
 keep the points from which a station antenna `--their-agl` m above ground has a clear path to
 ours (`--our-agl` m above ground at the station), with standard refraction (k = 4/3).
 

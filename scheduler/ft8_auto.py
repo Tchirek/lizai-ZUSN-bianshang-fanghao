@@ -51,12 +51,15 @@ class QSO:
         self.last_decode = -1
         self.last_sent = ""
         self.recent = {}
+        self.log = []               # this exchange's frames, both ways, as the chat's context
+        self.cq = None              # (slot, message) of our latest CQ
 
     def reset(self):
         self.peer, self.pending, self.rx_parity = None, None, None
         self.finish_after_tx = False
         self.tries = 0
         self.last_sent = ""
+        self.log = []
 
     def receive(self, slot, decodes):
         if slot <= self.last_decode:
@@ -93,6 +96,11 @@ class QSO:
             self.rx_parity = int(slot // 15) % 2
             self.sent_report, self.received_report = "", ""
             self.last_sent = ""
+            self.log = []
+            if directed and self.cq and 0 <= slot - self.cq[0] <= 240:
+                self.log.append(dict(slot=self.cq[0], tx=True, message=self.cq[1]))
+        self.log.append(dict(slot=slot, tx=False, snr=snr, df=self.peer_df,
+                             message=f"{self.call if directed else 'CQ'} {src} {body}"))
         if is_grid(body):
             self.peer_grid = body
             if directed:
@@ -139,12 +147,13 @@ class QSO:
     def transmitted(self, slot):
         self.last_sent = self.pending.split()[-1]
         self.last_tx, self.tries = slot, self.tries + 1
+        self.log.append(dict(slot=slot, tx=True, message=self.pending))
         if self.finish_after_tx:
             self.recent[self.peer] = slot
             self.completed.append(dict(call=self.peer, grid=self.peer_grid,
                                        rst_sent=self.sent_report, rst_rcvd=self.received_report,
                                        start=self.started, end=slot + 13.2,
-                                       df=self.peer_df, rx_parity=self.rx_parity))
+                                       df=self.peer_df, rx_parity=self.rx_parity, log=self.log[:]))
             self.reset()
         elif self.tries >= 3:
             log.info("QSO retry limit: %s", self.peer)
@@ -238,7 +247,7 @@ class Auto:
         parts = message.split()
         if parts[0] == "CQ":
             self.qso.reset()
-            self.last_cq = slot
+            self.last_cq, self.qso.cq = slot, (slot, message)
             self.qso.rx_parity = 1 - int(slot // 15) % 2
             if self.chat:
                 self.chat.start(None)
@@ -268,7 +277,12 @@ class Auto:
                 previous = self.chat.peer if self.chat.active(slot) else {}
                 peer = self.qso.peer or previous.get("call", "UNKNOWN")
                 df = (self.qso.peer_df if self.qso.peer else 0) or previous.get("df", self.tx_df)
-                context = dict(call=peer, end=slot + 13.2, df=df, rx_parity=self.qso.rx_parity)
+                # the exchange this text follows: the one in progress, else the finished one
+                context = previous if previous.get("call") == peer else {}
+                if self.qso.peer:
+                    context = dict(grid=self.qso.peer_grid, rst_sent=self.qso.sent_report,
+                                   rst_rcvd=self.qso.received_report, log=self.qso.log[:])
+                context = dict(context, call=peer, end=slot + 13.2, df=df, rx_parity=self.qso.rx_parity)
                 if not self.chat.peer or self.chat.peer["call"] != peer:
                     self.chat.start(context)
                 else:
@@ -363,7 +377,7 @@ class Auto:
             elif chat_reply:
                 self.chat.sent(message)
             elif message.startswith("CQ "):
-                self.last_cq = slot
+                self.last_cq, self.qso.cq = slot, (slot, message)
                 self.qso.pending = None
             else:
                 self.qso.transmitted(slot)

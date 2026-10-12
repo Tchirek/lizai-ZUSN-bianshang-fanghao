@@ -23,7 +23,17 @@ import time
 import urllib.request
 from datetime import datetime, timezone
 
-LAT, LON = 30.55, 105.62
+STATION = os.path.expanduser("~/influ/station.json")
+
+
+def station_point():
+    """The station rounded to 0.01 deg (~1 km): it goes out in queries to public APIs."""
+    with open(STATION) as f:
+        s = json.load(f)
+    return round(s["lat"], 2), round(s["lon"], 2)
+
+
+LAT, LON = station_point()
 CLOUD_RADIUS_NM = 250
 UA = "influ-collector/1.0 (personal ADS-B feeder research)"
 

@@ -16,12 +16,12 @@ SID = 'page123456'
 class Tests(unittest.TestCase):
     def gate(self):
         self.now = 100
-        return Control('BG8ASN', 'OM20', lambda s:s, clock=lambda:self.now)
+        return Control('K1ABC', 'FN31', lambda s:s, clock=lambda:self.now)
 
     def test_viewing_is_automatic_and_close_is_immediate(self):
         web = self.gate()
         self.assertFalse(web.handle(dict(action='status',session=SID))['manual'])
-        self.assertTrue(web.allow('W1ABC BG8ASN -12','状态机'))
+        self.assertTrue(web.allow('W1ABC K1ABC -12','状态机'))
         web.handle(dict(action='send',session=SID,message='HI'))
         web.sent('HI',100,web.queued()['id'])
         self.assertFalse(web.allow('FINE TNX','LLM'))
@@ -47,7 +47,7 @@ class Tests(unittest.TestCase):
 
     def controller(self, chat=False):
         c = object.__new__(Auto)
-        c.call, c.grid, c.tx_df, c.last_cq = 'BG8ASN','OM20',1127,0
+        c.call, c.grid, c.tx_df, c.last_cq = 'K1ABC','FN31',1127,0
         c.dial = 144174000
         c.lock, c.decoding = threading.Lock(), threading.Event()
         c.qso, c.radio, c.write = QSO(c.call,c.grid), Mock(), Mock()
@@ -64,15 +64,15 @@ class Tests(unittest.TestCase):
 
     def test_manually_typed_cq_requires_approval_then_close_restores_auto(self):
         c = self.controller()
-        c.web.handle(dict(action='send',session=SID,message='CQ BG8ASN OM20'))
+        c.web.handle(dict(action='send',session=SID,message='CQ K1ABC FN31'))
         self.assertTrue(c.transmit(0))
         self.assertEqual(c.last_cq,0)
-        c.qso.receive(15,[dict(message='BG8ASN W1ABC FN42',snr=-12,df=1200)])
+        c.qso.receive(15,[dict(message='K1ABC W1ABC FN42',snr=-12,df=1200)])
         self.assertFalse(c.transmit(30))
         self.assertEqual(c.radio.transmit.call_count,1)
         c.web.handle(dict(action='approve',session=SID,id=c.web.suggestion['id']))
         self.assertTrue(c.transmit(30))
-        c.qso.receive(45,[dict(message='BG8ASN W1ABC R-09',snr=-12,df=1200)])
+        c.qso.receive(45,[dict(message='K1ABC W1ABC R-09',snr=-12,df=1200)])
         self.assertFalse(c.transmit(60))
         c.web.handle(dict(action='close',session=SID))
         self.assertTrue(c.transmit(60))
@@ -93,7 +93,7 @@ class Tests(unittest.TestCase):
         mux = dict(ok=True,sdr_ok=True,fifo_connected=True)
         self.assertEqual(window_reasons(args,mux,True,{},None,1,None,0,14.25,
                          dict(reasons=['training_activity_window']),c.in_qso(15)), [])
-        c.qso.receive(15,[dict(message='BG8ASN W1ABC FN42',snr=-12,df=1200)])
+        c.qso.receive(15,[dict(message='K1ABC W1ABC FN42',snr=-12,df=1200)])
         self.assertTrue(c.transmit(30))
         self.assertIsNone(c.web.owner)
         self.assertIsNone(c.web.suggestion)
@@ -109,8 +109,8 @@ class Tests(unittest.TestCase):
         self.assertTrue(web.allow('HELLO','LLM'))
 
     def test_unanswered_proactive_sends_are_logged_without_a_qso(self):
-        for action, message in [('cq', 'CQ BG8ASN OM20'), ('send', 'HI'),
-                                ('send', 'W1ABC BG8ASN OM20')]:
+        for action, message in [('cq', 'CQ K1ABC FN31'), ('send', 'HI'),
+                                ('send', 'W1ABC K1ABC FN31')]:
             with self.subTest(action=action, message=message):
                 c = self.controller()
                 c.web.handle(dict(action=action, session=SID, message=message))
@@ -124,7 +124,7 @@ class Tests(unittest.TestCase):
     def test_recent_cq_receive_window_survives_service_restart(self):
         from pathlib import Path
         c = self.controller()
-        (Path(c.out)/'auto.jsonl').write_text(json.dumps(dict(event='transmit',message='CQ BG8ASN OM20',slot=90))+'\n')
+        (Path(c.out)/'auto.jsonl').write_text(json.dumps(dict(event='transmit',message='CQ K1ABC FN31',slot=90))+'\n')
         c.restore_cq(120)
         self.assertTrue(c.in_qso(135))
         self.assertTrue(c.want_receive(135))
@@ -158,7 +158,7 @@ class Tests(unittest.TestCase):
         c.chat.start(dict(call='W2XYZ',end=13.2,df=1500,rx_parity=1))
         c.chat.future = Future()
         c.chat.future.set_result('OLD REPLY')
-        c.web.handle(dict(action='send',session=SID,message='W1ABC BG8ASN OM20'))
+        c.web.handle(dict(action='send',session=SID,message='W1ABC K1ABC FN31'))
         self.assertTrue(c.transmit(0))
         self.assertIsNone(c.chat.future)
         self.assertIsNone(c.chat.peer)

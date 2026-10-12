@@ -16,12 +16,14 @@ class Tests(unittest.TestCase):
         snapshots = [dict(now=3600 + 60 * i, aircraft=[
             dict(hex='light', category='A1', seen=0, messages=10),
             dict(hex='airliner', category='A3', seen=0, messages=10),
-            dict(hex='untyped', seen=0, messages=10),
+            dict(hex='untyped', seen=0, messages=10, alt_baro=4500, gs=95),
+            dict(hex='mode-s-airliner', seen=0, messages=10, alt_baro=33000, gs=450),
             dict(hex='identified', category='A1', seen=0, messages=10, flight='C172ABC' if i else '')
         ]) for i in range(4)]
         model = fit(snapshots, [])
         self.assertEqual(model['light_no_ident'], ['light'])
-        self.assertEqual(model['untyped_no_ident'], ['untyped'])
+        self.assertEqual(model['untyped_no_ident'], ['untyped'])       # not the high, fast one
+        self.assertEqual(model['untyped_high_or_fast'], 1)
         self.assertIn('identified', model['known_ident'])
         self.assertEqual(model['active_minutes'][18], 4)
         self.assertIn(17, model['protected_bins'])
@@ -48,8 +50,8 @@ class Tests(unittest.TestCase):
 
     def test_only_started_qso_gets_priority_and_it_expires(self):
         controller = object.__new__(Auto)
-        controller.lock, controller.qso, controller.last_cq = threading.Lock(), QSO('BG8ASN','OM20'), -1000
-        controller.web = Control('BG8ASN', 'OM20', lambda s:s)
+        controller.lock, controller.qso, controller.last_cq = threading.Lock(), QSO('K1ABC','FN31'), -1000
+        controller.web = Control('K1ABC', 'FN31', lambda s:s)
         controller.qso.receive(30, [dict(message='CQ W1ABC FN42', snr=-12)])
         self.assertFalse(controller.in_qso(45))
         controller.qso.transmitted(45)

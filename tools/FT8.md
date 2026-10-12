@@ -1,27 +1,31 @@
-FT8 自动通联使用现有 CEC 0.3V 固件、普通写频线和 RTL-SDR V4；无需额外声卡。
+# FT8 自动通联
 
-手台保持 **FT8 / Ready**（正常画面长按 MENU）。按 EXIT 退出后，软件的模式核对会停止后续发射。固件在发送一个完整的 79 符号帧时阻塞，串口无法中途取消这一帧；最长约 13 秒，完成后自动恢复接收。不要把手台放回 SDR 天线旁。
+用 UV-K5 的 CEC 0.3V 固件和普通写频线发 FT8，用 RTL-SDR V4 收，不需要声卡。写频线没有音频通路，所以只能做固件自己生成音调的 FT8，不能做话音。
 
-X230 上的 `influ-scheduler` 用户服务通过已有的 `dialout` 用户组启动（无需重启用户登录），增加 `--ft8-tx`，负责完整流程：
+## 手台
 
-- 原有风险模型批准接收窗口后，监听 144.174 MHz，解码 CQ 或对本台的呼叫。
-- 自动应答、交换报告、发送 RR73 / 73；无目标时，每两分钟最多一次 CQ，且必须先有一个获准的接收窗口。
-- 解码没赶上下一个发射时隙时，等下一个同奇偶时隙。每条消息最多发三次，每次通联最多等待四分钟。
-- 已完成的双向交换写入 `~/influ/ft8/qsos.adi`；全过程写入 `auto.jsonl`。未完成的尝试不算 QSO。
-- 接收继续遵守日、小时风险和盲区预算。日总风险上限仍为 0.1 架、单窗口 0.015 架，小时上限调整为 0.05 架，以容纳一轮通联所需的三个接收窗口。开始通联前确认至少还有两个接收窗口的预算。发射时 V4 留在 1090 MHz；条件变化或预算不足时暂停接收，可能无法完成一次通联。
+- 保持 **FT8 / Ready**（主界面长按 MENU）。按 EXIT 退出后，软件核对模式时发现不在 Ready，就不再发射。
+- 固件发一个 79 符号帧时会阻塞，串口无法中途取消；一帧最长约 13 秒，发完自动回到接收。
+- 手台天线和 SDR 天线要隔开：近距离发射会压垮接收机。
 
-启停（Windows PowerShell）：
+## 流程
 
-```powershell
-ssh x230@192.168.10.167 "systemctl --user stop influ-scheduler"
-ssh x230@192.168.10.167 "systemctl --user start influ-scheduler"
-ssh x230@192.168.10.167 "journalctl --user -u influ-scheduler -n 30 --no-pager"
-```
+`influ-scheduler` 用户服务加 `--ft8-tx` 后负责整个流程，以 `dialout` 组身份读写串口。
 
-单帧发射工具是 `tools/k5ft8.py send`。重刷固件、更换手台后，先重新做 `tools/k5ft8_calibrate.py`，验证八个音调和真实回收解码；失败时不能启用自动发射。校准会开一个约 14 秒的 SDR 接收窗口，其风险须计入当日预算。
+- 调度器批准一个接收窗口后，在 144.174 MHz 收一个时隙，解出 CQ 和呼叫本台的消息。
+- 自动应答、交换报告、发 RR73 / 73。没有对象时最多每两分钟 CQ 一次，而且必须紧跟一个已批准的接收窗口。
+- 解码赶不上下一个发射时隙，就等下一个同奇偶的时隙。每条消息最多发三次，一次通联最长四分钟。
+- 完成双向交换才写进 `~/influ/ft8/qsos.adi`；全过程记在 `auto.jsonl`，没完成的不算 QSO。
+- 发射时 V4 留在 1090 MHz。接收窗口按调度策略审批（见 [TRAFFIC-POLICY.md](TRAFFIC-POLICY.md)），通联开始后优先完成。开始一次通联前，先确认今天的切出秒数和本小时的窗口数还够再收两次。
 
-2026-10-10 真机校准：`CQ BG8ASN OM20` 完整解码，时间误差 0.0 秒，八音调间隔 6.13–6.40 Hz；1200 Hz 的命令偏移实测约 1127 Hz。校准数据和录音保存在 X230 的 `~/influ/radio/`，不提交公开仓库。
+服务日志：`journalctl --user -u influ-scheduler`。
 
-来源：[CEC 固件协议和有限时长发送实现](https://github.com/phdlee/uvk5cec/blob/f17c0a5f71f8caa864fffda9a483e90e602ae38b/cecdigital.c)，[帧格式](https://github.com/phdlee/uvk5cec/blob/f17c0a5f71f8caa864fffda9a483e90e602ae38b/ceccommon.c)。
+## 单帧发射与校准
 
-普通写频线没有语音音频通路；本实现完成的是 FT8 数字通联。
+`tools/k5ft8.py send` 发一帧，默认发本台 CQ。
+
+重刷固件或换手台后，先跑 `tools/k5ft8_calibrate.py`：发一个真实 CQ，用本地 SDR 收回来，核对八个音调和解码结果；不通过就不能开自动发射。校准要占一个约 14 秒的接收窗口。校准数据和录音留在站上的 `~/influ/radio/`。
+
+2026-10-10 的校准：本台 CQ 完整解出，时间误差 0.0 秒，八音调间隔 6.13–6.40 Hz；1200 Hz 的命令偏移实测约 1127 Hz。
+
+参考：CEC 固件的[有限时长发送](https://github.com/phdlee/uvk5cec/blob/f17c0a5f71f8caa864fffda9a483e90e602ae38b/cecdigital.c)与[帧格式](https://github.com/phdlee/uvk5cec/blob/f17c0a5f71f8caa864fffda9a483e90e602ae38b/ceccommon.c)。

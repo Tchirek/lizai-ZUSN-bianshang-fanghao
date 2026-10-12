@@ -165,8 +165,8 @@ CAMPUS_QUERY = """[out:json][timeout:180];
  nwr["amenity"="school"]["name"~"大学|学院|高等专科|高专"]({box});
  wr["landuse"="education"]["name"~"大学|学院|高等专科|高专"]({box}););
 out geom;"""
-# Higher education by name, for campuses tagged only school or education land (in Suining
-# 四川职业技术学院 is amenity=school): a university, college or 高专, maybe with its campus
+# Higher education by name, for campuses tagged only school or education land (some colleges
+# are mapped as amenity=school): a university, college or 高专, maybe with its campus
 HIGHER = re.compile(r"(大学|学院|高等专科学校|高专)([（(][^）)]*[）)]|.{0,6}(校区|分院|分校))?$")
 # university and college tags also cover schools that are not higher education; so do names
 NOT_HIGHER = ("小学", "中学", "幼儿园", "附属", "附中", "实验学校", "党校", "干部", "社会主义学院", "老年",
