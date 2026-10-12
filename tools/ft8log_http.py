@@ -7,8 +7,8 @@ makes it), every request needs HTTP Basic Auth: the browser asks once and rememb
 HTTP that keeps other people on the LAN from transmitting; it is no protection beyond the LAN.
 
 The outlook is read from the scheduler's own models and state: arrivals the hazard model
-expects each hour, the half-hours the training model protects, today's budget and the reasons
-behind the scheduler's latest decision.
+expects each hour, the half-hours the training model protects, today's budget and the
+scheduler's latest decision.
 """
 import argparse
 import base64
@@ -41,7 +41,6 @@ PAGE = '''<!doctype html><html lang="zh-CN"><meta charset="utf-8">
 <div id="draft" hidden><div>待批准：<strong id="message"></strong> <small id="source"></small></div>
 <button id="approve" onclick="act('approve',{id:draft.id})">批准并发送</button></div>
 <h4>今天的收听时机</h4><div id="hours"></div><div id="axis"><span>0</span><span>6</span><span>12</span><span>18</span><span>24</span></div>
-<small>颜色越深，模型预计那一小时来的飞机越多；红色是训练保护时段；框住的是现在。</small>
 <p id="gate"></p>
 <p><a href="/qsos.adi">下载 ADIF</a> · <a href="/events" target="_blank">收发全文</a></p>
 <pre id="records">暂无记录</pre>
@@ -71,20 +70,6 @@ live.onerror=()=>{document.querySelector('#mode').textContent='连接恢复中�
 function leave(){live.close();navigator.sendBeacon('/control',new Blob([JSON.stringify({action:'close',session})],{type:'application/json'}));}
 window.addEventListener('pagehide',leave);window.addEventListener('beforeunload',leave);
 </script></html>'''
-
-# the scheduler's reasons for keeping the SDR on 1090 MHz, as the page says them
-REASONS = {
-    'training_activity_window': '训练保护时段', 'training_hour_unobserved': '这个时段还没统计',
-    'training_profile_stale': '训练统计过期', 'training_profile_unavailable': '没有训练统计',
-    'local_aircraft_near_or_approaching': '附近有飞机', 'local_aircraft_without_position': '收到无位置的飞机',
-    'cloud_aircraft_near_or_approaching': '云端看到飞机临近', 'cloud_tracks_stale': '云端航迹过期',
-    'cloud_tracks_unavailable': '没有云端航迹', 'traffic_data_unavailable': '读不到本地航迹',
-    'hour_cap': '本小时窗口已满', 'day_blind_budget': '今天的盲区预算用完',
-    'ft8_transmit_parity': '等发射时隙', 'sdrmux_unhealthy': 'sdrmux 异常', 'dump1090_stale': 'dump1090 无数据',
-    'aircraft_active': '刚收到飞机', 'not_quiet_long_enough': '安静得不够久', 'no_model': '没有风险模型',
-    'risk_above_max': '单窗口风险超限', 'day_risk_budget': '今天的风险预算用完', 'hour_risk_budget': '本小时风险预算用完',
-}
-
 
 def station_call():
     try:
@@ -227,11 +212,7 @@ def outlook(home, now=None):
             continue
     if last:
         when = datetime.fromtimestamp(last['t'], TZ).strftime('%H:%M:%S')
-        if last.get('approve'):
-            lines.append(f'{when} 的判定：可以切到 2 米收听。')
-        else:
-            why = '、'.join(dict.fromkeys(REASONS.get(r, r) for r in last.get('reasons', [])))
-            lines.append(f'{when} 的判定：留在 1090（{why}）。')
+        lines.append(f"{when} 的判定：{'切到 2 米收听' if last.get('approve') else '留在 1090'}。")
     return dict(slot=slot, cells=cells, text=' '.join(lines))
 
 
