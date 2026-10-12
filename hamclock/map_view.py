@@ -42,14 +42,14 @@ import flags
 from map_panel import night_rgba, solar_elevation
 
 W, H = a.W, a.H
-MAX_ZOOM = 24
+MAX_ZOOM = 96
 NOTCH = 0.18                  # log zoom per wheel notch (x1.2)
 EASE_S = 0.065                # the wheel's zoom eases toward its goal with this time constant
 REST_S = 0.09                 # the view must rest this long before it counts as still
 FADE_S = 0.15                 # cross-fade to a sharper picture arriving at rest
 RETRY_S = 30                  # after a failed picture
 MARGIN = 0.5                  # wide pictures reach this many view widths past each side
-LABEL_ZOOMS = tuple(2 ** (k / 2) for k in range(10))       # label placement steps, 1 .. 22.6
+LABEL_ZOOMS = tuple(2 ** (k / 2) for k in range(14))       # label placement steps, 1 .. 90.5
 CAMPUS_ZOOM = 8               # campuses (outline, dot, name) show from this zoom on
 MILITARY_ZOOM = 4             # military areas (outline, dot) from this zoom on, named from 6x
 MILITARY = (255, 85, 70)
@@ -380,7 +380,8 @@ def static_scene(base):
             for e in json.load(f):
                 point = base.xy(*e["point"])
                 if 0 <= point[0] < W and 0 <= point[1] < H:
-                    embassies.append(dict(name=e["name"], code=e["code"], point=point))
+                    embassies.append(dict(name=e["name"], code=e["code"], point=point, rings=[],
+                                          zoom=EMBASSY_ZOOM))
     airports, runways = [], []
     if os.path.exists(paths[3]):
         with open(paths[3]) as f:
@@ -421,16 +422,20 @@ def static_part(static, scale):
             kinds.append(("campus", CAMPUS))
     size = lambda c: max((abs(r[:, 0] @ np.roll(r[:, 1], -1) - np.roll(r[:, 0], -1) @ r[:, 1]) for r in c["rings"]),
                          default=0)
+    # consulates rank with the offices: same list, same order of priority
     for kind, colour, c in sorted([("military", MILITARY, c) for c in static["military"] if c["name"]]
-                                  + [("government", GOVERNMENT, c) for c in static["government"] if c["name"]],
+                                  + [("government", GOVERNMENT, c) for c in static["government"] if c["name"]]
+                                  + [("embassy", EMBASSY, c) for c in static["embassies"]],
                                   key=lambda k: (k[2]["zoom"], -size(k[2]))):
         items.append((c["name"], c["point"], 13, c["zoom"], math.inf))
-        kinds.append((kind, colour))
+        kinds.append((kind, colour, c["code"]) if kind == "embassy" else (kind, colour))
     places(static, items, kinds, False)
-    sizes, spots = place_labels(items, scale)
+    pads = np.array([flag_box(scale)[2] if kind[0] == "embassy" else 0.0 for kind in kinds])
+    limits = [SPOTS if kind[0] == "embassy" else 15 for kind in kinds]
+    sizes, spots = place_labels(items, scale, pads, limits)
     part = dict(key=key, places=static["place_xy"], campuses=static["campuses"], military=static["military"],
                 government=static["government"], regulators=static["regulators"],
-                embassies=static["embassies"],
+                embassies=static["embassies"], pads=pads,
                 airports=[x["point"] for x in static["airports"]], runways=static["runways"], far=static["far"][0],
                 labels=[(text, xy, size) for text, xy, size, *_ in items], kinds=kinds, sizes=sizes, spots=spots)
     _part.clear()
@@ -500,26 +505,22 @@ def load_scene(base, scale, have=None):
         if c["name"]:
             items.append((c["name"], c["point"], 13, 6, math.inf))
             kinds.append(("regulator", REGULATOR))
-    for e in static["embassies"]:              # consulates: the same, each with its flag
-        items.append((e["name"], e["point"], 13, EMBASSY_ZOOM, math.inf))
-        kinds.append(("embassy", EMBASSY, e["code"]))
     for call, xy, rf in aprs:
         if 0 <= xy[0] < W and 0 <= xy[1] < H:
             items.append((call, xy, 13, 1, math.inf))
             kinds.append(("aprs", a.APRS_RF if rf else a.APRS_NET))
     items.append((static["far"][1], static["far"][0], 13, 1, math.inf))
     kinds.append(("far", terrain.SEEN))
-    pads = np.array([flag_box(scale)[2] if kind[0] == "embassy" else 0.0 for kind in kinds])
-    limits = [SPOTS if kind[0] == "embassy" else 15 for kind in kinds]
-    sizes, spots = place_labels(items, scale, pads, limits)
+    sizes, spots = place_labels(items, scale)
     part = static_part(static, scale)
     xy = np.array([xy for _, xy, *_ in items], dtype=float).reshape(-1, 2)
     part_spots = part["spots"].copy()
     for li, z in enumerate(LABEL_ZOOMS):
         mine, theirs = spots[:, li] >= 0, np.flatnonzero(part_spots[:, li] >= 0)
         if mine.any() and len(theirs):
-            under = overlapping(label_boxes(part["label_xy"][theirs], part["sizes"][theirs], part_spots[theirs, li], z),
-                                label_boxes(xy[mine], sizes[mine], spots[mine, li], z, pads[mine]))
+            under = overlapping(label_boxes(part["label_xy"][theirs], part["sizes"][theirs], part_spots[theirs, li], z,
+                                            part["pads"][theirs]),
+                                label_boxes(xy[mine], sizes[mine], spots[mine, li], z))
             part_spots[theirs[under], li] = -1
     return dynamic_arrays(dict(
         key=part["key"], part=None if have == part["key"] else part, part_spots=part_spots,
@@ -923,7 +924,8 @@ class Scene:
         key = shape, colour
         if key not in self.marks:
             s = self.scale
-            r = {"diamond": 5, "dot": 4, "ring": 5, "square": 4, "campus": 3, "city": 2, "town": 1}[shape] * s
+            r = {"diamond": 5, "dot": 4, "ring": 5, "square": 4, "campus": 3, "consulate": 4,
+                 "city": 2, "town": 1}[shape] * s
             n = math.ceil(2 * r) + 3
             pic = pygame.Surface((n, n), pygame.SRCALPHA)
             c = n / 2
@@ -935,7 +937,7 @@ class Scene:
             elif shape == "ring":
                 pygame.draw.circle(pic, (0, 0, 0), (c, c), round(r) + 1, max(1, round(2 * s)) + 2)
                 pygame.draw.circle(pic, colour, (c, c), round(r), max(1, round(2 * s)))
-            elif shape == "campus":
+            elif shape in ("campus", "consulate"):       # a consulate's a little larger
                 pygame.draw.circle(pic, colour, (c, c), max(2, round(r)))
             else:                                        # square, city, town
                 side = max(2, round(2 * r)) if shape != "town" else 2
@@ -1114,7 +1116,7 @@ class Scene:
                 self.stamp(surface, "square" if colour == REGULATOR else "campus", colour, xy)
         if view.zoom >= MILITARY_ZOOM:
             emb = view.points(d["embassy_xy"])
-            self.stamp(surface, "diamond", EMBASSY, emb[inside(emb)])
+            self.stamp(surface, "consulate", EMBASSY, emb[inside(emb)])
         st = view.points(d["station_xy"])
         shown_st = np.flatnonzero(inside(st))
         for i in shown_st[::-1]:                                     # senders on top
