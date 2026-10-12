@@ -63,7 +63,7 @@ systemctl --user daemon-reload
 systemctl --user enable --now hamclock-http.service
 ```
 
-访问 `http://站机地址:8075/`。滚轮缩放，拖动平移，点击地点查询可达性；触屏支持双指平移和捏合，方向键平移，`+` / `-` 缩放，`Esc` 关闭弹窗。网页直接显示合成后的无损画面，可在本机窗口关闭时独立运行。
+服务监听所有网卡的 IPv4 和 IPv6 地址，内网访问 `http://站机地址:8075/`。滚轮缩放，拖动平移，点击地点查询可达性；触屏支持双指平移和捏合，方向键平移，`+` / `-` 缩放，`Esc` 关闭弹窗。网页直接显示合成后的无损画面，可在本机窗口关闭时独立运行。
 
 关闭：`systemctl --user disable --now hamclock-http.service`。也可仅监听本机：`~/influ/.venv/bin/python ~/influ/hamclock/hcweb.py`，默认地址为 `127.0.0.1:8075`。
 

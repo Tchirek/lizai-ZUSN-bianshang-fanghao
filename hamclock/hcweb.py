@@ -15,6 +15,7 @@ import os
 from pathlib import Path
 import queue
 import secrets
+import socket
 import threading
 import time
 from urllib.parse import parse_qs, urlsplit
@@ -252,7 +253,13 @@ class Server(ThreadingHTTPServer):
 
     def __init__(self, address, renderer):
         self.renderer = renderer
+        self.address_family = socket.AF_INET6 if ':' in address[0] else socket.AF_INET
         super().__init__(address, Handler)
+
+    def server_bind(self):
+        if self.address_family == socket.AF_INET6:
+            self.socket.setsockopt(socket.IPPROTO_IPV6, socket.IPV6_V6ONLY, 0)
+        super().server_bind()
 
 
 class Handler(BaseHTTPRequestHandler):
@@ -354,7 +361,8 @@ def main():
     renderer = Renderer()
     with Server((args.host, args.port), renderer) as server:
         renderer.start()
-        log.info('HamClock HTTP: http://%s:%s', args.host, args.port)
+        host = f'[{args.host}]' if ':' in args.host else args.host
+        log.info('HamClock HTTP: http://%s:%s', host, args.port)
         try:
             server.serve_forever()
         except KeyboardInterrupt:

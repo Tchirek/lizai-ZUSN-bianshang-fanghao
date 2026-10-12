@@ -6,8 +6,10 @@ from concurrent.futures import ThreadPoolExecutor
 from contextlib import ExitStack
 import io
 import json
+import http.client
 from pathlib import Path
 import tempfile
+import socket
 import threading
 import time
 import unittest
@@ -218,6 +220,30 @@ class Tests(unittest.TestCase):
                 self.assertEqual(f.frame(first, int(headers['X-Frame-Revision']))[0], 204)
             self.assertEqual(f.request('/close', dict(session=second))[0], 204)
             self.assertTrue(f.open())
+
+    @unittest.skipUnless(socket.has_dualstack_ipv6(), 'dual-stack IPv6 unavailable')
+    def test_all_interface_listener_accepts_ipv4_and_ipv6(self):
+        with web.Server(('::', 0), self.fixture.renderer) as server:
+            thread = threading.Thread(target=server.serve_forever, daemon=True)
+            thread.start()
+            try:
+                for host in ('127.0.0.1', '::1'):
+                    connection = http.client.HTTPConnection(host, server.server_port, timeout=5)
+                    try:
+                        try:
+                            connection.request('GET', '/')
+                        except PermissionError:
+                            if host == '::1' and os.name == 'nt':
+                                self.skipTest('this Windows host blocks IPv6 loopback connections')
+                            raise
+                        response = connection.getresponse()
+                        self.assertEqual(response.status, 200)
+                        self.assertIn(b'<canvas', response.read())
+                    finally:
+                        connection.close()
+            finally:
+                server.shutdown()
+                thread.join()
 
 
 if __name__ == '__main__':
