@@ -70,6 +70,8 @@ PAGE_HTML = """<!doctype html><html><meta charset="utf-8"><title>AMap names</tit
 const say = t => { document.getElementById('state').textContent = t; };
 const log = t => { const l = document.getElementById('log'); l.textContent = (t + '\\n' + l.textContent).slice(0, 4000); };
 const wait = ms => new Promise(r => setTimeout(r, ms));
+// AMap sometimes never calls back: a request with no answer in time counts as failed
+const within = (ms, p) => Promise.race([p, wait(ms).then(() => ({ok: false, error: 'no answer'}))]);
 const ll = p => p && [p.lng, p.lat];
 const tree = d => ({name: d.name, adcode: d.adcode, level: d.level, center: ll(d.center),
                     districts: (d.districtList || []).map(tree)});
@@ -93,7 +95,7 @@ async function run() {
     const job = await (await fetch('/next')).json();
     if (!job.kind) { say('done: ' + job.done); return; }
     say(`${job.done} done, ${job.left} to go: ${job.q}`);
-    let r = job.kind === 'district' ? await district(job.q) : await geocode(job.q, job.city);
+    let r = await within(15000, job.kind === 'district' ? district(job.q) : geocode(job.q, job.city));
     if (!r.ok) {
       log(job.q + ': ' + r.error + ', try ' + (tries + 1));
       if (++tries < 3) { await wait(2000 * 3 ** tries); continue; }
