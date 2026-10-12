@@ -88,17 +88,20 @@ function geocode(q, city) {
   }));
 }
 async function run() {
-  let tries = 0;
+  let tries = 0, failing = 0;                         // on this job; jobs failed in a row
   while (true) {
     const job = await (await fetch('/next')).json();
     if (!job.kind) { say('done: ' + job.done); return; }
     say(`${job.done} done, ${job.left} to go: ${job.q}`);
-    const r = job.kind === 'district' ? await district(job.q) : await geocode(job.q, job.city);
+    let r = job.kind === 'district' ? await district(job.q) : await geocode(job.q, job.city);
     if (!r.ok) {
       log(job.q + ': ' + r.error + ', try ' + (tries + 1));
-      if (++tries > 6) { say('AMap: ' + r.error + ' (stopped; reload to go on)'); return; }
-      await wait(Math.min(120000, 2000 * 3 ** tries));
-      continue;
+      if (++tries < 3) { await wait(2000 * 3 ** tries); continue; }
+      // one name AMap cannot take is passed over; many in a row means the key is spent
+      if (++failing > 5 || job.kind === 'district') { say('AMap: ' + r.error + ' (stopped; reload to go on)'); return; }
+      r = {ok: true, found: [], error: r.error};
+    } else {
+      failing = 0;
     }
     tries = 0;
     await fetch('/result', {method: 'POST', headers: {'Content-Type': 'application/json'},
@@ -169,6 +172,8 @@ def names(trees):
                 for t in (COUNTY + COUNTY_EXTRA if full else COUNTY_EXTRA):
                     jobs.append((t.format(p=p, c=c), county["adcode"], county["center"], c))
                 for town in county["districts"]:
+                    if not re.search("(镇|乡|街道)$", town["name"]):
+                        continue                         # 管理办公室, farms ...: not named this way
                     if on_map(town) and not inside(town["center"], done):
                         for t in TOWNSHIP:
                             if ("{t}办事处" in t) != town["name"].endswith("街道"):
@@ -239,7 +244,7 @@ class Work:
                 os.replace(os.path.join(OUT, "districts.json.tmp"), os.path.join(OUT, "districts.json"))
                 return
             with open(os.path.join(OUT, "geo.jsonl"), "a") as f:
-                f.write(json.dumps(dict(job=job, found=r["found"]), ensure_ascii=False) + "\n")
+                f.write(json.dumps(dict(job=job, found=r["found"], error=r.get("error")), ensure_ascii=False) + "\n")
             self.answered.add((job["q"], job["city"]))
             if self.jobs and (self.jobs[0][0], self.jobs[0][1]) == (job["q"], job["city"]):
                 self.jobs.pop(0)
