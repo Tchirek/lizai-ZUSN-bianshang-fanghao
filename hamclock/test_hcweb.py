@@ -597,6 +597,20 @@ class MapTests(unittest.TestCase):
             self.assertTrue(all(len(run) != 1 for run in runs), row)
         self.assertEqual(json.loads(f.request('/map/dots?t=' + urllib.parse.quote('遂'))[2])['遂'][5], g.bits.hex())
 
+    def test_search_finds_names_as_written_and_as_said(self):
+        from map_search import search
+        rows = [dict(name=name, point=[660, 330]) for name in
+                ['遂宁市', 'Suining Anju Airport', '重庆市', '雨林', 'BG8TEST-1']]
+        names = lambda query: {r['name'] for r in search(rows, query)}
+        self.assertEqual(names('suining'), {'遂宁市', 'Suining Anju Airport'})
+        self.assertEqual(names('遂宁'), {'遂宁市', 'Suining Anju Airport'})
+        self.assertEqual(names('SuiNing Shi'), {'遂宁市'})
+        self.assertEqual(names('chongqing'), {'重庆市'})          # read in its word, not zhongqing
+        self.assertEqual(names('uining'), {'Suining Anju Airport'})   # as said only from a syllable on
+        self.assertEqual(names('anju'), {'Suining Anju Airport'})
+        self.assertEqual(names('yulin'), {'雨林'})
+        self.assertEqual(names('bg8'), {'BG8TEST-1'})
+
     def test_search_ranks_exact_then_prefix_and_bounds_results(self):
         from map_search import search, LIMIT
         rows = [dict(name=name, point=[660, 330], kind='地点') for name in

@@ -1,4 +1,13 @@
-"""Search the names already on the map, in base pixels, for both displays."""
+"""Search the names already on the map, in base pixels, for both displays.
+
+A name is found as written or as said: each is spelled out in pinyin (by pypinyin, which reads a
+character within its word, 重庆 as chongqing), so 遂宁 finds Suining and Suining finds 遂宁. What
+is asked is spelled the way the names that hold it are, so the displays never load pypinyin
+themselves; only the worker building the rows does.
+"""
+from collections import Counter, namedtuple
+from contextlib import nullcontext
+from functools import lru_cache
 import json
 from pathlib import Path
 import unicodedata
@@ -8,7 +17,7 @@ import dots
 import map_view as maps
 
 
-def entries(base, model=None):
+def entries(base, model=None, said=True):
     data = maps.static_scene(base)
     rows = [(name, point, maps.CITY if city else maps.TOWN)
             for name, point, city in zip(data['place_names'], data['place_xy'], data['place_city'])]
@@ -34,6 +43,8 @@ def entries(base, model=None):
                                position=f'{abs(lat):.4f}{"N" if lat >= 0 else "S"} {abs(lon):.4f}{"E" if lon >= 0 else "W"}'))
             if web_colour:
                 result[-1]['web_colour'] = web_colour[0]
+            if said:
+                result[-1]['said'] = spelled(name)
     return result
 
 
@@ -41,15 +52,97 @@ def normalize(text):
     return ''.join(unicodedata.normalize('NFKC', text).casefold().split())
 
 
+Spelling = namedtuple('Spelling', 'text sounds spell starts')
+
+
+@lru_cache(maxsize=None)
+def spelled(name):
+    """name as normalize() writes it, the sound of each of its characters (its pinyin, else the
+    character), and all the letters run together with where each syllable or word starts."""
+    plain = unicodedata.normalize('NFKC', name).casefold()
+    try:
+        from pypinyin import lazy_pinyin
+        sounds = lazy_pinyin(plain, errors=list)
+    except ImportError:                                 # names then match only as written
+        sounds = list(plain)
+    if len(sounds) != len(plain):
+        sounds = list(plain)
+    text, said, spell, starts, word = '', [], '', [], True
+    for ch, sound in zip(plain, sounds):
+        if not ch.isspace():
+            text += ch
+            said.append(sound)
+        if not ch.isalnum():
+            word = True
+            continue
+        if sound != ch or word:
+            starts.append(len(spell))
+        spell += sound
+        word = False
+    return Spelling(text, tuple(said), spell, frozenset(starts))
+
+
+def heard(said, spell):
+    """Whether spell is said in a name from one of its syllables or words on."""
+    at = said.spell.find(spell)
+    while at >= 0 and at not in said.starts:
+        at = said.spell.find(spell, at + 1)
+    return at >= 0
+
+
+class Index:
+    """The rows, and how the Chinese characters in their names are said, to spell what is asked."""
+
+    def __init__(self, rows):
+        self.rows = rows
+        heard_as = {}
+        for row in rows:
+            row.setdefault('said', spelled(row['name']))
+            for ch, sound in zip(row['said'].text, row['said'].sounds):
+                if sound != ch:
+                    heard_as.setdefault(ch, Counter())[sound] += 1
+        self.heard_as = {ch: sounds.most_common(1)[0][0] for ch, sounds in heard_as.items()}
+
+    def spell(self, text):
+        """text in letters: Chinese read as a name holding it reads it, else as names mostly do."""
+        sounds = None
+        if any(ch in self.heard_as for ch in text):
+            sounds = next((row['said'].sounds[at:at + len(text)] for row in self.rows
+                           if (at := row['said'].text.find(text)) >= 0), None)
+        sounds = sounds or [self.heard_as.get(ch, ch) for ch in text]
+        return ''.join(sound for ch, sound in zip(text, sounds) if ch.isalnum())
+
+
+_index = {}
+
+
+def index(base, model=None, lock=None):
+    """Index of entries(), kept while the map's files and the activity stay as they were; the
+    rows are gathered under lock, the new names spelled out after it."""
+    with lock or nullcontext():
+        path = Path(model or a.MODEL) / 'activity.json'
+        key = (id(base), maps.static_scene(base)['key'], path.stat().st_mtime_ns if path.exists() else 0)
+        if _index.get('key') == key:
+            return _index['index']
+        rows = entries(base, model, said=False)
+    built = Index(rows)
+    _index.update(key=key, index=built)
+    return built
+
+
 def search(rows, query):
-    query = normalize(query)
-    if not query:
+    """The rows whose names hold query as written or as said: the name itself first, then those
+    it begins, those holding it as written, and the nearer the station the sooner."""
+    rows = rows if isinstance(rows, Index) else Index(rows)
+    text = normalize(query)
+    if not text:
         return []
-    matches = [row for row in rows if query in normalize(row['name'])]
-    return sorted(matches, key=lambda r: (normalize(r['name']) != query,
-                  not normalize(r['name']).startswith(query),
-                  (r['point'][0] - a.W / 2) ** 2 + (r['point'][1] - a.H / 2) ** 2,
-                  r['name']))[:LIMIT]
+    spell = rows.spell(text)
+    found = [(row, text in row['said'].text) for row in rows.rows]
+    found = [(row, written) for row, written in found if written or spell and heard(row['said'], spell)]
+    return [row for row, _ in sorted(found, key=lambda f: (
+        f[0]['said'].text != text, not f[0]['said'].text.startswith(text), not f[1],
+        (f[0]['point'][0] - a.W / 2) ** 2 + (f[0]['point'][1] - a.H / 2) ** 2, f[0]['name']))][:LIMIT]
 
 
 LIMIT, PAGE = 200, 8                    # results kept, and shown a page at a time
@@ -64,7 +157,7 @@ class SearchPanel:
     def __init__(self, canvas):
         import pygame
         self.future = canvas.submit_scene(entries, canvas.camera.base)
-        self.rows, self.results = [], []
+        self.rows, self.results = Index([]), []
         self.query = self.composition = self.error = ''
         self.selected = 0
         self.hovered = None
@@ -77,7 +170,7 @@ class SearchPanel:
         if not self.future or not self.future.done():
             return False
         try:
-            self.rows = self.future.result()
+            self.rows = Index(self.future.result())
         except Exception:
             self.error = 'Search unavailable'
         self.future = None

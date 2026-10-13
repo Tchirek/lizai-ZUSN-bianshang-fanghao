@@ -484,14 +484,13 @@ class Handler(BaseHTTPRequestHandler):
             elif route.path == '/map/live':
                 self.json_reply(self.server.get_map().live())
             elif route.path == '/map/search':
-                from map_search import entries, search
+                from map_search import index, search
                 query = parse_qs(route.query).get('q', [''])[0]
                 if len(query) > 128:
                     raise ValueError('query too long')
                 data = self.server.get_map()
-                with data.lock:
-                    rows = search(entries(data.base, data.model), query) if query.strip() else []
-                self.json_reply([dict(row, point=data.coordinate(row['point']),
+                rows = search(index(data.base, data.model, data.lock), query) if query.strip() else []
+                self.json_reply([dict(name=row['name'], point=data.coordinate(row['point']), position=row['position'],
                                       colour=row.get('web_colour', row['colour'])) for row in rows])
             elif route.path == '/map/veil.png':
                 bbox, width, height, _ = self.night_query(parse_qs(route.query))
@@ -611,6 +610,13 @@ class Handler(BaseHTTPRequestHandler):
         pass
 
 
+def warm_search(server):
+    """Spell out the map's names before anyone searches: the first time takes seconds."""
+    from map_search import index
+    data = server.get_map()
+    index(data.base, data.model, data.lock)
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--host', default='127.0.0.1')
@@ -625,6 +631,7 @@ def main():
     renderer.weather = DXWeather('web')
     with Server((args.host, args.port), renderer) as server:
         renderer.start()
+        threading.Thread(target=warm_search, args=(server,), daemon=True).start()
         host = f'[{args.host}]' if ':' in args.host else args.host
         log.info('HamClock HTTP: http://%s:%s', host, args.port)
         try:
