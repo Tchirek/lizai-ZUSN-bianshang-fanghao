@@ -86,6 +86,12 @@ class SearchPanel:
         self.selected = 0
         self.hovered = None
 
+    def step(self, delta):
+        """Light the next or previous result after the one lit; the keys take over from the pointer."""
+        if self.results:
+            lit = self.hovered if self.hovered is not None else self.selected
+            self.selected, self.hovered = (lit + delta) % len(self.results), None
+
     def hover(self, at):
         row = int((at[1] - self.box.y) // self.row_height) - 1 if at and self.box and self.box.collidepoint(at) else -1
         hovered = row if 0 <= row < len(self.results) else None

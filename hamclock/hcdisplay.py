@@ -348,8 +348,8 @@ class Scene:
                 self.close_search()
             elif name == 'Enter':
                 self.choose_search()
-            elif name in ('ArrowUp', 'ArrowDown') and self.search.results:
-                self.search.selected = (self.search.selected + (1 if name == 'ArrowDown' else -1)) % len(self.search.results)
+            elif name in ('ArrowUp', 'ArrowDown', 'Tab'):
+                self.search.step(-1 if name == 'ArrowUp' or name == 'Tab' and shift else 1)
             elif name == 'Backspace':
                 if not self.search.query:
                     if not repeat:                  # held down to empty it: the box stays
@@ -358,7 +358,7 @@ class Scene:
                     self.search.query = '' if ctrl else self.search.query[:-1]
                     self.search.filter()
             self.map_dirty = True
-        elif name.lower() == 's' and not ctrl and self.canvas:
+        elif name.lower() in ('s', '/') and not ctrl and self.canvas:
             from map_search import SearchPanel
             self.search = SearchPanel(self.canvas)
             pygame.key.set_repeat(400, 40)          # Backspace held deletes on and on
@@ -537,7 +537,8 @@ def main():
                     repeat = ev.key == pygame.K_BACKSPACE and scene.search.backspace_down
                     if ev.key == pygame.K_BACKSPACE:
                         scene.search.backspace_down = True
-                    scene.key(key_name(ev) or '', bool(ev.mod & pygame.KMOD_CTRL), repeat=repeat)
+                    scene.key(key_name(ev) or '', bool(ev.mod & pygame.KMOD_CTRL), bool(ev.mod & pygame.KMOD_SHIFT),
+                              repeat=repeat)
                 elif ev.type == pygame.KEYUP and ev.key == pygame.K_BACKSPACE:
                     scene.search.backspace_down = False
                 elif ev.type in (pygame.MOUSEMOTION, pygame.WINDOWLEAVE):

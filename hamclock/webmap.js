@@ -338,6 +338,8 @@ function highlightSearch(){
  drawSearch();
 }
 function selectSearch(index){searchIndex=index;highlightSearch();}
+// the keys go on from the row lit, the pointer's or their own, and take over from the pointer
+function stepSearch(delta){if(searchRows.length){const from=searchHover??searchIndex;searchHover=null;selectSearch((from+delta+searchRows.length)%searchRows.length);}}
 function chooseSearch(index){
  const row=searchRows[index];if(!row)return;
  closeSearch();view.setResolution(Math.min(view.getResolution(),initialResolution/8));view.setCenter(row.point);inspect(row.point);mapElement.focus({preventScroll:true});
@@ -371,14 +373,14 @@ searchElement.addEventListener('keydown',e=>{
  if(e.key==='Escape'){e.preventDefault();closeSearch();}
  // Backspace held empties the field and stops there; a fresh press on an empty field closes it
  else if(e.target===searchInput&&e.key==='Backspace'&&!searchInput.value){e.preventDefault();if(!e.repeat)closeSearch();}
- else if(e.target===searchInput&&['ArrowUp','ArrowDown','Enter'].includes(e.key)){
-  e.preventDefault();if(e.key==='Enter')chooseSearch(searchHover??searchIndex);else if(searchRows.length)selectSearch((searchIndex+(e.key==='ArrowDown'?1:-1)+searchRows.length)%searchRows.length);
+ else if(e.target===searchInput&&['ArrowUp','ArrowDown','Tab','Enter'].includes(e.key)){
+  e.preventDefault();if(e.key==='Enter')chooseSearch(searchHover??searchIndex);else stepSearch(e.key==='ArrowUp'||e.key==='Tab'&&e.shiftKey?-1:1);
  }
 });
 searchElement.addEventListener('keyup',e=>e.stopPropagation());
 document.addEventListener('keydown',e=>{
  if(e.defaultPrevented||e.isComposing||e.ctrlKey||e.altKey||e.metaKey||e.target.closest('input,textarea,select,[contenteditable]'))return;
- if(e.key.toLowerCase()==='s'&&view){e.preventDefault();if(!e.repeat)showSearch();}
+ if((e.key.toLowerCase()==='s'||e.key==='/')&&view){e.preventDefault();if(!e.repeat)showSearch();}
 },true);
 stage.addEventListener('keydown',e=>{
  if(e.defaultPrevented||e.isComposing||!searchElement.hidden||e.target.closest('input,textarea,select,[contenteditable]')||e.ctrlKey||e.altKey||e.metaKey)return;
@@ -393,7 +395,7 @@ stage.addEventListener('keydown',e=>{
  if(name==='Enter'&&view&&mapElement.contains(document.activeElement)){e.preventDefault();inspect(view.getCenter());return;}
  if(namedKeys.has(name)||name.length===1&&name.charCodeAt(0)>=33&&name.charCodeAt(0)<=126){e.preventDefault();enqueue({type:'key',key:name,down:true,ctrl:e.ctrlKey,shift:e.shiftKey});}
 });
-stage.addEventListener('keyup',e=>{shiftDown=e.shiftKey;const name=keyName(e);keys.delete(name);if(zoomIn.has(name)||zoomOut.has(name))for(const k of [...zoomIn,...zoomOut])keys.delete(k);if(!searchElement.hidden||name.toLowerCase()==='s'||e.target.closest('input,textarea,select,[contenteditable]'))return;if(mapKeys.has(name))e.preventDefault();else if(namedKeys.has(name)||name.length===1&&name.charCodeAt(0)>=33&&name.charCodeAt(0)<=126)enqueue({type:'key',key:name,down:false});});
+stage.addEventListener('keyup',e=>{shiftDown=e.shiftKey;const name=keyName(e);keys.delete(name);if(zoomIn.has(name)||zoomOut.has(name))for(const k of [...zoomIn,...zoomOut])keys.delete(k);if(!searchElement.hidden||name.toLowerCase()==='s'||name==='/'||e.target.closest('input,textarea,select,[contenteditable]'))return;if(mapKeys.has(name))e.preventDefault();else if(namedKeys.has(name)||name.length===1&&name.charCodeAt(0)>=33&&name.charCodeAt(0)<=126)enqueue({type:'key',key:name,down:false});});
 function padState(){
  let x=0,y=0,z=0,enter=false,escape=false;
  if(navigator.getGamepads)for(const pad of navigator.getGamepads()){
