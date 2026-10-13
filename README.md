@@ -17,7 +17,9 @@
 
 这是一个业余电台站的软件，跑在一台 Debian 笔记本（ThinkPad X230）上，项目代号 influ。
 
-> **In English.** Software for an amateur radio station on an old ThinkPad X230 running Debian. Its one RTL-SDR stays on 1090 MHz feeding ADS-B (FlightAware, Flightradar24) without dropping the feed or MLAT; a scheduler with a model of aircraft arrivals takes it to the 2 m band for seconds at a time to hear FT8 and watch the band, and a Quansheng UV-K5 sends FT8. A patched HamClock is the station clock: a native ADS-B scope pane, no world map of its own, and in its place a zoomable terrain map of the radio's line-of-sight coverage with APRS, FT8 and WSPR activity, search (pinyin aware), on the built-in screen and in a web page. Packaged for Debian 13: see the Releases page. `demo/` is a showcase of the same screen for Cloudflare Pages, run from one of a few summits with open data only.
+**试用：<https://influ-demo.pages.dev>**（展示版，从几处山顶之一出发，见下文“展示网页”。）
+
+> **In English.** Software for an amateur radio station on an old ThinkPad X230 running Debian. Its one RTL-SDR stays on 1090 MHz feeding ADS-B (FlightAware, Flightradar24) without dropping the feed or MLAT; a scheduler with a model of aircraft arrivals takes it to the 2 m band for seconds at a time to hear FT8 and watch the band, and a Quansheng UV-K5 sends FT8. A patched HamClock is the station clock: a native ADS-B scope pane, no world map of its own, and in its place a zoomable terrain map of the radio's line-of-sight coverage with APRS, FT8 and WSPR activity, search (pinyin aware), on the built-in screen and in a web page. Packaged for Debian 13: see the Releases page. `demo/` is a showcase of the same screen for Cloudflare Pages, run from one of a few summits with open data only: try it at <https://influ-demo.pages.dev>.
 
 - **接收**：站里只有一个 RTL-SDR V4，平时守在 1090 MHz，给 FlightAware 和 Flightradar24 喂 ADS-B。调度器在不影响喂数的空当，把它切到 2 米波段听十几秒，收 FT8、看频段活动。收到的 FT8 每五分钟上报 PSK Reporter（`tools/pskreport.py`，与 WSJT-X 同一格式），本站因此列在它的监听站里；什么也没收到时也隔半小时报一次站名与 6 位网格。
 - **发射**：一台 UV-K5，用 CEC 固件经写频线发 FT8。
@@ -96,7 +98,7 @@ OpenLayers 10.11.0 的 JS、CSS 和许可证随仓库提供；网页不依赖外
 
 后端只有两个 Pages Functions：`/api/adsb`（开放 ADS-B 接口不发 CORS 头，代取并缓存 5 秒）和 `/api/aprs`（APRS-IS 是 TCP 流，后端以只读身份收听几秒、在边缘缓存里攒一小时）。其余都由浏览器直取公开来源。
 
-部署：Cloudflare 控制台 Workers & Pages → 创建 Pages 项目并连接本 GitHub 仓库，根目录填 `demo`，构建命令 `sh build.sh`，输出目录 `dist`；`demo/functions/` 自动成为后端。本地预览：`cd demo && sh build.sh && npx wrangler pages dev dist`。后端的单元测试：`cd demo && node --test`。山顶数据重建：`python demo/tools/build_sites.py reach map`，然后在装有 pypinyin、`xfonts-base` 和 HamClock 源码的机器上 `build_sites.py spell glyphs --hamclock-src HamClock源码目录`。
+试用站 <https://influ-demo.pages.dev> 由 `cd demo && sh build.sh && npx wrangler pages deploy dist --project-name influ-demo` 直接上传。也可在 Cloudflare 控制台 Workers & Pages 创建 Pages 项目并连接本 GitHub 仓库，根目录填 `demo`，构建命令 `sh build.sh`，输出目录 `dist`；`demo/functions/` 自动成为后端。开放 ADS-B 接口对 Cloudflare 的共享出口限流很紧，雷达屏的航迹可能时有时无。本地预览：`cd demo && sh build.sh && npx wrangler pages dev dist`。后端的单元测试：`cd demo && node --test`。山顶数据重建：`python demo/tools/build_sites.py reach map`，然后在装有 pypinyin、`xfonts-base` 和 HamClock 源码的机器上 `build_sites.py spell glyphs --hamclock-src HamClock源码目录`。
 
 ## 1090 MHz 接收设置
 
