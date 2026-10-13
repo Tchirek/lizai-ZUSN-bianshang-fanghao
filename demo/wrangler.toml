@@ -1,0 +1,5 @@
+# Cloudflare Pages: the page is static (dist/, made by build.sh), the two functions/ are its
+# whole back end
+name = "influ-demo"
+pages_build_output_dir = "dist"
+compatibility_date = "2025-09-01"
