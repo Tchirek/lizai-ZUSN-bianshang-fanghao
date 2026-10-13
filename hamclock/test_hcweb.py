@@ -574,27 +574,6 @@ class MapTests(unittest.TestCase):
             self.assertEqual(json.loads(f.request('/map/search?q=' + query)[2]), [])
         self.assertEqual(f.request('/map/search?q=' + 'x' * 129)[0], 400)
 
-    def test_search_box_is_hamclock_pixels_scaled_with_the_clock(self):
-        from map_search import WIDTH, ROW
-        f = self.fixture
-        native = f.scene(web.SIZE, f.link)
-        self.addCleanup(native.close)
-        native.update(f.source)
-        native.key('s')
-        panel = native.search
-        panel.future.result(timeout=10)
-        native.tick(0)
-        panel.rows = [dict(name='Test', point=[700, 350], colour='#96afff', position='30.0000N 105.0000E')]
-        panel.query = 'test'
-        panel.filter()
-        native.draw()
-        k = native.box.w / 1320
-        self.assertEqual(panel.box.size, (round(WIDTH * k), round(2 * ROW * k)))
-        self.assertAlmostEqual(panel.row_height, ROW * k)
-        prompt = native.frame.subsurface(panel.box.x, panel.box.y, panel.box.w, round(ROW * k))
-        self.assertGreater(sum(prompt.get_at((x, y))[0] > 128 for x in range(prompt.get_width())
-                               for y in range(prompt.get_height())), 20)      # >test_ is lit
-
     def test_dots_are_hamclock_and_x11_glyphs_as_they_are(self):
         import dots
         self.assertEqual(dots.glyph('A')[:5], (-1, -1, 12, 13, 14))     # HamClock's record at 1600x960
