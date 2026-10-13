@@ -278,6 +278,7 @@ function showHand(){
  const f=new ol.Feature(new ol.geom.Point(at));f.set('affiliation',held.affiliation);f.set('function',held.function);handSource.addFeature(f);
 }
 function showSymbols(data){
+ if(data.rev<symbolRev)return;                       // an answer overtaken by a later one
  symbolRev=data.rev;
  symbolSource.clear();
  symbolSource.addFeatures(data.symbols.map(s=>{const f=new ol.Feature(new ol.geom.Point(s.point));f.setId(s.id);for(const k of ['affiliation','function','placed'])f.set(k,s[k]);return f;}));
@@ -300,7 +301,9 @@ async function changeSymbol(body,undo){
 function symbolAt(pixel){return map.forEachFeatureAtPixel(pixel,f=>f,{layerFilter:l=>l.getSource()===symbolSource,hitTolerance:2})||null;}
 function heldSymbol(f){return {id:f.getId(),affiliation:f.get('affiliation'),function:f.get('function'),placed:f.get('placed'),point:f.getGeometry().getCoordinates()};}
 function dropSymbol(at){
- const held=carried;carried=null;showHand();symbolSource.changed();
+ const held=carried;carried=null;
+ if(held&&at)symbolSource.getFeatureById(held.id)?.getGeometry().setCoordinates(at);   // there at once, not back first
+ showHand();symbolSource.changed();
  if(held&&at)changeSymbol({op:'move',id:held.id,x:at[0],y:at[1]},true);
 }
 function undoSymbol(){
