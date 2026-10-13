@@ -262,10 +262,11 @@ async function inspect(point){
 
 function keyName(e){return e.key===' '?'Space':e.key;}
 stage.addEventListener('keydown',e=>{
+ shiftDown=e.shiftKey;
  const name=keyName(e);if(e.target.closest('button')&&name!=='Escape')return;
  if(mapKeys.has(name)&&view){
   e.preventDefault();
-  if(!e.repeat){keyDown.set(name,performance.now());if(zoomIn.has(name)||zoomOut.has(name))zoomStep(zoomIn.has(name)?1:-1);}
+  if(!e.repeat&&!e.shiftKey&&(zoomIn.has(name)||zoomOut.has(name)))zoomStep(zoomIn.has(name)?1:-1);
   keys.add(name);return;
  }
  if(name==='Escape'&&profilePoint){e.preventDefault();closeProfile();return;}
@@ -273,7 +274,7 @@ stage.addEventListener('keydown',e=>{
  if(namedKeys.has(name)||name.length===1&&name.charCodeAt(0)>=33&&name.charCodeAt(0)<=126){e.preventDefault();enqueue({type:'key',key:name,down:true,ctrl:e.ctrlKey,shift:e.shiftKey});}
 });
 // + is Shift and =: let go of Shift first and the key comes up as =, so any zoom key up ends them all
-stage.addEventListener('keyup',e=>{const name=keyName(e);if(mapKeys.has(name)){e.preventDefault();if(zoomIn.has(name)||zoomOut.has(name))for(const k of [...zoomIn,...zoomOut])keys.delete(k);else keys.delete(name);}else if(namedKeys.has(name)||name.length===1&&name.charCodeAt(0)>=33&&name.charCodeAt(0)<=126)enqueue({type:'key',key:name,down:false});});
+stage.addEventListener('keyup',e=>{shiftDown=e.shiftKey;const name=keyName(e);if(mapKeys.has(name)){e.preventDefault();if(zoomIn.has(name)||zoomOut.has(name))for(const k of [...zoomIn,...zoomOut])keys.delete(k);else keys.delete(name);}else if(namedKeys.has(name)||name.length===1&&name.charCodeAt(0)>=33&&name.charCodeAt(0)<=126)enqueue({type:'key',key:name,down:false});});
 function padState(){
  let x=0,y=0,z=0,enter=false,escape=false;
  if(navigator.getGamepads)for(const pad of navigator.getGamepads()){
@@ -283,16 +284,16 @@ function padState(){
  return {x:Math.max(-1,Math.min(1,x)),y:Math.max(-1,Math.min(1,y)),z:Math.max(-1,Math.min(1,z)),enter,escape};
 }
 let lastTick=performance.now();
-// a press of + or - zooms a step at once (x1.44, as two wheel notches on the native map); held, it
-// goes on zooming after KEY_REPEAT ms
-const KEY_REPEAT=350, keyDown=new Map();
+// a press of + or - zooms a step (x1.44, as two wheel notches on the native map); only held with
+// Shift do they zoom on and on (with Shift, = and - come as + and _)
+let shiftDown=false;
 function zoomStep(step){view.animate({resolution:view.getResolution()*Math.exp(-step*2*.18),duration:150});}
-function heldLong(name){return keys.has(name)&&performance.now()-(keyDown.get(name)||0)>KEY_REPEAT;}
+function zooming(name){return shiftDown&&keys.has(name);}
 function controls(now){
  const dt=Math.min(.05,(now-lastTick)/1000);lastTick=now;
  if(view&&!document.hidden&&document.hasFocus()){
   let pad={x:0,y:0,z:0,enter:false,escape:false};try{pad=padState();}catch(e){}
-  const x=(keys.has('ArrowRight')?1:0)-(keys.has('ArrowLeft')?1:0)+pad.x,y=(keys.has('ArrowDown')?1:0)-(keys.has('ArrowUp')?1:0)+pad.y,z=([...zoomIn].some(heldLong)?1:0)-([...zoomOut].some(heldLong)?1:0)+pad.z;
+  const x=(keys.has('ArrowRight')?1:0)-(keys.has('ArrowLeft')?1:0)+pad.x,y=(keys.has('ArrowDown')?1:0)-(keys.has('ArrowUp')?1:0)+pad.y,z=([...zoomIn].some(zooming)?1:0)-([...zoomOut].some(zooming)?1:0)+pad.z;
   const moving=!!(x||y||z);if(moving&&!heldInteraction){view.beginInteraction();heldInteraction=true;}
   if(x||y){const resolution=view.getResolution();view.adjustCenter([x*700*dt*resolution,-y*700*dt*resolution]);}
   if(z)view.adjustResolution(Math.exp(-z*3*.18*dt),view.getCenter());
@@ -301,7 +302,7 @@ function controls(now){
  }
  requestAnimationFrame(controls);
 }
-function release(){keys.clear();if(heldInteraction&&view){heldInteraction=false;view.endInteraction(0);}enqueue({type:'release'});}
+function release(){keys.clear();shiftDown=false;if(heldInteraction&&view){heldInteraction=false;view.endInteraction(0);}enqueue({type:'release'});}
 window.addEventListener('blur',release);
 document.addEventListener('visibilitychange',()=>{if(document.hidden)release();else scheduleFeatures();});
 window.addEventListener('pagehide',()=>{active=false;release();if(featureRequest)featureRequest.abort();if(profileRequest)profileRequest.abort();if(session)navigator.sendBeacon('/close',new Blob([JSON.stringify({session})],{type:'application/json'}));});

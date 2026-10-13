@@ -16,7 +16,7 @@ Over HamClock's world map goes the UV-K5 range map with the live amateur activit
 if it cannot start, the pictures build_rangemap.py and activity.py leave in ~/influ/model stand
 in). A touchpad pinch or the wheel zooms it, a two-finger scroll or a drag pans it (touchpad
 gestures come from Wayland, gestures.py), and so do the arrow keys, + and - (or PgUp, PgDn: a press
-zooms a step, held they go on), and a gamepad (pygame.joystick: left stick or D-pad pans, shoulders
+zooms a step; held with Shift they zoom on and on), and a gamepad (pygame.joystick: left stick or D-pad pans, shoulders
 zoom, A is Enter, B Escape). Tapping a place opens its popup (map_panel.py), and HamClock's weather
 pane shows that place's weather until it closes (dxwx.py). Over the foot of the left column goes
 this week's FT8 tally. Taps, drags and pointer moves over them stay here instead of reaching what
@@ -55,9 +55,8 @@ MAP_KEYS = {pygame.K_LEFT: (1, 0), pygame.K_RIGHT: (-1, 0), pygame.K_UP: (0, 1),
 ZOOM_KEYS = {pygame.K_EQUALS: 1, pygame.K_PLUS: 1, pygame.K_KP_PLUS: 1, pygame.K_PAGEUP: 1,
              pygame.K_MINUS: -1, pygame.K_KP_MINUS: -1, pygame.K_PAGEDOWN: -1}
 KEY_PAN = 700                   # view px a second the arrow keys move the map
-KEY_ZOOM = 3                    # wheel notches a second + and - zoom while held
-KEY_STEP = 2                    # wheel notches a press of + or - zooms at once (x1.44)
-KEY_REPEAT = 0.35               # s a zoom key is held before it zooms on and on
+KEY_ZOOM = 3                    # wheel notches a second + and - zoom while held with Shift
+KEY_STEP = 2                    # wheel notches a press of + or - zooms at once (x1.44), Shift up
 PAD_DEAD = 0.2                  # stick travel ignored around the centre
 PAD_ZOOM = {5: 1, 4: -1}        # gamepad buttons held to zoom: right / left shoulder
 PAD_KEYS = {0: "Enter", 1: "Escape"}   # gamepad buttons sent as keys: A, B
@@ -444,7 +443,6 @@ def main():
 
     clock, dt = pygame.time.Clock(), 0.0
     pressed = drag = None                # app px of the press; (last window px, dragging?)
-    zoom_down = {}                       # when each zoom key went down
     last_move, last_input = 0.0, time.time()
     while True:
         for ev in pygame.event.get():
@@ -481,9 +479,8 @@ def main():
             elif ev.type == pygame.WINDOWLEAVE:
                 link.send("set_mouse?x=-1&y=-1")
             elif ev.type == pygame.KEYDOWN and canvas and (ev.key in MAP_KEYS or ev.key in ZOOM_KEYS):
-                if ev.key in ZOOM_KEYS:                 # a press zooms a step; held keys go on, below
+                if ev.key in ZOOM_KEYS and not ev.mod & pygame.KMOD_SHIFT:   # a step; with Shift, below
                     canvas.scroll(ZOOM_KEYS[ev.key] * KEY_STEP, (MAP_W / 2, MAP_H / 2))
-                    zoom_down[ev.key] = time.time()
             elif ev.type == pygame.KEYDOWN and (name := key_name(ev)):
                 mods = pygame.key.get_mods()
                 scene.key(name, bool(mods & pygame.KMOD_CTRL), bool(mods & pygame.KMOD_SHIFT))
@@ -516,8 +513,8 @@ def main():
             held = pygame.key.get_pressed()
             vx = sum(v[0] for key, v in MAP_KEYS.items() if held[key])
             vy = sum(v[1] for key, v in MAP_KEYS.items() if held[key])
-            zoom = sum(v for key, v in ZOOM_KEYS.items()
-                       if held[key] and time.time() - zoom_down.get(key, 0) > KEY_REPEAT)
+            shift = pygame.key.get_mods() & pygame.KMOD_SHIFT        # zoom keys held with Shift: on and on
+            zoom = sum(v for key, v in ZOOM_KEYS.items() if held[key] and shift)
             for pad in pads.values():
                 px, py, pz = pad_motion(pad)
                 vx, vy, zoom = vx + px, vy + py, zoom + pz
