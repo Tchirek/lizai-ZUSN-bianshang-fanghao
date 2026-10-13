@@ -291,10 +291,12 @@ async function changeSymbol(body,undo){
   if(undo)symbolDone.push({op:body.op,id:body.id,before:data.before});
  }catch(e){}
 }
-setInterval(async()=>{
- if(document.hidden||!map)return;
- try{const r=await fetch('/map/symbols?rev='+symbolRev);if(r.status===200)showSymbols(await r.json());}catch(e){}
-},2000);
+(async()=>{                                          // the server answers as soon as the board changes
+ while(true){
+  if(document.hidden||!map){await sleep(500);continue;}
+  try{const r=await fetch('/map/symbols?rev='+symbolRev);if(r.status===200)showSymbols(await r.json());}catch(e){await sleep(2000);}
+ }
+})();
 function symbolAt(pixel){return map.forEachFeatureAtPixel(pixel,f=>f,{layerFilter:l=>l.getSource()===symbolSource,hitTolerance:2})||null;}
 function heldSymbol(f){return {id:f.getId(),affiliation:f.get('affiliation'),function:f.get('function'),placed:f.get('placed'),point:f.getGeometry().getCoordinates()};}
 function dropSymbol(at){

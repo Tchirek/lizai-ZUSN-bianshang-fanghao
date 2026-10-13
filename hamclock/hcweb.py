@@ -499,8 +499,13 @@ class Handler(BaseHTTPRequestHandler):
                 self.reply(200, json.dumps(milsym.shapes(), separators=(',', ':')).encode(), 'application/json',
                            cache='public, max-age=86400')
             elif route.path == '/map/symbols':
-                board = self.server.get_board()
-                if parse_qs(route.query).get('rev', [''])[0] == str(board.rev):
+                # asked with the rev the page has, the answer waits (up to 20 s) for the next change
+                rev, board = parse_qs(route.query).get('rev', [''])[0], self.server.get_board()
+                until = time.monotonic() + 20
+                while rev == str(board.rev) and time.monotonic() < until:
+                    time.sleep(0.1)
+                    board = self.server.get_board()
+                if rev == str(board.rev):
                     self.reply(204)
                 else:
                     self.json_reply(self.symbols_reply(board))

@@ -51,7 +51,7 @@ OVERLAYS = [("rangemap.png", MAP_BOX), ("night.png", MAP_BOX), ("activity.png", 
 POLL = 0.1                      # s between update requests, as live.html (UPDATE_MS)
 JITTER = 5                      # app px a press may move and still count as a tap
 CURSOR_IDLE = 3                 # s before the pointer is hidden
-TOUCH_GAIN = 0.7                 # map px a pointer px moves the map in touch mode, as a finger on a phone
+TOUCH_GAIN = 0.7                # map px a pointer px moves the map in touch mode, as a finger on a phone
 FPS = 60
 MAP_KEYS = {pygame.K_LEFT: (1, 0), pygame.K_RIGHT: (-1, 0), pygame.K_UP: (0, 1), pygame.K_DOWN: (0, -1)}
 ZOOM_KEYS = {pygame.K_EQUALS: 1, pygame.K_PLUS: 1, pygame.K_KP_PLUS: 1, pygame.K_PAGEUP: 1,
@@ -486,7 +486,7 @@ class Scene:
         if now - self.last_check > 5:
             self.last_check = now
             self.clock_dirty = any([o.refresh() for o in self.overlays]) or self.clock_dirty
-        if self.desk and now - self.last_board > 1:             # symbols the web page put down
+        if self.desk and now - self.last_board > 0.2:           # symbols the web page put down
             self.last_board = now
             self.map_dirty = self.desk.board.poll() or self.map_dirty
         if self.canvas:
