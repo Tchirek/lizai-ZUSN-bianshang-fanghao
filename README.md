@@ -17,6 +17,8 @@
 
 这是一个业余电台站的软件，跑在一台 Debian 笔记本（ThinkPad X230）上，项目代号 influ。
 
+> **In English.** Software for an amateur radio station on an old ThinkPad X230 running Debian. Its one RTL-SDR stays on 1090 MHz feeding ADS-B (FlightAware, Flightradar24) without dropping the feed or MLAT; a scheduler with a model of aircraft arrivals takes it to the 2 m band for seconds at a time to hear FT8 and watch the band, and a Quansheng UV-K5 sends FT8. A patched HamClock is the station clock: a native ADS-B scope pane, no world map of its own, and in its place a zoomable terrain map of the radio's line-of-sight coverage with APRS, FT8 and WSPR activity, search (pinyin aware), on the built-in screen and in a web page. Packaged for Debian 13: see the Releases page.
+
 - **接收**：站里只有一个 RTL-SDR V4，平时守在 1090 MHz，给 FlightAware 和 Flightradar24 喂 ADS-B。调度器在不影响喂数的空当，把它切到 2 米波段听十几秒，收 FT8、看频段活动。
 - **发射**：一台 UV-K5，用 CEC 固件经写频线发 FT8。
 - **显示**：机器自带屏幕上跑一个本地化的 HamClock。ADS-B 雷达屏是补丁给 HamClock 加的原生窗格，和其他窗格一样在菜单里选，点一下可在 10–100 英里间换量程；HamClock 经补丁不再有世界地图：不生成、不下载、不绘制，标记、路径、比例尺、新闻横幅和借地图显示的消息一概不画，地图框只留一片黑；覆盖图由显示程序画在那里，本周 FT8 统计叠在左栏下方。在覆盖图上点任意一处，弹出该处的可达性，HamClock 的天气窗格同时换成那里的天气（DX 设在该处），关掉弹窗才换回本站天气。
@@ -49,6 +51,20 @@
 - `influ-admin` 由站主以 root 安装到 `/usr/local/sbin`，用法见它的文件头。
 
 站点的位置、呼号和网格只放在 `~/influ/station.json`（模板是 `deploy/station.example.json`），不进仓库。发往公共接口（adsb.lol、adsb.fi、Open-Meteo）的位置只取到 0.01°。密钥和登录口令放在 `~/influ/private/`，同样不进仓库。
+
+### Debian 软件包
+
+GitHub 的 Releases 页有给 Debian 13（trixie，amd64）打好的 `influ_<版本>_amd64.deb`：代码装在 `/usr/share/influ`，打好补丁的 HamClock 引擎在 `/usr/lib/influ/hamclock-web`，用户服务单元在 `/usr/lib/systemd/user`，`influ-admin` 在 `/usr/sbin`；Python 依赖全用 Debian 自带的包，不建 venv。站点自己的东西仍放 `~/influ`，软件包不碰。由本仓库打包：`tools/build_deb.sh 版本号 hamclock可执行文件 [输出目录]`。
+
+```sh
+sudo apt install ./influ_0.1.0_amd64.deb
+mkdir -p ~/influ && cp /usr/share/influ/deploy/station.example.json ~/influ/station.json   # 填上本站的呼号、网格和经纬度
+python3 /usr/share/influ/hamclock/build_rangemap.py                                       # 视距覆盖图，要联网取地形，较久
+python3 /usr/share/influ/hamclock/build_tiles.py dem admin airports campuses military render
+systemctl --user enable --now hamclock.service hamclock-display.service
+```
+
+收发与调度那几项（`influ-scheduler`、`influ-collector` 等）依赖 RTL-SDR、dump1090 和电台硬件，照上文与各说明文档按需启用。
 
 ### 可选的 HamClock 网页
 
