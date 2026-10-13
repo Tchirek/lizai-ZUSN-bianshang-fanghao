@@ -17,7 +17,7 @@
 
 这是一个业余电台站的软件，跑在一台 Debian 笔记本（ThinkPad X230）上，项目代号 influ。
 
-> **In English.** Software for an amateur radio station on an old ThinkPad X230 running Debian. Its one RTL-SDR stays on 1090 MHz feeding ADS-B (FlightAware, Flightradar24) without dropping the feed or MLAT; a scheduler with a model of aircraft arrivals takes it to the 2 m band for seconds at a time to hear FT8 and watch the band, and a Quansheng UV-K5 sends FT8. A patched HamClock is the station clock: a native ADS-B scope pane, no world map of its own, and in its place a zoomable terrain map of the radio's line-of-sight coverage with APRS, FT8 and WSPR activity, search (pinyin aware), on the built-in screen and in a web page. Packaged for Debian 13: see the Releases page.
+> **In English.** Software for an amateur radio station on an old ThinkPad X230 running Debian. Its one RTL-SDR stays on 1090 MHz feeding ADS-B (FlightAware, Flightradar24) without dropping the feed or MLAT; a scheduler with a model of aircraft arrivals takes it to the 2 m band for seconds at a time to hear FT8 and watch the band, and a Quansheng UV-K5 sends FT8. A patched HamClock is the station clock: a native ADS-B scope pane, no world map of its own, and in its place a zoomable terrain map of the radio's line-of-sight coverage with APRS, FT8 and WSPR activity, search (pinyin aware), on the built-in screen and in a web page. Packaged for Debian 13: see the Releases page. `demo/` is a showcase of the same screen for Cloudflare Pages, run from one of a few summits with open data only.
 
 - **接收**：站里只有一个 RTL-SDR V4，平时守在 1090 MHz，给 FlightAware 和 Flightradar24 喂 ADS-B。调度器在不影响喂数的空当，把它切到 2 米波段听十几秒，收 FT8、看频段活动。收到的 FT8 每五分钟上报 PSK Reporter（`tools/pskreport.py`，与 WSJT-X 同一格式），本站因此列在它的监听站里；什么也没收到时也隔半小时报一次站名与 6 位网格。
 - **发射**：一台 UV-K5，用 CEC 固件经写频线发 FT8。
@@ -36,6 +36,7 @@
 | `hamclock/` | HamClock 原生全屏窗口：可缩放的 UV-K5 视距覆盖图、业余活动图层、本周 FT8 统计 |
 | `tools/` | FT8 网页、PSK Reporter 上报、UV-K5 读写与刷机、HamClock 补丁、ADS-B 雷达屏、DX 集群过滤 |
 | `deploy/` | systemd 用户服务与定时器，以及唯一需要 root 的 `influ-admin` |
+| `demo/` | 纯展示的网页：不连站上，挂在 Cloudflare Pages，从几处山顶之一出发，数据全取公开来源 |
 
 说明文档：
 
@@ -89,6 +90,14 @@ OpenLayers 10.11.0 的 JS、CSS 和许可证随仓库提供；网页不依赖外
 
 关闭：`systemctl --user disable --now hamclock-http.service`。也可仅监听本机：`~/influ/.venv/bin/python ~/influ/hamclock/hcweb.py`，默认地址为 `127.0.0.1:8075`。
 
+### 展示网页（Cloudflare Pages）
+
+`demo/` 是这块屏幕的展示版：不连站上，也不暴露本站的位置。每次打开网页，电台从几处山顶（`demo/sites.json`：峨眉山金顶、香港太平山顶、东京高尾山、苏黎世于特利山、旧金山湾暗黑山）中随机挑一处出发，与上次打开的不同，进来后就停在那里不再变；`?site=emei` 等可指定。HamClock 的各窗格由网页按 HamClock 自己的画法逐像素画出（`demo/public/tft.js`：它的 Courier 与 Germano 点阵字表、RGB565 配色、画线画圆的算法），时钟是该山顶当地时间；X 射线、太阳风、DST、Kp 取自 NOAA SWPC，天气取自 Open-Meteo，DX 集群取自 HamQTH；ADS-B 雷达屏照 `tools/hamclock-adsb.cpp` 画，航迹取自 adsb.lol / adsb.fi 的开放数据，军机（readsb 的 `dbFlags` 军用位）一概剔除；雷达屏的底图（公路、铁路、河流、水面、城镇、民用机场跑道）由网页直接读 OpenFreeMap 的 OSM 矢量瓦片，军用机场不取。地图照本机网页的样子：地形由浏览器从 Terrarium 高程瓦片按 `build_tiles.py` 的着色法在 Web Worker 里逐像素画出，金黄色是该山顶的视距可达区——每处山顶各自预先算好（`demo/tools/build_sites.py reach`，即 `build_rangemap.py` 的视距算法，天线立在 30 米高程里的真峰顶上，海面按海面算）；FT8/FT4 由 PSK Reporter 的 MQTT 经 WebSocket 直送网页，WSPR 取自 WSPR.live，APRS 由后端经 APRS-IS 收听；夜色与晨昏线、Maidenhead 网格、距离圈、点地查可达性（地形剖面、菲涅尔区、各频率各高度）、`S` / `/` 搜索（汉字拼音互通，引号、`-`、`type:`，`city:` 取该城 25 千米内）、键盘、手柄与中键触屏模式都与本机网页一致。城市、河流和民用机场取自 Natural Earth；军事区、军用机场与其跑道一概不收。
+
+后端只有两个 Pages Functions：`/api/adsb`（开放 ADS-B 接口不发 CORS 头，代取并缓存 5 秒）和 `/api/aprs`（APRS-IS 是 TCP 流，后端以只读身份收听几秒、在边缘缓存里攒一小时）。其余都由浏览器直取公开来源。
+
+部署：Cloudflare 控制台 Workers & Pages → 创建 Pages 项目并连接本 GitHub 仓库，根目录填 `demo`，构建命令 `sh build.sh`，输出目录 `dist`；`demo/functions/` 自动成为后端。本地预览：`cd demo && sh build.sh && npx wrangler pages dev dist`。后端的单元测试：`cd demo && node --test`。山顶数据重建：`python demo/tools/build_sites.py reach map`，然后在装有 pypinyin、`xfonts-base` 和 HamClock 源码的机器上 `build_sites.py spell glyphs --hamclock-src HamClock源码目录`。
+
 ## 1090 MHz 接收设置
 
 手动增益 49.6 dB，不开 RTL2832 数字 AGC。依据是 `analysis/gain_ab.py report` 对随机分块 A/B 的诊断：
@@ -116,3 +125,4 @@ OpenLayers 10.11.0 的 JS、CSS 和许可证随仓库提供；网页不依赖外
 - 业余活动：[PSK Reporter](https://pskreporter.info/)、APRS-IS、[WSPR.live](https://wspr.live/)。
 - 参考航迹：[adsb.lol](https://www.adsb.lol/)（ODbL）、[adsb.fi](https://adsb.fi/)。
 - 天气：[Open-Meteo](https://open-meteo.com/)（CC BY 4.0）。
+- 展示网页另用：[Natural Earth](https://www.naturalearthdata.com/)（公有领域）的城市、河流和机场，[NOAA SWPC](https://www.swpc.noaa.gov/) 的空间天气，[HamQTH](https://www.hamqth.com/) 的 DX 集群，NASA [SDO](https://sdo.gsfc.nasa.gov/) 的太阳图像，[OpenFreeMap](https://openfreemap.org/) 的 OSM 矢量瓦片（地图数据 © OpenStreetMap 贡献者，ODbL）。
