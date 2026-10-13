@@ -63,10 +63,11 @@ class Tests(unittest.TestCase):
         w.jobs.join()
         return w
 
-    def test_rotating_pane_choices_are_read_as_set_pane_takes_them(self):
+    def test_the_weather_pane_and_its_choices_with_our_weather_showing(self):
         config = 'Pane1     X-Ray\nPane3     DE_Wx Moon rotating in 40 seconds\n'
-        self.assertEqual(dxwx.weather_pane(config), (3, 'DE_Wx,Moon'))
-        self.assertIsNone(dxwx.weather_pane('Pane3     Moon DE_Wx\n'))   # DE_Wx not showing now
+        self.assertEqual(dxwx.weather_pane(config), (3, False, 'DE_Wx,Moon'))
+        self.assertEqual(dxwx.weather_pane('Pane3     DX_Wx Moon\n'), (3, True, 'DE_Wx,Moon'))
+        self.assertIsNone(dxwx.weather_pane('Pane3     Moon DE_Wx\n'))   # no weather showing now
 
     def test_the_pane_shows_the_place_while_open_and_is_given_back_whole(self):
         hc = self.hamclock({1: ['X-Ray'], 3: ['DE_Wx', 'Moon']})
@@ -82,6 +83,18 @@ class Tests(unittest.TestCase):
         w.jobs.join()
         self.assertEqual(hc.panes[3], ['DE_Wx', 'Moon'])
         self.assertEqual([p for p, _ in hc.sent].count('/set_pane'), 2)
+
+    def test_a_pane_left_on_dx_weather_shows_ours_once_the_popup_closes(self):
+        hc = self.hamclock({3: ['DX_Wx']})
+        w = self.weather(hc, 'native')
+        w.show('native', 30, 105)
+        w.jobs.join()
+        self.assertEqual(hc.panes[3], ['DX_Wx'])
+        self.assertNotIn('/set_pane', [p for p, _ in hc.sent])       # already showing DX's weather
+        self.assertEqual(hc.dx, (30, 105))
+        w.close('native')
+        w.jobs.join()
+        self.assertEqual(hc.panes[3], ['DE_Wx'])
 
     def test_the_last_popup_opened_owns_the_pane(self):
         hc = self.hamclock({3: ['DE_Wx']})

@@ -1,8 +1,9 @@
 """A tapped place's weather in HamClock's weather pane.
 
 Opening a place's popup on the map (the native window's or a web page's) sets HamClock's DX
-there and turns the pane showing DE's weather (DE_Wx) to DX's (DX_Wx), so it shows that place's
-weather; closing the popup turns the pane back as it was. The last popup opened owns the pane:
+there and has the weather pane (the one showing DE_Wx or DX_Wx) show DX's weather, so it shows
+that place's; closing the popup has it show DE's, ours, its other rotation choices as they were.
+The last popup opened owns the pane:
 closing an older one changes nothing. What was changed is kept in ~/influ/model/dxwx.json, under
 a lock both displays take, so a display that stopped with a popup open has it undone when it
 starts again.
@@ -25,14 +26,15 @@ log = logging.getLogger(__name__)
 
 
 def weather_pane(config):
-    """The pane now showing DE's weather in get_config.txt ("Pane3     DE_Wx Moon rotating in 40
-    seconds": the current choice first), and its choices as set_pane takes them ("DE_Wx,Moon");
-    None if no pane shows it."""
+    """The weather pane in get_config.txt ("Pane3     DX_Wx Moon rotating in 40 seconds": the
+    current choice first), the one showing DE_Wx or DX_Wx now: its number, whether it shows DX's,
+    and its choices as set_pane takes them with DE's weather showing ("DE_Wx,Moon"); else None."""
     for line in config.splitlines():
         parts = line.split()
-        if len(parts) >= 2 and parts[0][:4] == "Pane" and parts[0][4:].isdigit() and parts[1] == "DE_Wx":
+        if len(parts) >= 2 and parts[0][:4] == "Pane" and parts[0][4:].isdigit() and parts[1] in ("DE_Wx", "DX_Wx"):
             choices = parts[1:parts.index("rotating")] if "rotating" in parts else parts[1:]
-            return int(parts[0][4:]), ",".join(choices)
+            rest = [c for c in choices if c not in ("DE_Wx", "DX_Wx")]
+            return int(parts[0][4:]), parts[1] == "DX_Wx", ",".join(["DE_Wx"] + rest)
     return None
 
 
@@ -92,9 +94,9 @@ class DXWeather:
                 found = weather_pane(self.ask("get_config.txt"))
                 st = dict(pane=None, choices=None)
                 if found:
-                    reply = self.ask("set_pane", **{f"Pane{found[0]}": "DX_Wx"})
-                    if reply.startswith(f"Pane{found[0]}"):        # else refused, e.g. DX_Wx already shown
-                        st = dict(pane=found[0], choices=found[1])
+                    pane, dx, choices = found
+                    if dx or self.ask("set_pane", **{f"Pane{pane}": "DX_Wx"}).startswith(f"Pane{pane}"):
+                        st = dict(pane=pane, choices=choices)     # else refused: DX_Wx shown elsewhere
             st["owner"] = owner
             self.write(st)
             self.ask("set_newdx", lat=f"{where[0]:.4f}", lng=f"{where[1]:.4f}")
