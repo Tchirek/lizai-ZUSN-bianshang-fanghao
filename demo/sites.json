@@ -1,0 +1,12 @@
+[
+  {"id": "emei", "name": "Emei Shan", "zh": "峨眉山金顶", "lat": 29.5199, "lon": 103.3326,
+   "tz": "Asia/Shanghai", "our_agl": 10, "their_agl": 10, "reach_km": 500, "scope_mi": 50},
+  {"id": "peak", "name": "Victoria Peak", "zh": "太平山顶", "lat": 22.2759, "lon": 114.1455,
+   "tz": "Asia/Hong_Kong", "our_agl": 10, "their_agl": 10, "reach_km": 500, "scope_mi": 30},
+  {"id": "takao", "name": "Mt Takao", "zh": "高尾山", "lat": 35.6251, "lon": 139.2436,
+   "tz": "Asia/Tokyo", "our_agl": 10, "their_agl": 10, "reach_km": 500, "scope_mi": 50},
+  {"id": "uetliberg", "name": "Uetliberg", "lat": 47.3497, "lon": 8.4914,
+   "tz": "Europe/Zurich", "our_agl": 10, "their_agl": 10, "reach_km": 500, "scope_mi": 30},
+  {"id": "diablo", "name": "Mt Diablo", "lat": 37.8816, "lon": -121.9142,
+   "tz": "America/Los_Angeles", "our_agl": 10, "their_agl": 10, "reach_km": 500, "scope_mi": 50}
+]
