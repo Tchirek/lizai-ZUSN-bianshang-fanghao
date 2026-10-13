@@ -27,9 +27,11 @@ from urllib.parse import parse_qs, urlsplit
 
 os.environ['SDL_VIDEODRIVER'] = 'dummy'
 os.environ.setdefault('PYGAME_HIDE_SUPPORT_PROMPT', '1')
+import numpy as np
 import pygame
 from PIL import Image, ImageChops
 
+import activity as a
 from hcdisplay import APP_W, APP_H, MAP_BOX, OVERLAYS, Fitted, Link, Mirror, Overlay, Scene, on_map
 
 SIZE = (1280, 768)                         # same frame size as the X230 window
@@ -491,7 +493,8 @@ class Handler(BaseHTTPRequestHandler):
                 data = self.server.get_map()
                 rows = search(index(data.base, data.model, data.lock), query) if query.strip() else []
                 self.json_reply([dict(name=row['name'], point=data.coordinate(row['point']), position=row['position'],
-                                      colour=row.get('web_colour', row['colour'])) for row in rows])
+                                      colour=row.get('web_colour', row['colour']),
+                                      rings=[outline(data, ring) for ring in row.get('rings', [])]) for row in rows])
             elif route.path == '/map/veil.png':
                 bbox, width, height, _ = self.night_query(parse_qs(route.query))
                 self.night_reply(self.server.get_map().veil, 'image/png', bbox, width, height)
@@ -608,6 +611,16 @@ class Handler(BaseHTTPRequestHandler):
 
     def log_message(self, *_):
         pass
+
+
+OUTLINE = 400                    # points an area's ring is sent in at most, to be marked on the map
+
+
+def outline(data, ring):
+    """A ring of base px as map coordinates, thinned to OUTLINE points, rounded to the metre."""
+    ring = np.asarray(ring, float)
+    ring = np.vstack([ring[::max(1, -(-len(ring) // OUTLINE))], ring[-1:]])
+    return np.round((ring - (a.W / 2, a.H / 2)) * (data.metres, -data.metres)).tolist()
 
 
 def warm_search(server):

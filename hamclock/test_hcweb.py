@@ -631,6 +631,14 @@ class MapTests(unittest.TestCase):
         self.assertEqual(names('-能源'), [])
         self.assertEqual(names('foo:学院'), [])                                      # not an operator: a word
 
+    def test_search_sends_area_outlines_thinned_in_map_coordinates(self):
+        f = self.fixture
+        ring = np.array([[660 + 50 * np.cos(t), 330 + 50 * np.sin(t)] for t in np.linspace(0, 2 * np.pi, 1001)])
+        out = web.outline(f.map_data, ring)
+        self.assertLessEqual(len(out), web.OUTLINE + 2)
+        self.assertEqual(out[0], out[-1])
+        np.testing.assert_allclose(out[0], f.map_data.coordinate(ring[0]), atol=1)
+
     def test_search_ranks_exact_then_prefix_and_bounds_results(self):
         from map_search import search, LIMIT
         rows = [dict(name=name, point=[660, 330], kind='地点') for name in

@@ -56,6 +56,7 @@ ZOOM_KEYS = {pygame.K_EQUALS: 1, pygame.K_PLUS: 1, pygame.K_KP_PLUS: 1, pygame.K
              pygame.K_MINUS: -1, pygame.K_KP_MINUS: -1, pygame.K_PAGEDOWN: -1}
 KEY_PAN = 700                   # view px a second the arrow keys move the map
 KEY_ZOOM = 3                    # wheel notches a second + and - zoom while held with Shift
+DRIFT_FPS = 15                  # frames a second the map is drawn while a lit area's stripes drift
 KEY_STEP = 2                    # wheel notches a press of + or - zooms at once (x1.44), Shift up
 PAD_DEAD = 0.2                  # stick travel ignored around the centre
 PAD_ZOOM = {5: 1, 4: -1}        # gamepad buttons held to zoom: right / left shoulder
@@ -256,7 +257,7 @@ class Scene:
         self.strips = [pygame.Rect(0, 0, w, b.top), pygame.Rect(0, b.bottom, w, h - b.bottom),
                        pygame.Rect(0, b.top, b.left, b.h), pygame.Rect(b.right, b.top, w - b.right, b.h)]
         self.whole = self.clock_dirty = self.map_dirty = True
-        self.last_check = self.last_panel = 0
+        self.last_check = self.last_panel = self.last_drift = 0
         self.held = set()
         self.weather = None                  # dxwx.DXWeather: the weather pane follows the popup
         self.search = None
@@ -391,6 +392,8 @@ class Scene:
         now = time.monotonic()
         if self.search:
             self.map_dirty = self.search.update() or self.map_dirty
+            if self.search.drifting() and now - self.last_drift > 1 / DRIFT_FPS:   # a lit area's stripes
+                self.map_dirty, self.last_drift = True, now
         if now - self.last_check > 5:
             self.last_check = now
             self.clock_dirty = any([o.refresh() for o in self.overlays]) or self.clock_dirty
@@ -425,6 +428,8 @@ class Scene:
                 o.blit(frame)
         if self.canvas and (self.whole or self.map_dirty):
             self.canvas.draw(frame, self.box)
+            if self.search:
+                self.search.mark(frame.subsurface(self.box), self.canvas.view, self.canvas.scale)
         if self.inspector and (self.whole or self.map_dirty or not self.canvas):
             self.inspector.draw(frame, tuple(self.box))
         if self.search and (self.whole or self.map_dirty):

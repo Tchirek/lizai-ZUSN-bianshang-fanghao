@@ -9,7 +9,7 @@ let map=null, config=null, view=null, initialResolution=1, featureRequest=null, 
 let featureTimer=0, profileSerial=0, lastMinute=-1, heldInteraction=false, lastPadEnter=false, lastPadEscape=false, liveTask=null, mapTask=null;
 const keys=new Set(), sleep=ms=>new Promise(resolve=>setTimeout(resolve,ms));
 const staticSource=new ol.source.Vector(), gridSource=new ol.source.Vector(), liveSource=new ol.source.Vector();
-const ringSource=new ol.source.Vector(), selectedSource=new ol.source.Vector(), tagSource=new ol.source.Vector();
+const ringSource=new ol.source.Vector(), selectedSource=new ol.source.Vector(), tagSource=new ol.source.Vector(), markSource=new ol.source.Vector();
 const geojson=new ol.format.GeoJSON(), styles=new Map();
 const colours={river:'#4678d2',boundary:'#ffffff',field:'rgba(175,180,255,.65)',square:'rgba(175,180,255,.35)',subsquare:'rgba(175,180,255,.18)',grid_name:'#b9beff',subgrid_name:'#9196d2',city:'#e6e6e6',town:'#969696',campuses:'#ff82d2',military:'#ff5546',government:'#f0d682',regulators:'#5ad7ff',embassies:'#96faaa',airport:'#96afff',runway:'#cdcdd2',far:'#bfce25',station:'#ffffff',aprs:'#00b4dc',aprs_path:'rgba(0,180,220,.5)',qso:'#ffffff',qso_path:'rgba(255,255,255,.9)'};
 const LABEL_FONT='px Arial,"Microsoft YaHei","PingFang SC",sans-serif', TAG_FONT='italic bold 13'+LABEL_FONT, SUN_GOLD='rgb(255,210,120)';
@@ -214,7 +214,7 @@ async function initMap(){
   const vector=source=>new ol.layer.Vector({source,style:geometryStyle,renderBuffer:150});
   const labels=source=>new ol.layer.Vector({source,style:labelStyle,declutter:'labels',renderBuffer:150});
   // in the native map's order: ground and night, what is drawn on the ground, the terminator, names
-  map=new ol.Map({target:mapElement,view,controls:[],interactions:ol.interaction.defaults.defaults({altShiftDragRotate:false,pinchRotate:false,keyboard:false}),layers:[tiles,new ol.layer.Image({source:veilSource}),vector(staticSource),vector(gridSource),new ol.layer.Vector({source:ringSource,style:new ol.style.Style({stroke:new ol.style.Stroke({color:'rgba(190,190,190,.35)',width:1})})}),vector(liveSource),new ol.layer.Image({source:lineSource}),labels(gridSource),labels(staticSource),labels(liveSource),new ol.layer.Vector({source:selectedSource,style:new ol.style.Style({stroke:new ol.style.Stroke({color:'#e6e6b4',width:1}),image:new ol.style.RegularShape({points:4,radius:6,radius2:0,angle:0,stroke:new ol.style.Stroke({color:'#fff',width:1})})})}),new ol.layer.Vector({source:tagSource})]});
+  map=new ol.Map({target:mapElement,view,controls:[],interactions:ol.interaction.defaults.defaults({altShiftDragRotate:false,pinchRotate:false,keyboard:false}),layers:[tiles,new ol.layer.Image({source:veilSource}),vector(staticSource),vector(gridSource),new ol.layer.Vector({source:ringSource,style:new ol.style.Style({stroke:new ol.style.Stroke({color:'rgba(190,190,190,.35)',width:1})})}),vector(liveSource),new ol.layer.Image({source:lineSource}),labels(gridSource),labels(staticSource),labels(liveSource),new ol.layer.Vector({source:markSource,style:markStyle,updateWhileAnimating:true,updateWhileInteracting:true}),new ol.layer.Vector({source:selectedSource,style:new ol.style.Style({stroke:new ol.style.Stroke({color:'#e6e6b4',width:1}),image:new ol.style.RegularShape({points:4,radius:6,radius2:0,angle:0,stroke:new ol.style.Stroke({color:'#fff',width:1})})})}),new ol.layer.Vector({source:tagSource})]});
   map.on('singleclick',event=>{if(searchElement.hidden)mapElement.focus({preventScroll:true});inspect(event.coordinate);});
   map.on('moveend',()=>{scheduleFeatures();rings();positionProfile();updateLegend();placeTag();});
   map.on('postrender',positionProfile);map.on('change:size',resized);
@@ -325,8 +325,51 @@ function drawSearch(){
  searchCanvas.width=width;searchCanvas.height=row*lines;searchCanvas.style.setProperty('--lines',lines);
  searchCanvas.getContext('2d').putImageData(image,0,0);
 }
+// the lit result on the map, as the native one: a box round a point, slow stripes drifting
+// across an area, in its colour; the map is left where it is, shown or not
+const MARK=9,STRIPE=14,DRIFT=8,DRIFT_FPS=15,stripeTiles=new Map();
+let markedRow=null,markTimer=0;
+function dotPx(){return stage.clientWidth/1600;}
+function markSearch(){
+ const row=searchElement.hidden?null:searchRows[searchHover??searchIndex]??null;
+ if(row===markedRow)return;
+ markedRow=row;markSource.clear();clearInterval(markTimer);
+ if(!row)return;
+ // an area as its outline, and its point too, boxed while the area is too small to stripe
+ const features=[new ol.Feature(new ol.geom.Point(row.point)),...row.rings.length?[new ol.Feature(new ol.geom.Polygon(row.rings))]:[]];
+ for(const f of features){f.set('colour',row.colour);f.set('area',row.rings.length?features[1]:null);}
+ markSource.addFeatures(features);
+ if(row.rings.length)markTimer=setInterval(()=>markSource.changed(),1000/DRIFT_FPS);
+}
+function stripeTile(period,colour){
+ const key=period+colour;
+ if(!stripeTiles.has(key)){
+  const tile=document.createElement('canvas'),c=tile.getContext('2d'),image=c.createImageData(period,period),rgb=[1,3,5].map(i=>parseInt(colour.slice(i,i+2),16));
+  tile.width=tile.height=period;
+  for(let y=0;y<period;y++)for(let x=0;x<period;x++)if((x+y)%period<period*0.4){const o=(y*period+x)*4;image.data.set([...rgb,110],o);}
+  c.putImageData(image,0,0);stripeTiles.set(key,tile);
+ }
+ return stripeTiles.get(key);
+}
+function markStyle(feature){
+ const colour=feature.get('colour'),k=dotPx();
+ if(feature.getGeometry().getType()==='Point'){
+  const area=feature.get('area');
+  const extent=area&&area.getGeometry().getExtent();
+  if(area&&Math.max(ol.extent.getWidth(extent),ol.extent.getHeight(extent))/view.getResolution()>=3*STRIPE*k)return null;
+  const square=(stroke,width)=>new ol.style.Style({image:new ol.style.RegularShape({points:4,radius:MARK*k*Math.SQRT2,angle:Math.PI/4,stroke:new ol.style.Stroke({color:stroke,width})})});
+  return [square('#000',4),square(colour,2)];
+ }
+ return new ol.style.Style({renderer:(rings,state)=>{
+  const c=state.context,s=state.pixelRatio*k,period=Math.max(4,Math.round(STRIPE*s)),pattern=c.createPattern(stripeTile(period,colour),'repeat');
+  pattern.setTransform(new DOMMatrix().translate(Math.floor(performance.now()/1000*DRIFT*s)%period,0));
+  c.save();c.beginPath();
+  for(const ring of rings){ring.forEach(([x,y],i)=>i?c.lineTo(x,y):c.moveTo(x,y));c.closePath();}
+  c.fillStyle=pattern;c.fill('evenodd');c.strokeStyle=colour;c.lineWidth=state.pixelRatio;c.stroke();c.restore();
+ }});
+}
 function closeSearch(){
- clearTimeout(searchTimer);if(searchRequest)searchRequest.abort();searchElement.hidden=true;searchInput.setAttribute('aria-expanded','false');
+ clearTimeout(searchTimer);if(searchRequest)searchRequest.abort();searchElement.hidden=true;searchInput.setAttribute('aria-expanded','false');markSearch();
  searchInput.blur();(searchFocus&&searchFocus!==document.body?searchFocus:mapElement).focus({preventScroll:true});
 }
 function showSearch(){
@@ -338,7 +381,7 @@ function highlightSearch(){
  [...searchResults.children].forEach((item,i)=>item.setAttribute('aria-selected',String(i===index)));
  if(searchRows.length)searchInput.setAttribute('aria-activedescendant',searchResults.children[index].id);
  else searchInput.removeAttribute('aria-activedescendant');
- drawSearch();
+ drawSearch();markSearch();
 }
 function selectSearch(index){searchIndex=index;highlightSearch();}
 // the keys go on from the row lit, the pointer's or their own, and take over from the pointer

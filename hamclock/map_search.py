@@ -251,6 +251,8 @@ def search(rows, query):
 LIMIT, PAGE = 200, 8                    # results kept, and shown a page at a time
 SCROLL = 90                             # window px of a two-finger scroll that turn a page
 SETTLE = 0.12                           # s the keys rest before the search runs again
+MARK = 9                                # HamClock px from a lit point to the sides of its box
+STRIPE, DRIFT = 14, 8                   # HamClock px from stripe to stripe over a lit area; px a second they drift
 WIDTH, ROW, PAD, GAP = 600, 30, 6, 12   # HamClock px: panel, line, margin, name to position
 CURSOR = 8                              # a line's top to HamClock's text cursor
 
@@ -268,6 +270,7 @@ class SearchPanel:
         self.backspace_down = False
         self.scrolled = 0
         self.due = None                         # when to search again for what was typed
+        self.inside = self.stripes = None       # the lit area's shape in the view, and its stripes
         self.repeat = pygame.key.get_repeat()
         self.box = None
 
@@ -319,6 +322,65 @@ class SearchPanel:
             return False
         delta, self.scrolled = (1 if self.scrolled > 0 else -1), 0
         return self.page(delta)
+
+    def lit(self):
+        """The result lit, the pointer's or the keys'; None while there are none."""
+        if self.results:
+            return self.results[self.hovered if self.hovered is not None else self.selected]
+        return None
+
+    def drifting(self):
+        """Whether the mark moves, and so the map must be drawn again and again."""
+        row = self.lit()
+        return bool(row and len(row.get('rings', [])))
+
+    def mark(self, area, view, scale):
+        """Mark the lit result on the map (area: the map box's surface; view: its View; scale:
+        area px a view px): a box round a point, slow stripes drifting across an area, in the
+        result's colour. Where the map does not show it, nothing; the map stays where it is."""
+        import pygame
+        row = self.lit()
+        if row is None:
+            return
+        colour = pygame.Color(row['colour'])
+        rings = [view.points(np.asarray(r, float)) * scale for r in row.get('rings', [])]
+        if not rings or np.ptp(np.vstack(rings), axis=0).max() < 3 * STRIPE * scale:   # a point, or too small to stripe
+            x, y = (v * scale for v in view.project(row['point']))
+            box = pygame.Rect(0, 0, 2 * MARK * scale, 2 * MARK * scale)
+            box.center = round(x), round(y)
+            pygame.draw.rect(area, (0, 0, 0), box.inflate(2, 2), 4)
+            pygame.draw.rect(area, colour, box, 2)
+        if not rings:
+            return
+        lo = np.maximum(np.floor(np.min([r.min(axis=0) for r in rings], axis=0)), 0).astype(int)
+        hi = np.minimum(np.ceil(np.max([r.max(axis=0) for r in rings], axis=0)), area.get_size()).astype(int)
+        if (hi <= lo).any():
+            return
+        size = tuple(int(v) for v in hi - lo)
+        key = (id(row), view.centre, view.zoom, size)
+        if self.inside is None or self.inside[0] != key:
+            from PIL import Image, ImageDraw
+            inside = np.zeros(size[::-1], bool)
+            for ring in rings:
+                im = Image.new('1', size)
+                ImageDraw.Draw(im).polygon([tuple(p) for p in ring - lo], fill=1)
+                inside ^= np.asarray(im)
+            shape = pygame.Surface(size, pygame.SRCALPHA)
+            shape.fill((255, 255, 255, 0))
+            pygame.surfarray.pixels_alpha(shape)[:] = inside.T * 255
+            self.inside = key, shape
+        period = max(4, round(STRIPE * scale))
+        if self.stripes is None or self.stripes.get_size() != (size[0] + period, size[1]) or self.stripes.get_at((0, 0))[:3] != colour[:3]:
+            x, y = np.ogrid[:size[0] + period, :size[1]]
+            self.stripes = pygame.Surface((size[0] + period, size[1]), pygame.SRCALPHA)
+            self.stripes.fill(colour)
+            pygame.surfarray.pixels_alpha(self.stripes)[:] = np.where((x + y) % period < period * 0.4, 110, 0)
+        shift = int(time.monotonic() * DRIFT * scale) % period
+        drift = self.stripes.subsurface((period - shift, 0, *size)).copy()
+        drift.blit(self.inside[1], (0, 0), special_flags=pygame.BLEND_RGBA_MIN)
+        area.blit(drift, tuple(int(v) for v in lo))
+        for ring in rings:
+            pygame.draw.aalines(area, colour, True, ring)
 
     def shown(self):
         """The first result on the page shown, and that page's results."""
