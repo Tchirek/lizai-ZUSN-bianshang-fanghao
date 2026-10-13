@@ -438,26 +438,6 @@ class MapTests(unittest.TestCase):
         self.assertEqual(kinds['qso_path']['coordinates'][0], [0, 0])               # from us
         self.assertEqual(kinds['qso_path']['coordinates'][1], kinds['qso']['coordinates'])
 
-    def test_the_adsb_scope_lies_over_the_second_pane_and_keeps_its_taps(self):
-        f = self.fixture
-        green = (10, 200, 30)
-        near = lambda px: max(abs(u - v) for u, v in zip(px, green)) <= 3          # smoothscale rounds
-        Image.new('RGB', (320, 296), green).save(Path(f.map_data.model) / 'adsb.png')
-        token = f.open()
-        deadline = time.monotonic() + 5
-        while True:
-            status, _, body = f.frame(token)
-            frame = Image.open(io.BytesIO(body)).convert('RGB') if status == 200 else None
-            if frame and near(frame.getpixel((776, 120))) or time.monotonic() > deadline:
-                break
-            time.sleep(.2)
-        self.assertTrue(near(frame.getpixel((776, 120))))                          # pane 2: x 405..565 app px
-        self.assertFalse(near(frame.getpixel((500, 120))))                         # pane 1 is HamClock's
-        self.assertEqual(f.input(token, dict(type='tap', x=480, y=70)), 204)
-        self.assertEqual(f.input(token, dict(type='tap', x=300, y=70)), 204)
-        time.sleep(.2)
-        self.assertEqual([m for m in f.link.sent if m.startswith('set_touch')], ['set_touch?x=300&y=70&button=0'])
-
     def test_frontend_has_no_loading_text_or_spinner(self):
         f = self.fixture
         status, _, body = f.request('/')

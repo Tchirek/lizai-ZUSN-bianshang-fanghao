@@ -1,12 +1,15 @@
+0
+# HamClock V4.22 as influ runs it: what tools/patch_hamclock.py changes, for reading.
+# The ADS-B pane itself, adsb.cpp, is tools/hamclock-adsb.cpp.
 --- version.cpp.orig-influ	2026-01-18 00:17:35.000000000 +0800
-+++ version.cpp	2026-10-13 02:28:35.695516578 +0800
++++ version.cpp	2026-10-13 10:34:13.505415286 +0800
 @@ -1,3 +1,3 @@
  // N.B. if beta be sure to use 2 places: 4.09b01
  
 -const char *hc_version = "4.22";
 +const char *hc_version = "89.64";
 --- plot.cpp.orig-influ	2025-11-24 00:57:21.000000000 +0800
-+++ plot.cpp	2026-10-13 02:28:35.695516578 +0800
++++ plot.cpp	2026-10-13 10:34:13.541415527 +0800
 @@ -261,7 +261,7 @@
      // prep
      prepPlotBox (box);
@@ -33,7 +36,7 @@
      // printFreeHeap ("plotWX");
  }
 --- clocks.cpp.orig-influ	2025-11-24 00:56:31.000000000 +0800
-+++ clocks.cpp	2026-10-13 02:28:35.695516578 +0800
++++ clocks.cpp	2026-10-13 10:34:13.609415980 +0800
 @@ -44,6 +44,9 @@
   */
  static void drawUTCButton()
@@ -66,7 +69,7 @@
      // set to update other times as well
      bool draw_other_times = false;
 --- dxpeds.cpp.orig-influ	2025-07-10 02:56:53.000000000 +0800
-+++ dxpeds.cpp	2026-10-13 02:28:35.695516578 +0800
++++ dxpeds.cpp	2026-10-13 10:34:13.541415527 +0800
 @@ -186,16 +186,7 @@
      tft.setCursor (box.x + (box.w-tw)/2, box.y + PANETITLE_H);
      tft.print (title);
@@ -86,7 +89,7 @@
      // show each dxpedition starting with top_vis, up to max visible.
      // N.B. scroller doesn't know show_date entries occupy two rows.
 --- contests.cpp.orig-influ	2025-04-29 14:00:16.000000000 +0800
-+++ contests.cpp	2026-10-13 02:28:35.695516578 +0800
++++ contests.cpp	2026-10-13 10:34:13.609415980 +0800
 @@ -88,12 +88,7 @@
      tft.setCursor (box.x + (box.w-tw)/2, box.y + PANETITLE_H);
      tft.print (title);
@@ -101,3 +104,112 @@
  
      // show each contest starting with top_vis, up to max visible.
      // N.B. scroller doesn't know show_data entries occupy two rows.
+--- HamClock.h.orig-influ	2026-05-21 22:29:50.607098679 +0800
++++ HamClock.h	2026-10-13 10:34:13.685416488 +0800
+@@ -688,6 +688,7 @@
+ 
+     // 240
+     NV_SAT2FLAGS,               // satellite 2 options
++    NV_ADSB_RANGE,              // influ: ADS-B pane range, miles
+ 
+     NV_N
+ 
+@@ -752,7 +753,8 @@
+     X(PLOT_CH_ADIF,         "ADIF")             \
+     X(PLOT_CH_AURORA,       "Aurora")           \
+     X(PLOT_CH_DXPEDS,       "DXPeditions")      \
+-    X(PLOT_CH_DST,          "Disturbance")
++    X(PLOT_CH_DST,          "Disturbance")      \
++    X(PLOT_CH_ADSB,         "ADS-B")            // influ: last, saved choices keep their numbers
+ 
+ #define X(a,b)  a,              // expands PLOTNAMES to each enum and comma
+ typedef enum {
+@@ -2265,6 +2267,11 @@
+ extern const uint16_t moon_image[HC_MOON_W*HC_MOON_H] PROGMEM;
+ extern bool checkMoonTouch (const SCoord &s, const SBox &box);
+ 
++// influ: adsb.cpp
++#define ADSB_INTERVAL   2                       // pane update interval, secs
++extern bool updateADSB (const SBox &box);
++extern bool checkADSBTouch (const SCoord &s, const SBox &box);
++
+ 
+ 
+ 
+--- nvram.cpp.orig-influ	2025-09-14 01:51:14.000000000 +0800
++++ nvram.cpp	2026-10-13 10:34:13.685416488 +0800
+@@ -364,6 +364,7 @@
+ 
+     // 240
+     1,                          // NV_SAT2FLAGS
++    1,                          // NV_ADSB_RANGE (influ)
+ 
+ };
+ 
+--- plotmgmnt.cpp.orig-influ	2025-11-24 00:57:29.000000000 +0800
++++ plotmgmnt.cpp	2026-10-13 10:34:13.753416941 +0800
+@@ -126,6 +126,7 @@
+     case PLOT_CH_AURORA:        // fallthru
+     case PLOT_CH_DXPEDS:        // fallthru
+     case PLOT_CH_DST:           // fallthru
++    case PLOT_CH_ADSB:          // fallthru -- influ: the feed's absence is shown in the pane
+         return (true);
+ 
+     case PLOT_CH_N:
+@@ -462,6 +463,11 @@
+             return (true);
+         in_top = true;
+         break;
++    case PLOT_CH_ADSB:          // influ
++        if (checkADSBTouch (s, box))
++            return (true);
++        in_top = true;
++        break;
+ 
+     // tapping a BME below top rotates just among other BME and disables auto rotate.
+     // try all possibilities because they might be on other panes.
+--- wifi.cpp.orig-influ	2025-06-01 06:53:52.000000000 +0800
++++ wifi.cpp	2026-10-13 10:34:13.753416941 +0800
+@@ -2316,6 +2316,13 @@
+             }
+             break;
+ 
++        case PLOT_CH_ADSB:              // influ
++            if (t0 >= next_update[pp]) {
++                updateADSB (box);               // a local feed: can't fail
++                next_update[pp] = nextPaneUpdate (pc, ADSB_INTERVAL);
++            }
++            break;
++
+         case PLOT_CH_N:
+             break;              // lint
+         }
+--- Makefile.orig-influ	2025-08-23 01:37:45.000000000 +0800
++++ Makefile	2026-10-13 10:34:13.613416007 +0800
+@@ -75,6 +75,7 @@
+ 	P13.o \
+ 	adif.o \
+ 	adif_parser.o \
++	adsb.o \
+ 	asknewpos.o \
+ 	astro.o \
+ 	bands.o \
+--- ArduinoLib/Adafruit_RA8875.h.orig-influ	2025-08-16 08:51:34.000000000 +0800
++++ ArduinoLib/Adafruit_RA8875.h	2026-10-13 10:34:13.753416941 +0800
+@@ -175,6 +175,16 @@
+         // methods to implement a protected rectangle drawn only with drawPR()
+         void setPR (uint16_t x, uint16_t y, uint16_t w, uint16_t h);
+         void drawPR(void);
++
++        // influ: hold the canvas while a pane redraws, so the frame thread stages it whole
++        void holdCanvas (bool on) {
++            if (on)
++                pthread_mutex_lock (&fb_lock);
++            else {
++                fb_dirty = true;
++                pthread_mutex_unlock (&fb_lock);
++            }
++        }
+         uint16_t pr_x, pr_y, pr_w, pr_h;
+         volatile bool pr_draw;
+ 	void drawCanvas(void);

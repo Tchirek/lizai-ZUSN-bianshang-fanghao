@@ -58,7 +58,7 @@ class ClockScene(Scene):
         self.frame, self.fitted = pygame.Surface(size), Fitted(size)
         self.box = pygame.Rect(*(round(v * self.k) for v in MAP_BOX))
         self.canvas = self.inspector = None
-        self.overlays = [Overlay(name, box) for name, box in OVERLAYS if box != MAP_BOX]   # tally, ADS-B scope
+        self.overlays = [Overlay(name, box) for name, box in OVERLAYS if box != MAP_BOX]   # the FT8 tally
         self.whole = self.clock_dirty = True
         self.last_check = self.last_panel = 0
         self.held = set()

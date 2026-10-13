@@ -19,7 +19,7 @@
 
 - **接收**：站里只有一个 RTL-SDR V4，平时守在 1090 MHz，给 FlightAware 和 Flightradar24 喂 ADS-B。调度器在不影响喂数的空当，把它切到 2 米波段听十几秒，收 FT8、看频段活动。
 - **发射**：一台 UV-K5，用 CEC 固件经写频线发 FT8。
-- **显示**：机器自带屏幕上跑一个本地化的 HamClock。覆盖图、本周 FT8 统计和 ADS-B 雷达屏由显示程序叠在 HamClock 画面上，不往 HamClock 里推图，两边互不覆盖。
+- **显示**：机器自带屏幕上跑一个本地化的 HamClock。ADS-B 雷达屏是补丁给 HamClock 加的原生窗格，和其他窗格一样在菜单里选，点一下可换量程；覆盖图和本周 FT8 统计由显示程序叠在 HamClock 画面上。
 
 ![X230 屏幕上的 HamClock：中间是可缩放的 UV-K5 视距覆盖图，叠着 APRS 台站、FT8/WSPR 路径和 Maidenhead 网格；左边 DX 集群和本周 FT8 统计，上面 X 射线、ADS-B 雷达屏和天气](hamclock/screenshot.png)
 

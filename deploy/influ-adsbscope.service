@@ -1,10 +1,10 @@
 [Unit]
-Description=influ - ADS-B radar scope, laid over a HamClock pane by the displays
+Description=influ - ADS-B feed for HamClock's own ADS-B pane
 After=network-online.target
 
 [Service]
 WorkingDirectory=%h/influ/tools
-ExecStart=%h/influ/.venv/bin/python adsb_scope.py --range-mi 30 --every 5
+ExecStart=%h/influ/.venv/bin/python adsb_scope.py
 Restart=always
 RestartSec=15
 
