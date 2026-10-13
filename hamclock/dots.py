@@ -24,8 +24,10 @@ Glyph = namedtuple('Glyph', 'xo yo adv w h bits')   # bits: rows run on, high bi
 
 
 @lru_cache(maxsize=None)
-def latin():
-    source = HAMCLOCK.read_text(encoding='ascii')
+def latin(path=HAMCLOCK):
+    """{char: Glyph} of a HamClock font's 1600x960 table (its C source), Courier Prime Sans unless
+    another is named."""
+    source = Path(path).read_text(encoding='ascii')
     block = re.search(r'#if defined\(_CLOCK_1600x960\)(.*?)#(?:elif|else|endif)', source, re.S).group(1)
     bits, records = re.findall(r'PROGMEM = \{(.*?)\};', block, re.S)[:2]
     bits = bytes(int(n, 16) for n in re.findall(r'0x[0-9A-Fa-f]+', bits))
