@@ -8,9 +8,13 @@ let map=null, config=null, view=null, initialResolution=1, featureRequest=null, 
 let featureTimer=0, profileSerial=0, lastMinute=-1, heldInteraction=false, lastPadEnter=false, lastPadEscape=false, liveTask=null, mapTask=null;
 const keys=new Set(), sleep=ms=>new Promise(resolve=>setTimeout(resolve,ms));
 const staticSource=new ol.source.Vector(), gridSource=new ol.source.Vector(), liveSource=new ol.source.Vector();
-const ringSource=new ol.source.Vector(), selectedSource=new ol.source.Vector();
+const ringSource=new ol.source.Vector(), selectedSource=new ol.source.Vector(), tagSource=new ol.source.Vector();
 const geojson=new ol.format.GeoJSON(), styles=new Map();
-const colours={river:'#4678d2',boundary:'#ffffff',field:'rgba(175,180,255,.65)',square:'rgba(175,180,255,.35)',subsquare:'rgba(175,180,255,.18)',grid_name:'#b9beff',subgrid_name:'#9196d2',city:'#e6e6e6',town:'#969696',campuses:'#ff82d2',military:'#ff5546',government:'#f0d682',regulators:'#5ad7ff',embassies:'#96faaa',airport:'#96afff',runway:'#cdcdd2',far:'#bfce25',station:'#ffffff',aprs:'#00b4dc',aprs_path:'rgba(0,180,220,.5)',qso:'#ffffff'};
+const colours={river:'#4678d2',boundary:'#ffffff',field:'rgba(175,180,255,.65)',square:'rgba(175,180,255,.35)',subsquare:'rgba(175,180,255,.18)',grid_name:'#b9beff',subgrid_name:'#9196d2',city:'#e6e6e6',town:'#969696',campuses:'#ff82d2',military:'#ff5546',government:'#f0d682',regulators:'#5ad7ff',embassies:'#96faaa',airport:'#96afff',runway:'#cdcdd2',far:'#bfce25',station:'#ffffff',aprs:'#00b4dc',aprs_path:'rgba(0,180,220,.5)',qso:'#ffffff',qso_path:'rgba(255,255,255,.9)'};
+const LABEL_FONT='px Arial,"Microsoft YaHei","PingFang SC",sans-serif', TAG_FONT='italic bold 13'+LABEL_FONT, SUN_GOLD='rgb(255,210,120)';
+let veilSource=null, lineSource=null, tag=null, liveLegend=null;
+const measure=document.createElement('canvas').getContext('2d'), widths=new Map();
+function textWidth(text,font){const key=font+'\n'+text;if(!widths.has(key)){measure.font=font;widths.set(key,measure.measureText(text).width);}return widths.get(key);}
 
 async function create(){
  if(creating)return creating;
@@ -54,7 +58,7 @@ function colour(f){return f.get('colour')||colours[f.get('kind')]||'#dddddd';}
 function geometryStyle(f){
  const kind=f.get('kind'),type=f.getGeometry().getType(),level=f.get('level'),z=zoomRatio();
  if(type==='Point'||kind==='boundary'&&((level===4&&z>=3)||(level===5&&z>=10)))return null;
- const c=colour(f),width=kind==='runway'?Math.max(2,Math.round((f.get('width')||0)/view.getResolution())):kind==='river'||kind==='boundary'&&level!==6?2:1,key=kind+':'+c+':'+level+':'+f.get('local')+':'+width;
+ const c=colour(f),width=kind==='runway'?Math.max(2,Math.round((f.get('width')||0)/view.getResolution())):kind==='river'||kind==='qso_path'||kind==='boundary'&&level!==6?2:1,key=kind+':'+c+':'+level+':'+f.get('local')+':'+width;
  if(!styles.has(key)){
   const fill=type==='Polygon'?new ol.style.Fill({color:kind==='military'?'rgba(255,85,70,.13)':'rgba(220,220,220,.08)'}):undefined;
   const boundary=level===4?'rgba(255,255,255,.75)':level===5?'rgba(255,255,255,.6)':'rgba(255,255,255,.27)';
@@ -67,7 +71,7 @@ function geometryStyle(f){
 }
 function labelStyle(f){
  if(f.getGeometry().getType()!=='Point')return null;
- const kind=f.get('kind'),name=f.get('name')||'',c=colour(f),rf=f.get('rf'),country=f.get('country'),key=kind+':'+name+':'+c+':'+rf+':'+country;
+ const kind=f.get('kind'),name=f.get('name')||'',c=colour(f),label=f.get('label')||c,rf=f.get('rf'),country=f.get('country'),key=kind+':'+name+':'+c+':'+label+':'+rf+':'+country;
  if(!styles.has(key)){
   const grid=kind==='grid_name'||kind==='subgrid_name';
   let image;
@@ -76,10 +80,71 @@ function labelStyle(f){
    if(kind==='digital'||kind==='qso'||kind==='regulators')image=new ol.style.RegularShape({points:4,radius:kind==='digital'?5:4,angle:kind==='digital'?0:Math.PI/4,fill:new ol.style.Fill({color:c}),stroke:new ol.style.Stroke({color:'#000',width:1})});
    else image=new ol.style.Circle({radius:kind==='station'?4:kind==='airport'?4:kind==='city'?2:3,fill:new ol.style.Fill({color:kind==='aprs'?(rf?'#00dcff':'#00647d'):c}),stroke:new ol.style.Stroke({color:kind==='airport'?c:'#000',width:1})});
   }
-  const text=name?new ol.style.Text({text:name,font:(grid?'bold 11':'bold 13')+'px Arial,"Microsoft YaHei","PingFang SC",sans-serif',fill:new ol.style.Fill({color:c}),stroke:new ol.style.Stroke({color:'#000',width:3}),offsetX:country?5:grid?3:7,offsetY:grid?8:-8,textAlign:'left',overflow:false}):undefined;
+  const text=name?new ol.style.Text({text:name,font:labelFont(grid),fill:new ol.style.Fill({color:label}),stroke:new ol.style.Stroke({color:'#000',width:3}),offsetX:labelOffset(kind,country)[0],offsetY:labelOffset(kind,country)[1],textAlign:'left',overflow:false}):undefined;
   styles.set(key,new ol.style.Style({image,text}));
  }
  return styles.get(key);
+}
+function labelFont(grid){return (grid?'bold 11':'bold 13')+LABEL_FONT;}
+function labelOffset(kind,country){const grid=kind==='grid_name'||kind==='subgrid_name';return [country?5:grid?3:7,grid?8:-8];}
+function inView(f,e){const p=f.getGeometry().getCoordinates();return p[0]>=e[0]&&p[0]<=e[2]&&p[1]>=e[1]&&p[1]<=e[3];}
+// Where the names in view are (CSS px boxes), as labelStyle() sets them out.
+function labelBoxes(){
+ const boxes=[],e=view.calculateExtent(map.getSize());
+ for(const source of [gridSource,staticSource,liveSource])for(const f of source.getFeatures()){
+  const name=f.get('name');if(!name||f.getGeometry().getType()!=='Point'||!inView(f,e))continue;
+  const kind=f.get('kind'),grid=kind==='grid_name'||kind==='subgrid_name',size=grid?11:13,[dx,dy]=labelOffset(kind,f.get('country'));
+  const p=map.getPixelFromCoordinate(f.getGeometry().getCoordinates());
+  boxes.push([p[0]+dx,p[1]+dy-size/2-2,p[0]+dx+textWidth(name,labelFont(grid))+2,p[1]+dy+size/2+2]);
+ }
+ return boxes;
+}
+// SUNSET or SUNRISE in gold italics on the terminator, the line its baseline, reading down it, at
+// the first place from the top where it covers the least of the names, clear of the sun box and
+// the foot: as the native map places it (map_view.Scene.draw_terminator).
+function placeTag(){
+ tagSource.clear(true);
+ if(!tag||!map||!view)return;
+ const [w,h]=map.getSize(),rad=tag.angle*Math.PI/180,up=[Math.sin(rad),-Math.cos(rad)],along=[Math.cos(rad),Math.sin(rad)];
+ const tw=textWidth(tag.name,TAG_FONT)+2,th=14,hw=(Math.abs(along[0])*tw+Math.abs(up[0])*th)/2,hh=(Math.abs(along[1])*tw+Math.abs(up[1])*th)/2;
+ const taken=labelBoxes();let best=null,least=Infinity;
+ for(const point of tag.points){
+  const p=map.getPixelFromCoordinate(point);if(!p)continue;
+  const base=[p[0]+up[0]*tag.lift,p[1]+up[1]*tag.lift],mid=[base[0]+up[0]*th*.35,base[1]+up[1]*th*.35];
+  const box=[mid[0]-hw,mid[1]-hh,mid[0]+hw,mid[1]+hh];
+  if(box[0]<4||box[2]>w-4||box[1]<28||box[3]>h-30)continue;
+  let cover=0;for(const t of taken){const x=Math.min(box[2],t[2])-Math.max(box[0],t[0]),y=Math.min(box[3],t[3])-Math.max(box[1],t[1]);if(x>0&&y>0)cover+=x*y;}
+  if(cover<least){least=cover;best=base;}
+ }
+ if(!best)return;
+ const f=new ol.Feature(new ol.geom.Point(map.getCoordinateFromPixel(best)));
+ f.setStyle(new ol.style.Style({text:new ol.style.Text({text:tag.name,font:TAG_FONT,rotation:rad,textAlign:'center',textBaseline:'alphabetic',fill:new ol.style.Fill({color:SUN_GOLD}),stroke:new ol.style.Stroke({color:'#000',width:3})})}));
+ tagSource.addFeature(f);
+}
+// The night as the native map lays it on: worked out on the station for this view at the page's
+// own px, the veil under everything drawn on the ground, the terminator's gold line over the rivers
+// and paths. Each picture reaches a quarter view past each side, so a short pan needs no new one.
+function nightExtent(extent,resolution){const w=(extent[2]-extent[0])/4,h=(extent[3]-extent[1])/4,e=[extent[0]-w,extent[1]-h,extent[2]+w,extent[3]+h];return {e,w:Math.round((e[2]-e[0])/resolution),h:Math.round((e[3]-e[1])/resolution)};}
+function nightQuery(q,ratio){return '?bbox='+q.e.map(v=>v.toFixed(1)).join(',')+'&w='+q.w+'&h='+q.h+'&ratio='+ratio+'&v='+lastMinute;}
+async function veilLoader(extent,resolution){
+ const q=nightExtent(extent,resolution),r=await fetch('/map/veil.png'+nightQuery(q,1));if(!r.ok)throw Error('veil');
+ return {image:await createImageBitmap(await r.blob()),extent:q.e,resolution,pixelRatio:1};
+}
+async function lineLoader(extent,resolution,pixelRatio){
+ const q=nightExtent(extent,resolution);let ratio=Math.min(2,Math.max(1,pixelRatio||1));
+ while(q.w*q.h*ratio*ratio>12e6&&ratio>1)ratio=Math.max(1,ratio-.25);
+ const r=await fetch('/map/terminator'+nightQuery(q,ratio));if(!r.ok)throw Error('terminator');const d=await r.json();
+ const canvas=document.createElement('canvas');canvas.width=Math.round(q.w*ratio);canvas.height=Math.round(q.h*ratio);
+ if(d.line){const image=new Image();image.src=d.line.png;await image.decode();canvas.getContext('2d').drawImage(image,d.line.x,d.line.y);}
+ tag=d.tag||null;placeTag();
+ return {image:canvas,extent:q.e,resolution,pixelRatio:ratio};
+}
+function updateLegend(){
+ const legend=document.querySelector('#legend');legend.replaceChildren();
+ if(!liveLegend||!view)return;
+ const e=view.calculateExtent(map.getSize()),r=view.getResolution()*4,inner=[e[0]+r,e[1]+r,e[2]-r,e[3]-r];
+ let aprs=0,digital=0;for(const f of liveSource.getFeatures()){const kind=f.get('kind');if((kind==='aprs'||kind==='digital')&&inView(f,inner)){if(kind==='aprs')aprs++;else digital++;}}
+ for(const item of [{name:'APRS '+aprs,colour:'#00ffff'},{name:'DIGI '+digital,colour:'#fff'},{name:'PATH '+liveLegend.paths+'/'+liveLegend.total,colour:'#969696'},...liveLegend.bands.map(b=>({name:b.name.endsWith('cm')?b.name:b.name+'m',colour:b.colour}))]){const span=document.createElement('span'),i=document.createElement('i');i.style.background=item.colour;span.append(i,document.createTextNode(item.name));legend.append(span);}
 }
 function readFeatures(data){return geojson.readFeatures(data,{dataProjection:config.projection,featureProjection:config.projection});}
 function replace(source,data){source.clear(true);source.addFeatures(readFeatures(data));}
@@ -90,7 +155,7 @@ async function updateFeatures(){
  const query='?bbox='+[bbox[0]-margin,bbox[1]-margin,bbox[2]+margin,bbox[3]+margin].join(',')+'&zoom='+zoomRatio();
  try{
   const [features,grid]=await Promise.all(['/map/features','/map/grid'].map(async path=>{const r=await fetch(path+query,{signal});if(!r.ok)throw Error('layers');return r.json();}));
-  if(!signal.aborted){styles.clear();replace(staticSource,features);replace(gridSource,grid);}
+  if(!signal.aborted){styles.clear();replace(staticSource,features);replace(gridSource,grid);placeTag();}
  }catch(e){}
 }
 function scheduleFeatures(){clearTimeout(featureTimer);featureTimer=setTimeout(updateFeatures,180);}
@@ -100,10 +165,12 @@ function rings(){
  const e=view.calculateExtent(map.getSize()),centre=view.getCenter(),distance=Math.hypot(...centre),span=Math.hypot(e[2]-e[0],e[3]-e[1])/2;
  const features=[];for(let r=Math.max(step,Math.floor((distance-span)/step)*step);r<distance+span;r+=step)features.push(new ol.Feature(new ol.geom.Circle([0,0],r)));
  ringSource.clear(true);ringSource.addFeatures(features);
+ // scale bar and terrain detail as the native map's foot: a bar of 1, 2 or 5 x 10^n km near a tenth of the map's width
  const resolution=view.getResolution(),index=config.levels.findIndex(level=>config.metres_per_pixel/level<=resolution),i=index<0?config.levels.length-1:index;
- document.querySelector('#dem').textContent='DEM '+Math.round(config.dem[i])+' m  '+zoomRatio().toFixed(1)+'×';
+ const most=130*mapElement.clientWidth/1320*resolution/1000,decade=10**Math.floor(Math.log10(most)),km=Math.max(...[1,2,5].map(x=>x*decade).filter(x=>x<=most));
+ document.querySelector('#km').textContent=+km.toPrecision(3)+' km';document.querySelector('#bar').style.width=Math.round(km*1000/resolution)+'px';
+ document.querySelector('#dem').textContent='DEM '+Math.round(config.dem[i])+' m  '+zoomRatio().toFixed(1)+'x';
 }
-let nightLayer=null;
 function startLive(){if(!liveTask)liveTask=live().finally(()=>{liveTask=null;if(active&&map)startLive();});}
 async function live(){
  while(active){
@@ -111,12 +178,25 @@ async function live(){
    const r=await fetch('/map/live');if(!r.ok)throw Error('live');const data=await r.json();replace(liveSource,data.features);
    const sun=document.querySelector('#sun');sun.replaceChildren();const image=document.createElement('img');image.src='/map/sun.png?v='+data.minute;image.style.opacity=data.sun.elevation>-.833?'1':'.43';sun.append(image);
    for(const [name,value] of data.sun.parts){const item=document.createElement('span');item.textContent=name;const b=document.createElement('b');b.textContent=value;item.append(b);sun.append(item);}
-   const legend=document.querySelector('#legend');legend.replaceChildren();
-   for(const item of [{name:'APRS '+data.legend.aprs,colour:'#00dcff'},{name:'DIGI '+data.legend.digital,colour:'#fff'},{name:'PATH '+data.legend.paths+'/'+data.legend.total,colour:'#999'},...data.legend.bands.map(b=>({name:b.name.endsWith('cm')?b.name:b.name+'m',colour:b.colour}))]){const span=document.createElement('span'),i=document.createElement('i');i.style.background=item.colour;span.append(i,document.createTextNode(item.name));legend.append(span);}
-   if(lastMinute!==data.minute){lastMinute=data.minute;nightLayer.setSource(new ol.source.ImageStatic({url:'/map/night.png?v='+lastMinute,projection:config.projection,imageExtent:config.extent}));}
+   liveLegend=data.legend;updateLegend();placeTag();
+   if(lastMinute!==data.minute){lastMinute=data.minute;veilSource.refresh();lineSource.refresh();}
   }catch(e){}}
   await sleep(15000);
  }
+}
+// 1x shows the whole map's width, as on the native screen: worked out again whenever the map's
+// box changes size (a window resized, a phone turned), keeping the centre and the zoom.
+function makeView(center,ratio){
+ initialResolution=(config.extent[2]-config.extent[0])/mapElement.clientWidth;
+ const made=new ol.View({projection:config.projection,center,extent:config.extent,enableRotation:false,maxResolution:initialResolution,minResolution:initialResolution/96,resolution:initialResolution/ratio,constrainResolution:false,smoothExtentConstraint:false});
+ made.on('change:resolution',rings);
+ return made;
+}
+function resized(){
+ if(!view||!mapElement.clientWidth)return;
+ const ratio=zoomRatio(),center=view.getCenter();
+ if(heldInteraction){heldInteraction=false;view.endInteraction(0);}
+ view=makeView(center,ratio);map.setView(view);rings();scheduleFeatures();updateLegend();
 }
 async function initMap(){
  while(active&&!map){try{
@@ -125,15 +205,17 @@ async function initMap(){
   const resolutions=config.levels.map(level=>config.metres_per_pixel/level);
   const tileGrid=new ol.tilegrid.TileGrid({extent:config.extent,origin:[config.extent[0],config.extent[3]],resolutions,tileSize:config.tile_size});
   const tiles=new ol.layer.Tile({source:new ol.source.XYZ({projection:config.projection,tileGrid,wrapX:false,tileUrlFunction:c=>'/map/tiles/'+config.levels[c[0]]+'/'+c[1]+'/'+c[2]+'.png?v='+config.tile_version})});
-  initialResolution=(config.extent[2]-config.extent[0])/mapElement.clientWidth;
-  view=new ol.View({projection:config.projection,center:[0,0],extent:config.extent,enableRotation:false,maxResolution:initialResolution,minResolution:initialResolution/96,resolution:initialResolution,constrainResolution:false,smoothExtentConstraint:false});
+  lastMinute=Math.floor(Date.now()/60000);
+  veilSource=new ol.source.Image({projection:config.projection,loader:veilLoader});
+  lineSource=new ol.source.Image({projection:config.projection,loader:lineLoader});
+  view=makeView([0,0],1);
   const vector=source=>new ol.layer.Vector({source,style:geometryStyle,renderBuffer:150});
   const labels=source=>new ol.layer.Vector({source,style:labelStyle,declutter:'labels',renderBuffer:150});
-  nightLayer=new ol.layer.Image();
-  map=new ol.Map({target:mapElement,view,controls:[new ol.control.ScaleLine({units:'metric'})],interactions:ol.interaction.defaults.defaults({altShiftDragRotate:false,pinchRotate:false,keyboard:false}),layers:[tiles,vector(staticSource),vector(gridSource),new ol.layer.Vector({source:ringSource,style:new ol.style.Style({stroke:new ol.style.Stroke({color:'rgba(190,190,190,.35)',width:1})})}),vector(liveSource),nightLayer,labels(gridSource),labels(staticSource),labels(liveSource),new ol.layer.Vector({source:selectedSource,style:new ol.style.Style({stroke:new ol.style.Stroke({color:'#e6e6b4',width:1}),image:new ol.style.RegularShape({points:4,radius:6,radius2:0,angle:0,stroke:new ol.style.Stroke({color:'#fff',width:1})})})})]});
+  // in the native map's order: ground and night, what is drawn on the ground, the terminator, names
+  map=new ol.Map({target:mapElement,view,controls:[],interactions:ol.interaction.defaults.defaults({altShiftDragRotate:false,pinchRotate:false,keyboard:false}),layers:[tiles,new ol.layer.Image({source:veilSource}),vector(staticSource),vector(gridSource),new ol.layer.Vector({source:ringSource,style:new ol.style.Style({stroke:new ol.style.Stroke({color:'rgba(190,190,190,.35)',width:1})})}),vector(liveSource),new ol.layer.Image({source:lineSource}),labels(gridSource),labels(staticSource),labels(liveSource),new ol.layer.Vector({source:selectedSource,style:new ol.style.Style({stroke:new ol.style.Stroke({color:'#e6e6b4',width:1}),image:new ol.style.RegularShape({points:4,radius:6,radius2:0,angle:0,stroke:new ol.style.Stroke({color:'#fff',width:1})})})}),new ol.layer.Vector({source:tagSource})]});
   map.on('singleclick',event=>{mapElement.focus({preventScroll:true});inspect(event.coordinate);});
-  map.on('moveend',()=>{scheduleFeatures();rings();positionProfile();});
-  map.on('postrender',positionProfile);view.on('change:resolution',rings);
+  map.on('moveend',()=>{scheduleFeatures();rings();positionProfile();updateLegend();placeTag();});
+  map.on('postrender',positionProfile);map.on('change:size',resized);
   updateFeatures();rings();startLive();
  }catch(e){console.warn('Map setup',e.message);await sleep(1000);}}
 }

@@ -701,6 +701,27 @@ def shade(base, origin, scale, size, when):
     return np.pad(rgb, ((1, 1), (1, 1), (0, 0)), mode="edge").tobytes(), metres, line
 
 
+def crossings(latlon, width, height, when):
+    """Where the terminator crosses rows TAG_STEP px apart, from the top down, of a picture
+    `width` x `height` px whose px `latlon(x, y)` (arrays) puts on the ground: those points
+    ((n, 2) px), whether the sun is setting there, and the line's way down the picture (degrees
+    clockwise from +x); None if it is not in the picture."""
+    corners = latlon(np.array([0.0, width, 0, width]), np.array([0.0, 0, height, height]))
+    if len(set((solar_elevation(*corners, when) >= SUNSET).tolist())) < 2:
+        return None                                      # the line is all but straight: not in view
+    x, rows = np.linspace(0, width, 133), np.arange(TAG_STEP / 2, height, TAG_STEP)
+    lat, lon = latlon(*np.meshgrid(x, rows))
+    alt = solar_elevation(lat, lon, when) - SUNSET
+    r, c = np.nonzero(np.diff(alt >= 0, axis=1))
+    r, first = np.unique(r, return_index=True)           # where the line crosses each row
+    c = c[first]
+    if len(r) < 2:
+        return None
+    on = np.stack([x[c] + (x[c + 1] - x[c]) * alt[r, c] / (alt[r, c] - alt[r, c + 1]), rows[r]], axis=1)
+    setting = float(solar_elevation(lat[r[0], c[0]], lon[r[0], c[0]], when + 60)) < float(alt[r[0], c[0]]) + SUNSET
+    return on, setting, math.degrees(math.atan2(*(on[-1] - on[0])[::-1]))
+
+
 # ------------------------------------------------------------------ vector scene ----
 
 def thin(points, zoom):
@@ -1249,20 +1270,10 @@ class Scene:
         """SUNSET or SUNRISE in gold italics on the terminator, the line its baseline, reading
         down it; at the first place from the top where it covers the least of the labels and
         grid names (none, mostly), clear of the HUD."""
-        corners = view.grid_latlon(np.array([0.0, W, 0, W]), np.array([0.0, 0, H, H]))
-        if len(set((solar_elevation(*corners, when) >= SUNSET).tolist())) < 2:
-            return                                       # the line is all but straight: not in view
-        x, rows = np.linspace(0, W, 133), np.arange(TAG_STEP / 2, H, TAG_STEP)
-        lat, lon = view.grid_latlon(*np.meshgrid(x, rows))
-        alt = solar_elevation(lat, lon, when) - SUNSET
-        r, c = np.nonzero(np.diff(alt >= 0, axis=1))
-        r, first = np.unique(r, return_index=True)       # where the line crosses each row
-        c = c[first]
-        if len(r) < 2:
+        found = crossings(view.grid_latlon, W, H, when)
+        if found is None:
             return
-        on = np.stack([x[c] + (x[c + 1] - x[c]) * alt[r, c] / (alt[r, c] - alt[r, c + 1]), rows[r]], axis=1)
-        setting = float(solar_elevation(lat[r[0], c[0]], lon[r[0], c[0]], when + 60)) < float(alt[r[0], c[0]]) + SUNSET
-        angle = math.degrees(math.atan2(*(on[-1] - on[0])[::-1]))           # the line's way down the view
+        on, setting, angle = found
         pic, baseline = self.along("SUNSET" if setting else "SUNRISE", SUN_GOLD, 13, angle)
         rad = math.radians(round(angle))
         lift = LINE_PX / 2 + 1 + TAG_GAP                 # physical px from the line's middle to the baseline

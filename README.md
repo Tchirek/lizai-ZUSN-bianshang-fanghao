@@ -19,7 +19,7 @@
 
 - **接收**：站里只有一个 RTL-SDR V4，平时守在 1090 MHz，给 FlightAware 和 Flightradar24 喂 ADS-B。调度器在不影响喂数的空当，把它切到 2 米波段听十几秒，收 FT8、看频段活动。
 - **发射**：一台 UV-K5，用 CEC 固件经写频线发 FT8。
-- **显示**：机器自带屏幕上跑一个本地化的 HamClock。
+- **显示**：机器自带屏幕上跑一个本地化的 HamClock。覆盖图、本周 FT8 统计和 ADS-B 雷达屏由显示程序叠在 HamClock 画面上，不往 HamClock 里推图，两边互不覆盖。
 
 ![X230 屏幕上的 HamClock：中间是可缩放的 UV-K5 视距覆盖图，叠着 APRS 台站、FT8/WSPR 路径和 Maidenhead 网格；左边 DX 集群和本周 FT8 统计，上面 X 射线、ADS-B 雷达屏和天气](hamclock/screenshot.png)
 
@@ -65,7 +65,7 @@ systemctl --user enable --now hamclock-http.service
 
 服务监听所有网卡的 IPv4 和 IPv6 地址，内网访问 `http://站机地址:8075/`。滚轮缩放，拖动平移，点击地点查询可达性；触屏支持双指平移和捏合，方向键平移，`+` / `-` 缩放，`Esc` 关闭弹窗。手柄（网页用浏览器所在设备的手柄，本机窗口用 pygame.joystick）：左摇杆或十字键平移，右 / 左肩键放大 / 缩小，网页 A 查询地图中心地点，B 关闭弹窗；键盘焦点在地图上时 `Enter` 也查询中心地点。时钟、天气和雷达窗继续使用无损增量帧，地图不传屏幕截图。网页可在本机窗口关闭时独立运行，没有启动加载文字或转圈遮罩。
 
-OpenLayers 10.11.0 的 JS、CSS 和许可证随仓库提供；网页不依赖外部 CDN 或外部地图服务。瓦片来自 `~/influ/model/tiles/`，复用原生窗口的投影与缓存。可达性计算复用 `map_panel.path_profile`，按完整 DEM 分辨率计算判定，图表仅缩减传输采样点。静态图层按视野获取，活动台站与航迹定期更新，昼夜图层按分钟更新。
+OpenLayers 10.11.0 的 JS、CSS 和许可证随仓库提供；网页不依赖外部 CDN 或外部地图服务。瓦片来自 `~/influ/model/tiles/`，复用原生窗口的投影与缓存。可达性计算复用 `map_panel.path_profile`，按完整 DEM 分辨率计算判定，图表仅缩减传输采样点。静态图层按视野获取，活动台站与航迹定期更新，图例只数视野内的台站，与本机窗口一致。夜色和晨昏线用本机窗口的同一套算法，按页面当前视野和屏幕像素在站上算出，每分钟更新：夜色垫在河流、路径之下，金线压在它们之上，斜体 SUNSET / SUNRISE 沿线标注，放大多少倍都不糊。
 
 关闭：`systemctl --user disable --now hamclock-http.service`。也可仅监听本机：`~/influ/.venv/bin/python ~/influ/hamclock/hcweb.py`，默认地址为 `127.0.0.1:8075`。
 

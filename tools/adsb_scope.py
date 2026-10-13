@@ -1,11 +1,14 @@
 #!/usr/bin/env python3
-"""ADS-B radar scope drawn in HamClock's own style and pushed into one of its panes.
+"""ADS-B radar scope drawn in HamClock's own style, for the displays to lay over one of its panes.
 
 Reads dump1090's aircraft.json every second, keeps short tracks, and every few seconds
 renders a 318x294 azimuthal-equidistant scope centred on the station (30 mi by default)
-over a dim OpenStreetMap base map (build_basemap.py),
-then POSTs it to HamClock's RESTful set_bmp. Station position comes from
-~/influ/station.json (never committed).
+over a dim OpenStreetMap base map (build_basemap.py), framed as HamClock frames a pane
+(320x296, the pane box at 1600x960), to ~/influ/model/adsb.png. The native window and the
+web page (hamclock/hcdisplay.py, hcweb.py) lay it over HamClock's second pane, as they lay
+the FT8 tally over the left column: HamClock goes on drawing its own pane underneath, out of
+sight, and nothing is pushed into it, so neither can paint over the other. Station position
+comes from ~/influ/station.json (never committed).
 
 Symbols   jet/heavy (A3-A6) chevron along track, heavy drawn larger
           light/small (A1-A2) dot, rotorcraft (A7) cross, glider/balloon/UAV (B*) diamond,
@@ -17,7 +20,7 @@ Count     top right, aircraft heard today (since local midnight, kept across res
           ~/influ/model/adsb_today.json, a new day filled from the collector's snapshots);
           below it the ones on the scope now
 
-usage: adsb_scope.py [--pane 2] [--range-mi 30] [--every 5] [--once out.png]
+usage: adsb_scope.py [--range-mi 30] [--every 5] [--out PNG] [--once out.png]
 """
 import argparse
 import glob
@@ -26,9 +29,7 @@ import json
 import math
 import os
 import socket
-import struct
 import time
-import urllib.request
 from collections import defaultdict, deque
 
 from PIL import Image, ImageDraw, ImageFont
@@ -49,6 +50,7 @@ JSON = "/run/dump1090-fa/aircraft.json"
 SDRMUX = "/run/sdrmux/ctl.sock"
 MI_KM = 1.609344
 TODAY = os.path.expanduser("~/influ/model/adsb_today.json")
+OUT = os.path.expanduser("~/influ/model/adsb.png")
 SNAPSHOTS = os.path.expanduser("~/influ/data/aircraft")      # the collector's, UTC day/hour files
 TZ_S = 8 * 3600
 # base map: dim, so aircraft stay the brightest thing on the scope (old vector radar look)
@@ -371,21 +373,6 @@ def framed(content):
     return img
 
 
-def bmp565(img):
-    """Top-down 16-bit RGB565 BMP (BI_BITFIELDS): exactly the pane's raw size, so HamClock
-    takes its perfect-fit path and copies the pixels without any refit."""
-    import numpy as np
-    a = np.asarray(img.convert("RGB"), dtype=np.uint16)
-    pix = ((a[..., 0] >> 3) << 11) | ((a[..., 1] >> 2) << 5) | (a[..., 2] >> 3)
-    w, h = img.size
-    body = pix.astype("<u2").tobytes()                 # 2*w bytes per row; w even -> no padding
-    off = 14 + 40 + 12
-    hdr = b"BM" + struct.pack("<IHHI", off + len(body), 0, 0, off)
-    dib = struct.pack("<IiiHHIIiiII", 40, w, -h, 1, 16, 3, len(body), 2835, 2835, 0, 0)
-    masks = struct.pack("<III", 0xF800, 0x07E0, 0x001F)
-    return hdr + dib + masks + body
-
-
 def sdr_away():
     """True while sdrmux has the SDR away from 1090 MHz (a 2 m listen window)."""
     try:
@@ -400,87 +387,43 @@ def sdr_away():
         return None
 
 
-class PaneWatch:
-    """Follow HamClock's diagnostic log; report when it repainted our pane (or restarted),
-    so the scope can be pushed again at once instead of leaving HamClock's content visible."""
-
-    LOG = os.path.expanduser("~/.hamclock/diagnostic-log.txt")
-
-    def __init__(self, pane):
-        self.marks = (f"Pane {pane} now showing".encode(), b"Setup:",
-                      b"reading local latest_")      # SDO image reload (if SDO is underneath)
-        self.f, self.ino = None, None
-        self.reopen(at_end=True)
-
-    def reopen(self, at_end=False):
-        try:
-            self.f = open(self.LOG, "rb")
-            self.ino = os.fstat(self.f.fileno()).st_ino
-            if at_end:
-                self.f.seek(0, os.SEEK_END)
-        except OSError:
-            self.f = None
-
-    def redrawn(self):
-        try:
-            st = os.stat(self.LOG)
-        except OSError:
-            return False
-        if self.f is None or st.st_ino != self.ino or st.st_size < self.f.tell():
-            self.reopen()                       # HamClock restarted / log rotated
-            return True
-        data = self.f.read()
-        return any(m in data for m in self.marks)
-
-
-def push(img, pane, host):
-    data = bmp565(framed(img))
-    req = urllib.request.Request(f"http://{host}/set_bmp?pane={pane}&fit=crop", data=data,
-                                 method="POST", headers={"Content-Type": "application/octet-stream"})
-    return urllib.request.urlopen(req, timeout=10).read().decode().strip()
+def save(img, path):
+    """Write the picture whole: the displays never read half of one."""
+    part = path + ".part"
+    img.save(part, format="PNG")
+    os.replace(part, path)
 
 
 def main():
     ap = argparse.ArgumentParser()
-    ap.add_argument("--pane", type=int, default=2)
     ap.add_argument("--range-mi", type=float, default=30)
     ap.add_argument("--basemap", default=os.path.expanduser("~/influ/model/basemap.json"))
     ap.add_argument("--every", type=float, default=5, help="render interval, s")
-    ap.add_argument("--keepalive", type=float, default=15, help="re-push unchanged image, s")
-    ap.add_argument("--hamclock", default="127.0.0.1:8070")
-    ap.add_argument("--once", help="render one frame to this PNG and exit (no push)")
+    ap.add_argument("--out", default=OUT, help="the picture the displays lay over the pane")
+    ap.add_argument("--once", help="render one frame to this PNG and exit")
     a = ap.parse_args()
     sc = Scope(a)
     if a.once:
         for _ in range(3):
             sc.sample()
             time.sleep(1)
-        sc.render(sdr_away()).save(a.once)
+        framed(sc.render(sdr_away())).save(a.once)
         return
-    watch = PaneWatch(a.pane)
-    last_img, last_push, nxt, again = None, 0.0, 0.0, 0.0
+    last, nxt = None, 0.0
     while True:
         sc.sample()
-        redrawn = watch.redrawn()
         now = time.time()
-        if redrawn:
-            again = now + 1.5                  # the log line may precede HamClock's actual draw
-        elif again and now >= again:
-            redrawn, again = True, 0.0
-        if now >= nxt or redrawn:
-            img = sc.render(sdr_away())
+        if now >= nxt:
             nxt = now + a.every
+            img = framed(sc.render(sdr_away()))
             blob = img.tobytes()
-            # push only on change, when HamClock repainted the pane, or as a periodic safety net
-            if blob != last_img or redrawn or now - last_push > a.keepalive:
+            if blob != last:                   # written only when it changed
                 try:
-                    r = push(img, a.pane, a.hamclock)
-                    if r != "ok":
-                        print("hamclock:", r, flush=True)
-                    last_img, last_push = blob, now
+                    save(img, a.out)
+                    last = blob
                 except OSError as e:
-                    print("push failed:", e, flush=True)
-        time.sleep(0.25 if redrawn else 0.5)
+                    print("write failed:", e, flush=True)
+        time.sleep(0.5)
 
 
 if __name__ == "__main__":

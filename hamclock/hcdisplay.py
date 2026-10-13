@@ -17,8 +17,9 @@ if it cannot start, the pictures build_rangemap.py and activity.py leave in ~/in
 in). A touchpad pinch or the wheel zooms it, a two-finger scroll or a drag pans it (touchpad
 gestures come from Wayland, gestures.py), and so do the arrow keys, + and - (or PgUp, PgDn), and a
 gamepad (pygame.joystick: left stick or D-pad pans, shoulders zoom, A is Enter, B Escape). Over the foot of
-the left column goes this week's FT8 tally. Taps, drags and pointer moves over them stay here
-instead of reaching what they cover.
+the left column goes this week's FT8 tally, and over the second pane the ADS-B scope
+(tools/adsb_scope.py); HamClock goes on drawing what is under them, unseen. Taps, drags and
+pointer moves over them stay here instead of reaching what they cover.
 
 The window is the clock's aspect at the panel's size (1280x768 on the X230's 1366x768); the
 clock is scaled to it once, then only where it changed, and while the map moves only the map
@@ -43,8 +44,10 @@ URL = "ws://127.0.0.1:8071/live-ws"
 APP_W, APP_H = 800, 480         # HamClock's own coordinates for touch and mouse
 MAP_BOX = (139, 149, 660, 330)  # HamClock's map_b in those coordinates
 TALLY_BOX = (1, 430, 137, 48)   # last 3 DX cluster rows of the left column (rows: 192 + 14 k)
+ADSB_BOX = (405, 0, 160, 148)   # HamClock's second pane, plot_b[PANE_2]
 MODEL = os.path.expanduser("~/influ/model")
-OVERLAYS = [("rangemap.png", MAP_BOX), ("night.png", MAP_BOX), ("activity.png", MAP_BOX), ("ft8week.png", TALLY_BOX)]
+OVERLAYS = [("rangemap.png", MAP_BOX), ("night.png", MAP_BOX), ("activity.png", MAP_BOX), ("ft8week.png", TALLY_BOX),
+            ("adsb.png", ADSB_BOX)]
 POLL = 0.1                      # s between update requests, as live.html (UPDATE_MS)
 JITTER = 5                      # app px a press may move and still count as a tap
 CURSOR_IDLE = 3                 # s before the pointer is hidden
@@ -300,7 +303,7 @@ class Scene:
 
     def tick(self, dt):
         now = time.monotonic()
-        if now - self.last_check > 5:
+        if now - self.last_check > 1:          # the scope is new every 5 s
             self.last_check = now
             self.clock_dirty = any([o.refresh() for o in self.overlays]) or self.clock_dirty
         if self.canvas:

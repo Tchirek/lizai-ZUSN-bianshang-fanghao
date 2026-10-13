@@ -28,7 +28,7 @@ os.environ.setdefault('PYGAME_HIDE_SUPPORT_PROMPT', '1')
 import pygame
 from PIL import Image, ImageChops
 
-from hcdisplay import APP_W, APP_H, MAP_BOX, TALLY_BOX, Fitted, Link, Mirror, Overlay, Scene, on_map
+from hcdisplay import APP_W, APP_H, MAP_BOX, OVERLAYS, Fitted, Link, Mirror, Overlay, Scene, on_map
 
 SIZE = (1280, 768)                         # same frame size as the X230 window
 IDLE_S = 120
@@ -37,6 +37,8 @@ MAP_KEYS = {'ArrowLeft', 'ArrowRight', 'ArrowUp', 'ArrowDown', '+', '=', '-', 'P
 KEYS = MAP_KEYS | {'Enter', 'Tab', 'Escape', 'Backspace', 'Space'}
 BAND = 32                                  # rows per band when looking for changed pixels
 WHOLE = 0.6                                # changes over this share of the frame go whole
+REACH = 4                                  # map data asked for spans at most this many views' worth
+NIGHT_PX = 12_000_000                      # device px a night picture may have
 log = logging.getLogger(__name__)
 
 
@@ -56,7 +58,7 @@ class ClockScene(Scene):
         self.frame, self.fitted = pygame.Surface(size), Fitted(size)
         self.box = pygame.Rect(*(round(v * self.k) for v in MAP_BOX))
         self.canvas = self.inspector = None
-        self.overlays = [Overlay('ft8week.png', TALLY_BOX)]
+        self.overlays = [Overlay(name, box) for name, box in OVERLAYS if box != MAP_BOX]   # tally, ADS-B scope
         self.whole = self.clock_dirty = True
         self.last_check = self.last_panel = 0
         self.held = set()
@@ -342,6 +344,7 @@ class Server(ThreadingHTTPServer):
         self.renderer = renderer
         self.map_data, self.map_lock = map_data, threading.Lock()
         self.profile_slots = threading.BoundedSemaphore(2)
+        self.night_slots = threading.BoundedSemaphore(2)
         self.address_family = socket.AF_INET6 if ':' in address[0] else socket.AF_INET
         super().__init__(address, Handler)
 
@@ -402,18 +405,51 @@ class Handler(BaseHTTPRequestHandler):
             self.reply(200, gzip.compress(body, compresslevel=1) if compressed else body,
                        content_type, cache=cache, etag=etag, compressed=compressed)
 
+    @staticmethod
+    def bbox(args):
+        bbox = [float(value) for value in args['bbox'][0].split(',')]
+        if len(bbox) != 4 or not all(math.isfinite(value) for value in bbox) \
+                or bbox[0] >= bbox[2] or bbox[1] >= bbox[3]:
+            raise ValueError('invalid map extent')
+        return bbox
+
     def map_query(self, args):
         data = self.server.get_map()
-        bbox = [float(value) for value in args['bbox'][0].split(',')]
+        bbox = self.bbox(args)
         zoom = float(args.get('zoom', ['1'])[0])
-        if len(bbox) != 4 or not all(math.isfinite(value) for value in bbox + [zoom]) \
-                or not 1 <= zoom <= 100 or bbox[0] >= bbox[2] or bbox[1] >= bbox[3]:
-            raise ValueError('invalid map extent')
+        if not math.isfinite(zoom) or not 1 <= zoom <= 100:
+            raise ValueError('invalid zoom')
         bbox = [max(bbox[0], data.extent[0]), max(bbox[1], data.extent[1]),
                 min(bbox[2], data.extent[2]), min(bbox[3], data.extent[3])]
         if bbox[0] >= bbox[2] or bbox[1] >= bbox[3]:
             raise ValueError('extent outside map')
+        # a page asks for its view and a margin; the whole map at a high zoom is no one's view
+        if (bbox[2] - bbox[0]) * zoom > REACH * (data.extent[2] - data.extent[0]) \
+                or (bbox[3] - bbox[1]) * zoom > REACH * (data.extent[3] - data.extent[1]):
+            raise ValueError('extent too large for zoom')
         return data, bbox, zoom
+
+    def night_query(self, args):
+        """bbox, width and height (CSS px) and device px ratio of a night picture a page asks for."""
+        bbox = tuple(round(value, 1) for value in self.bbox(args))
+        width, height = int(args['w'][0]), int(args['h'][0])
+        ratio = float(args.get('ratio', ['1'])[0])
+        if not (0 < width <= 8192 and 0 < height <= 8192 and math.isfinite(ratio) and 1 <= ratio <= 3
+                and width * height * ratio * ratio <= NIGHT_PX):
+            raise ValueError('invalid picture size')
+        return bbox, width, height, round(ratio, 2)
+
+    def night_reply(self, make, content_type, *args):
+        """`make(*args, minute)`'s picture of the night now; at most two worked out at once."""
+        if not self.server.night_slots.acquire(timeout=10):
+            raise Busy('night busy')
+        try:
+            body = make(*args, int(time.time() // 60))
+        finally:
+            self.server.night_slots.release()
+        compressed = content_type.startswith('application/json') and 'gzip' in self.headers.get('Accept-Encoding', '')
+        self.reply(200, gzip.compress(body, compresslevel=1) if compressed else body, content_type,
+                   cache='private, max-age=60', compressed=compressed)
 
     def do_GET(self):
         route = urlsplit(self.path)
@@ -434,8 +470,12 @@ class Handler(BaseHTTPRequestHandler):
                 self.json_reply(data.static(bbox, zoom) if route.path.endswith('features') else data.grid(bbox, zoom))
             elif route.path == '/map/live':
                 self.json_reply(self.server.get_map().live())
-            elif route.path == '/map/night.png':
-                self.reply(200, self.server.get_map().night(), 'image/png', cache='public, max-age=30')
+            elif route.path == '/map/veil.png':
+                bbox, width, height, _ = self.night_query(parse_qs(route.query))
+                self.night_reply(self.server.get_map().veil, 'image/png', bbox, width, height)
+            elif route.path == '/map/terminator':
+                self.night_reply(self.server.get_map().terminator, 'application/json; charset=utf-8',
+                                 *self.night_query(parse_qs(route.query)))
             elif match := re.fullmatch(r'/map/tiles/(\d+)/(\d+)/(\d+)\.png', route.path):
                 self.file_reply(self.server.get_map().tile_path(*map(int, match.groups())), 'image/png',
                                 cache='public, max-age=86400')

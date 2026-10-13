@@ -2,6 +2,7 @@
 import os
 os.environ['SDL_VIDEODRIVER'] = 'dummy'
 os.environ['PYGAME_HIDE_SUPPORT_PROMPT'] = '1'
+import base64
 from concurrent.futures import ThreadPoolExecutor
 from contextlib import ExitStack
 import io
@@ -370,7 +371,7 @@ class MapTests(unittest.TestCase):
         for value in (True, float('nan'), 1e20):
             self.assertEqual(f.request('/map/reachability', dict(x=value, y=0))[0], 400)
 
-    def test_features_grid_and_night_overlay_are_local_map_data(self):
+    def test_features_and_grid_are_local_map_data_asked_for_a_view(self):
         f = self.fixture
         query='?bbox='+','.join(map(str, f.map_data.extent))+'&zoom=1'
         status, _, body = f.request('/map/features'+query)
@@ -380,10 +381,82 @@ class MapTests(unittest.TestCase):
         status, _, body = f.request('/map/grid'+query)
         self.assertEqual(status, 200)
         self.assertTrue(json.loads(body)['features'])
-        status, _, body = f.request('/map/night.png')
-        self.assertEqual(status, 200)
-        self.assertEqual(Image.open(io.BytesIO(body)).size, (a.W, a.H))
         self.assertEqual(f.request('/map/grid?bbox=nan,0,1,1')[0], 400)
+        # the whole map at 48x is no page's view: refused instead of worked out
+        self.assertEqual(f.request('/map/features' + query.replace('zoom=1', 'zoom=48'))[0], 400)
+
+    def sunset(self):
+        """The minute the sun sets at the station on an equinox (the terminator through the map)."""
+        _, down = panel.sun_times(self.fixture.base.lat0, self.fixture.base.lon0, 1774008000)
+        return int(down // 60)
+
+    def test_night_is_the_native_maps_night_at_the_pages_px(self):
+        f, minute = self.fixture, self.sunset()
+        data, size = f.map_data, (round(a.W * .5), round(a.H * .5))
+        _, _, line = maps.shade(f.base, (0, 0), .5, size, minute * 60)
+        self.assertIsNotNone(line)
+        (x, y, w, h), padded = line
+        native = np.frombuffer(padded, np.uint8).reshape(h + 2, w + 2, 4)[1:-1, 1:-1]
+        result = json.loads(data.terminator(tuple(data.extent), *size, 1, minute))
+        mine = np.asarray(Image.open(io.BytesIO(base64.b64decode(result['line']['png'].split(',')[1]))))
+        self.assertEqual((result['line']['x'], result['line']['y']), (x, y))
+        np.testing.assert_array_equal(mine, native)              # the same gold line, px for px
+        tag = result['tag']
+        self.assertEqual(tag['name'], 'SUNSET')
+        self.assertGreater(tag['lift'], 0)
+        points = np.asarray(tag['points'])
+        self.assertTrue(((points[:, 0] > data.extent[0]) & (points[:, 0] < data.extent[2])).all())
+        self.assertTrue((np.diff(points[:, 1]) < 0).all())       # from the top down
+        # at device px the line is drawn finer, not scaled: twice the px, the same place
+        sharp = json.loads(data.terminator(tuple(data.extent), *size, 2, minute))['line']
+        self.assertAlmostEqual(sharp['x'] / 2, x, delta=2)
+        veil = Image.open(io.BytesIO(data.veil(tuple(data.extent), *size, minute)))
+        self.assertEqual((veil.mode, veil.size), ('RGBA', size))
+        alpha = np.asarray(veil)[..., 3]
+        self.assertGreater(alpha[:, :x].mean() + alpha[:, x + w:].mean(), 20)   # night on one side
+
+    def test_night_pictures_are_bounded(self):
+        f = self.fixture
+        bbox = ','.join(map(str, f.map_data.extent))
+        status, headers, body = f.request(f'/map/veil.png?bbox={bbox}&w=330&h=165')
+        self.assertEqual(status, 200)
+        self.assertEqual(Image.open(io.BytesIO(body)).size, (330, 165))
+        status, _, body = f.request(f'/map/terminator?bbox={bbox}&w=330&h=165&ratio=2')
+        self.assertEqual(status, 200)
+        self.assertIsInstance(json.loads(body), dict)
+        for query in ('w=0&h=10', 'w=10&h=10&ratio=5', 'w=8000&h=8000', 'w=x&h=1'):
+            self.assertEqual(f.request(f'/map/terminator?bbox={bbox}&{query}')[0], 400)
+
+    def test_live_layer_legend_and_qso_lines_follow_the_native_map(self):
+        f = self.fixture
+        (Path(f.map_data.model) / 'activity.json').write_text(json.dumps(dict(reports=[], aprs={}, qsos=[['W1AW', 'OL39']])))
+        bands = {('20', (255, 250, 0)), ('70cm', (180, 120, 255)), ('80', (131, 129, 0))}
+        with patch.object(a, 'digital_graph', lambda base, reports: ({}, bands, [], {}, 0)):
+            result = f.map_data.live()
+        self.assertEqual([b['name'] for b in result['legend']['bands']], ['80', '20', '70cm'])
+        kinds = {item['properties']['kind']: item['geometry'] for item in result['features']['features']}
+        self.assertEqual(kinds['qso_path']['coordinates'][0], [0, 0])               # from us
+        self.assertEqual(kinds['qso_path']['coordinates'][1], kinds['qso']['coordinates'])
+
+    def test_the_adsb_scope_lies_over_the_second_pane_and_keeps_its_taps(self):
+        f = self.fixture
+        green = (10, 200, 30)
+        near = lambda px: max(abs(u - v) for u, v in zip(px, green)) <= 3          # smoothscale rounds
+        Image.new('RGB', (320, 296), green).save(Path(f.map_data.model) / 'adsb.png')
+        token = f.open()
+        deadline = time.monotonic() + 5
+        while True:
+            status, _, body = f.frame(token)
+            frame = Image.open(io.BytesIO(body)).convert('RGB') if status == 200 else None
+            if frame and near(frame.getpixel((776, 120))) or time.monotonic() > deadline:
+                break
+            time.sleep(.2)
+        self.assertTrue(near(frame.getpixel((776, 120))))                          # pane 2: x 405..565 app px
+        self.assertFalse(near(frame.getpixel((500, 120))))                         # pane 1 is HamClock's
+        self.assertEqual(f.input(token, dict(type='tap', x=480, y=70)), 204)
+        self.assertEqual(f.input(token, dict(type='tap', x=300, y=70)), 204)
+        time.sleep(.2)
+        self.assertEqual([m for m in f.link.sent if m.startswith('set_touch')], ['set_touch?x=300&y=70&button=0'])
 
     def test_frontend_has_no_loading_text_or_spinner(self):
         f = self.fixture

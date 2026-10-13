@@ -105,23 +105,25 @@ def over(px, colour, cover):
     px[:, 3] = alpha * 255
 
 
-def twilight(alt, size, step):
+def twilight(alt, size, step, veil=True):
     """The night over a picture `size` (w, h) px, from the sun's elevation `alt` sampled at the
     middle of every `step` px square from its top left: as an RGBA picture, a veil deepening
     from blue hour at the terminator to indigo at full night, golden hour faintly warming the
-    day side and a soft shadow along the terminator's night side; and the terminator itself,
-    where the sun rises or sets now, a gold line on a dark edge drawn at the picture's own px
-    (sharp at any zoom), as (x, y, RGBA array) of the box of px it covers, or None. The line
-    is apart so that it can go over what is drawn on the ground (rivers, paths)."""
+    day side and a soft shadow along the terminator's night side (None unless `veil`); and the
+    terminator itself, where the sun rises or sets now, a gold line on a dark edge drawn at the
+    picture's own px (sharp at any zoom), as (x, y, RGBA array) of the box of px it covers, or
+    None. The line is apart so that it can go over what is drawn on the ground (rivers, paths)."""
     alt = np.asarray(alt, dtype=np.float32)
-    box = (0, 0, size[0] / step, size[1] / step)
-    t = np.clip((SUNSET - alt) / (SUNSET - DARK), 0, 1)[..., None]      # 0 at the line, 1 at night
-    u = np.clip((alt - SUNSET) / GLOW_DEG, 0, 1)[..., None]             # 0 at the line, 1 past golden hour
-    night = alt[..., None] < SUNSET
-    rgb = np.where(night, np.add(BLUE_HOUR, np.subtract(NIGHT, BLUE_HOUR) * t), GOLDEN_HOUR)
-    alpha = np.where(night, VEIL * (1 - (1 - t) ** 2), GLOW * (1 - u) ** 2)
-    coarse = Image.fromarray(np.concatenate([rgb, alpha], axis=-1).round().astype(np.uint8))
-    picture = coarse.resize(size, Image.Resampling.BILINEAR, box=box)    # smooth: every step-th px is enough
+    picture = None
+    if veil:
+        box = (0, 0, size[0] / step, size[1] / step)
+        t = np.clip((SUNSET - alt) / (SUNSET - DARK), 0, 1)[..., None]      # 0 at the line, 1 at night
+        u = np.clip((alt - SUNSET) / GLOW_DEG, 0, 1)[..., None]             # 0 at the line, 1 past golden hour
+        night = alt[..., None] < SUNSET
+        rgb = np.where(night, np.add(BLUE_HOUR, np.subtract(NIGHT, BLUE_HOUR) * t), GOLDEN_HOUR)
+        alpha = np.where(night, VEIL * (1 - (1 - t) ** 2), GLOW * (1 - u) ** 2)
+        coarse = Image.fromarray(np.concatenate([rgb, alpha], axis=-1).round().astype(np.uint8))
+        picture = coarse.resize(size, Image.Resampling.BILINEAR, box=box)    # smooth: every step-th px is enough
     # the sun's elevation falls one degree a degree of arc from the point under it, so its
     # gradient is the same everywhere: px from the line is the elevation off SUNSET over it
     per_px = max(float(np.median(np.hypot(*np.gradient(alt)))) / step, 1e-9)
@@ -138,7 +140,7 @@ def twilight(alt, size, step):
         (x1 - x0, y1 - y0), Image.Resampling.BILINEAR, box=(x0 / step, y0 / step, x1 / step, y1 / step)))
     off = (fine - SUNSET) / per_px                                      # px from the line, + by day
     ys, xs = np.nonzero((off < 0) & (off > -SHADOW_PX))
-    if len(ys):
+    if len(ys) and picture is not None:
         rgba = np.array(picture.crop((x0, y0, x1, y1)))
         px = rgba[ys, xs].astype(np.float32)
         over(px, NIGHT, SHADOW * (1 + off[ys, xs] / SHADOW_PX) ** 2)

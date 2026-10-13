@@ -1,4 +1,5 @@
 """Local tiles and map data for OpenLayers; projection and terrain maths stay shared."""
+import base64
 from functools import lru_cache
 import io
 import json
@@ -16,8 +17,18 @@ import map_panel as panel
 import map_view as maps
 
 
+LIFT = panel.LINE_PX / 2 + 1 + maps.TAG_GAP     # px from the terminator's middle to its name's baseline
+ORDER = {name: i for i, (_, name, _) in enumerate(a.BANDS)}
+
+
 def collection(features):
     return dict(type='FeatureCollection', features=features)
+
+
+def png(image):
+    out = io.BytesIO()
+    image.save(out, format='PNG', compress_level=1)
+    return out.getvalue()
 
 
 class MapData:
@@ -30,7 +41,6 @@ class MapData:
                        a.W / 2 * self.metres, a.H / 2 * self.metres]
         self.lock = threading.RLock()
         self.static_key = self.static_features = self.static_bounds = None
-        self.night_minute = self.night_png = None
 
     def coordinate(self, pixel):
         x, y = pixel
@@ -153,7 +163,8 @@ class MapData:
         features = []
         for call, (x, y, colour, sent) in stations.items():
             name = call + (f' +{degrees[call]}' if degrees.get(call, 0) > 2 else '')
-            features.append(self.point((x, y), 'digital', name, colour='#%02x%02x%02x' % colour))
+            features.append(self.point((x, y), 'digital', name, colour='#%02x%02x%02x' % colour,
+                                       label='#ffffff' if sent else '#969696'))
         for path in chosen:
             features.append(self.line(path['ends'], 'digital_path', colour='#%02x%02x%02x' % path['colour'],
                                       local=len(path['local']) == 2))
@@ -166,13 +177,16 @@ class MapData:
         for call, grid in data.get('qsos', []):
             latlon = a.locator(grid)
             if latlon:
-                features.append(self.point(self.base.xy(*latlon), 'qso', call))
+                xy = self.base.xy(*latlon)
+                features.append(self.line([(a.W / 2, a.H / 2), xy], 'qso_path'))     # as the native map: DE to them
+                features.append(self.point(xy, 'qso', call))
         elevation, parts = panel.sun_text(self.base.lat0, self.base.lon0, time.time())
+        # the legend counts what is in view, as the native map's does; the page counts those
         return dict(features=collection(features), sun=dict(elevation=elevation, parts=parts),
                     minute=int(time.time() // 60),
-                    legend=dict(aprs=len(data.get('aprs', {})), digital=len(stations),
-                                paths=len(chosen), total=total,
-                                bands=[dict(name=name, colour='#%02x%02x%02x' % colour) for name, colour in sorted(bands)]))
+                    legend=dict(paths=len(chosen), total=total,
+                                bands=[dict(name=name, colour='#%02x%02x%02x' % colour)
+                                       for name, colour in sorted(bands, key=lambda b: ORDER.get(b[0], 99))]))
 
     def grid(self, bbox, zoom):
         corners = [self.base.latlon(*self.pixel((x, y)))
@@ -201,14 +215,50 @@ class MapData:
                     features.append(self.point(self.base.xy((j + 1) / 24, i / 12), 'subgrid_name', name))
         return collection(features)
 
-    def night(self):
-        minute = int(time.time() // 60)
-        with self.lock:
-            if minute != self.night_minute:
-                out = io.BytesIO()
-                panel.night_layer(self.base, when=minute * 60, hud=False).save(out, format='PNG')
-                self.night_png, self.night_minute = out.getvalue(), minute
-            return self.night_png
+    def latlon(self, bbox, width, height):
+        """lat/lon (arrays) of px of a `width` x `height` px picture of `bbox` (projected metres)."""
+        x0, y0, x1, y1 = bbox
+
+        def at(x, y):
+            return maps.grid_latlon(self.base, a.W / 2 + (x0 + np.asarray(x) * (x1 - x0) / width) / self.metres,
+                                    a.H / 2 - (y1 - np.asarray(y) * (y1 - y0) / height) / self.metres)
+        return at
+
+    def twilight(self, bbox, width, height, when, veil=True):
+        """The night over a `width` x `height` px picture of `bbox`, as map_view.shade() works it
+        out for the native map's screen: map_panel.twilight()'s (veil, terminator)."""
+        step = 8
+        y, x = np.mgrid[0:height + step:step, 0:width + step:step] + step / 2
+        lat, lon = self.latlon(bbox, width, height)(x, y)
+        return panel.twilight(panel.solar_elevation(lat, lon, when), (width, height), step, veil)
+
+    @lru_cache(maxsize=8)
+    def veil(self, bbox, width, height, minute):
+        """The night's veil over `bbox`, `width` x `height` CSS px: the picture that goes under
+        everything drawn on the ground (PNG)."""
+        return png(self.twilight(bbox, width, height, minute * 60)[0])
+
+    @lru_cache(maxsize=8)
+    def terminator(self, bbox, width, height, ratio, minute):
+        """The terminator over `bbox` for a page showing it `width` x `height` CSS px at `ratio`
+        device px each: its gold line drawn at device px, as a PNG of the px it covers and their
+        top left (over rivers and paths, under the names); and where its name may go, as the native
+        map places it: the rows the line crosses from the top down (projected metres), the
+        name, the line's angle down the view and the lift of the name's baseline off the line
+        (CSS px). JSON."""
+        out = {}
+        _, line = self.twilight(bbox, round(width * ratio), round(height * ratio), minute * 60, veil=False)
+        if line is not None:
+            x, y, rgba = line
+            out['line'] = dict(x=x, y=y, png='data:image/png;base64,' + base64.b64encode(png(Image.fromarray(rgba))).decode())
+        found = maps.crossings(self.latlon(bbox, width, height), width, height, minute * 60)
+        if found is not None:
+            on, setting, angle = found
+            x0, y0, x1, y1 = bbox
+            points = np.stack([x0 + on[:, 0] * (x1 - x0) / width, y1 - on[:, 1] * (y1 - y0) / height], axis=1)
+            out['tag'] = dict(name='SUNSET' if setting else 'SUNRISE', angle=round(angle), lift=LIFT,
+                              points=points.round(1).tolist())
+        return json.dumps(out, separators=(',', ':')).encode()
 
     def reachability(self, x, y):
         if not self.extent[0] <= x <= self.extent[2] or not self.extent[1] <= y <= self.extent[3]:
