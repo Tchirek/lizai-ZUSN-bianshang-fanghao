@@ -242,6 +242,7 @@ async function fetchCluster() {
 // tools/hamclock-adsb.cpp, line for line where it can be
 
 const RANGES = [10, 20, 30, 50], MI_KM = 1.609344, EARTH_KM = 6371;
+const STALE_S = 120;                   // the exchanges may answer only now and then (functions/api/adsb.js)
 const STYLES = {water: [rgb565(20, 45, 110), 1, 100], river: [rgb565(30, 70, 160), 1, 100], rail: [rgb565(70, 70, 70), 1, 50],
   trunk: [rgb565(75, 55, 20), 1, 50], motorway: [rgb565(120, 85, 25), 1, 100], runway: [rgb565(175, 175, 175), 3, 100]};
 const ALT_BANDS = [[2000, rgb565(255, 64, 64), '0'], [10000, rgb565(246, 129, 49), '2'], [20000, rgb565(255, 255, 0), '10'],
@@ -349,7 +350,7 @@ function symbol(x, y, ac, colour) {
 }
 function drawAdsb() {
   const box = BOXES.adsb, mi = RANGES[state.range], sc = {cx: SCALE * (box.x + box.w / 2), cy: SCALE * (box.y + 74), r: SCALE * 64, km: mi * MI_KM};
-  const feed = state.adsb, live = feed && Date.now() / 1000 - feed.t < 30;
+  const feed = state.adsb, live = feed && Date.now() / 1000 - feed.t < STALE_S;
   frame(box); tft.setFont('fast');
   const taken = [{x: box.x, y: box.y, w: 40, h: 20}, {x: box.x + box.w - 62, y: box.y, w: 62, h: 20}, ...[0, 1, 2, 3].map(i => compassPoint(sc, i))];
   // the aircraft in range, nearest first, labelled where there is room; the map's names give way
