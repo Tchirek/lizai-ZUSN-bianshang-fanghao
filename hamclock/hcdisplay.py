@@ -64,6 +64,7 @@ PAD_DEAD = 0.2                  # stick travel ignored around the centre
 PAD_ZOOM = {5: 1, 4: -1}        # gamepad buttons held to zoom: right / left shoulder
 PAD_KEYS = {0: "Enter", 1: "Escape"}   # gamepad buttons sent as keys: A, B
 PAGE_KEYS = {pygame.K_PAGEUP: "PageUp", pygame.K_PAGEDOWN: "PageDown"}   # turn the search's pages
+AFFILIATION_KEYS = {pygame.K_F1: "F1", pygame.K_F2: "F2", pygame.K_F3: "F3", pygame.K_F4: "F4"}   # held for a symbol
 KEYS = {pygame.K_RETURN: "Enter", pygame.K_KP_ENTER: "Enter", pygame.K_TAB: "Tab",
         pygame.K_ESCAPE: "Escape", pygame.K_BACKSPACE: "Backspace", pygame.K_SPACE: "Space",
         pygame.K_LEFT: "ArrowLeft", pygame.K_RIGHT: "ArrowRight",
@@ -254,12 +255,19 @@ class Scene:
             self.inspector = MapPanel(**(panel_options or {}))
         except (OSError, ValueError, KeyError):
             pass
+        self.desk = None                     # milsym.Desk: the military symbols put on the map
+        if self.canvas:
+            from milsym import Desk
+            self.desk = Desk()
+        self.pointer = None                  # app px of the pointer, None off the window
+        self.affiliations = []               # F1 .. F4 held, the last pressed last
+        self.picked = self.dropping = None   # a symbol pressed on (where, moved?); a click to put one down
         w, h = size
         b = self.box
         self.strips = [pygame.Rect(0, 0, w, b.top), pygame.Rect(0, b.bottom, w, h - b.bottom),
                        pygame.Rect(0, b.top, b.left, b.h), pygame.Rect(b.right, b.top, w - b.right, b.h)]
         self.whole = self.clock_dirty = self.map_dirty = True
-        self.last_check = self.last_panel = self.last_drift = 0
+        self.last_check = self.last_panel = self.last_drift = self.last_board = 0
         self.held = set()
         self.weather = None                  # dxwx.DXWeather: the weather pane follows the popup
         self.search = None
@@ -349,7 +357,86 @@ class Scene:
         x, y = (int(at[0]), int(at[1])) if at and not self.covered(at) else (-1, -1)
         self.link.send(f"set_mouse?x={x}&y={y}")
 
+    # the military symbols (milsym.py): hold F1 .. F4 (friend, hostile, neutral, unknown) and press
+    # 1 .. 9, 0 for one, Enter or Space puts it down at the pointer (once a press); a click picks a
+    # symbol up and the next puts it down, or a drag moves it; Delete or Backspace throws away the
+    # one in hand, Ctrl+Z undoes, Esc lets go
+
+    def box_xy(self, at):
+        """App px -> map box px; None off the map."""
+        return (at[0] * self.k - self.box.x, at[1] * self.k - self.box.y) if on_map(at) else None
+
+    def latlon(self, at):
+        view, scale = self.canvas.view, self.canvas.scale
+        x, y = self.box_xy(at)
+        return view.base.latlon(*view.unproject((x / scale, y / scale)))
+
+    def affiliation(self, name, down):
+        if name in self.affiliations:
+            self.affiliations.remove(name)
+        if down:
+            self.affiliations.append(name)
+
+    def point(self, at):
+        """The pointer moved to at (app px, None off the window)."""
+        self.pointer = at
+        if self.picked and at and max(abs(at[0] - self.picked[0][0]), abs(at[1] - self.picked[0][1])) > JITTER:
+            self.picked = self.picked[0], True
+        if self.desk and (self.desk.armed or self.desk.carried):
+            self.map_dirty = True
+
+    def hold(self, at):
+        """A press at app px: True if it puts down the symbol in hand or picks one up."""
+        if not self.desk or not on_map(at) or self.over_search(at) or self.panel_contains(at):
+            return False
+        if self.desk.carried:
+            self.dropping = at
+            return True
+        sid = self.desk.hit(self.canvas.view, self.canvas.scale, self.box_xy(at))
+        if sid:
+            self.desk.pick(sid)
+            self.picked = at, False
+            self.map_dirty = True
+        return bool(sid)
+
+    def release(self, at):
+        """The press let go at app px: True if it was the symbols'."""
+        if not (self.dropping or self.picked):
+            return False
+        if self.dropping or self.picked[1]:             # a click on with one in hand, or a drag done
+            if at and on_map(at):
+                self.desk.drop(*self.latlon(at))
+            else:
+                self.desk.cancel()
+        self.dropping = self.picked = None
+        self.map_dirty = True
+        return True
+
+    def symbol_key(self, name, ctrl):
+        """A key for the symbols; True if it was theirs."""
+        desk = self.desk
+        if not desk or self.search:
+            return False
+        if name.isdigit() and self.affiliations:
+            from milsym import AFFILIATIONS, FUNCTIONS
+            desk.arm(AFFILIATIONS[int(self.affiliations[-1][1]) - 1], FUNCTIONS[(int(name) - 1) % 10])
+        elif name in ('Enter', 'Space') and desk.armed and on_map(self.pointer):
+            desk.place(*self.latlon(self.pointer))
+        elif name in ('Delete', 'Backspace') and desk.carried:
+            desk.remove()
+            self.picked = self.dropping = None
+        elif ctrl and name == 'z':
+            desk.undo()
+        elif name == 'Escape' and desk.cancel():
+            self.picked = self.dropping = None
+        else:
+            return False
+        self.map_dirty = True
+        return True
+
     def key(self, name, ctrl=False, shift=False, repeat=False):
+        if self.symbol_key(name, ctrl):
+            return
         if self.search:
             if name == 'Escape':
                 self.close_search()
@@ -379,7 +466,7 @@ class Scene:
             self.inspector.close()
             self.map_dirty = True
             self.follow(before)
-        else:
+        elif name != 'Delete' and not (ctrl and name.isalpha()):          # those are the symbols' alone
             mod = ("C" if ctrl else "") + ("S" if shift else "")
             self.link.send(f"set_char?char={name}&mod={mod}")
 
@@ -399,6 +486,9 @@ class Scene:
         if now - self.last_check > 5:
             self.last_check = now
             self.clock_dirty = any([o.refresh() for o in self.overlays]) or self.clock_dirty
+        if self.desk and now - self.last_board > 1:             # symbols the web page put down
+            self.last_board = now
+            self.map_dirty = self.desk.board.poll() or self.map_dirty
         if self.canvas:
             vx = int('ArrowLeft' in self.held) - int('ArrowRight' in self.held)
             vy = int('ArrowUp' in self.held) - int('ArrowDown' in self.held)
@@ -430,8 +520,12 @@ class Scene:
                 o.blit(frame)
         if self.canvas and (self.whole or self.map_dirty):
             self.canvas.draw(frame, self.box)
+            area = frame.subsurface(self.box)
             if self.search:
-                self.search.mark(frame.subsurface(self.box), self.canvas.view, self.canvas.scale)
+                self.search.mark(area, self.canvas.view, self.canvas.scale)
+            if self.desk:
+                pointer = self.box_xy(self.pointer) if self.pointer and on_map(self.pointer) else None
+                self.desk.draw(area, self.canvas.view, self.canvas.scale, pointer)
         if self.inspector and (self.whole or self.map_dirty or not self.canvas):
             self.inspector.draw(frame, tuple(self.box))
         if self.search and (self.whole or self.map_dirty):
@@ -473,6 +567,13 @@ class Screen:
             return None
         return ((pos[0] - self.view.x) * APP_W / self.view.w,
                 (pos[1] - self.view.y) * APP_H / self.view.h)
+
+
+def symbol_key_name(ev):
+    """Delete, and a letter held with Ctrl (Ctrl+Z), named for the symbols."""
+    if ev.key == pygame.K_DELETE:
+        return "Delete"
+    return chr(ev.key) if ev.mod & pygame.KMOD_CTRL and pygame.K_a <= ev.key <= pygame.K_z else None
 
 
 def key_name(ev):
@@ -546,6 +647,13 @@ def main():
             if ev.type in (pygame.MOUSEMOTION, pygame.MOUSEBUTTONDOWN, pygame.MOUSEWHEEL, pygame.KEYDOWN):
                 last_input = time.time()
                 pygame.mouse.set_visible(not touch)
+            if ev.type in (pygame.KEYDOWN, pygame.KEYUP) and ev.key in AFFILIATION_KEYS:
+                scene.affiliation(AFFILIATION_KEYS[ev.key], ev.type == pygame.KEYDOWN)
+                continue
+            if ev.type == pygame.WINDOWFOCUSLOST:
+                scene.affiliations.clear()
+            if ev.type in (pygame.MOUSEMOTION, pygame.WINDOWLEAVE) and not touch:
+                scene.point(screen.app_xy(ev.pos) if ev.type == pygame.MOUSEMOTION else None)
             # the middle button (the TrackPoint's) makes the touchpad a touch screen for the map:
             # the pointer goes and a finger's slide drags the map along under it; pinches and
             # two-finger scrolls do as ever; once more, or leaving the window, and it is back
@@ -556,6 +664,7 @@ def main():
                 pygame.event.set_grab(touch)
                 if touch:
                     link.send("set_mouse?x=-1&y=-1")
+                    scene.point(None)
                     scene.map_dirty = scene.search and scene.search.hover(None) or scene.map_dirty
                 pressed = drag = None
                 continue
@@ -604,6 +713,10 @@ def main():
                 at = pointer()
                 if canvas and not gestures and on_map(at):
                     canvas.scroll(ev.precise_y * (-1 if ev.flipped else 1), map_xy(at))
+            elif ev.type == pygame.MOUSEBUTTONDOWN and ev.button == 1 and scene.hold(screen.app_xy(ev.pos)):
+                pressed = drag = None                               # a symbol's, not the map's
+            elif ev.type == pygame.MOUSEBUTTONUP and ev.button == 1 and scene.release(screen.app_xy(ev.pos)):
+                pressed = drag = None
             elif ev.type == pygame.MOUSEBUTTONDOWN and ev.button in (1, 2, 3):
                 pressed, drag = screen.app_xy(ev.pos), None
                 on_panel = inspector and inspector.box and pressed and \
@@ -627,7 +740,7 @@ def main():
             elif ev.type == pygame.KEYDOWN and canvas and (ev.key in MAP_KEYS or ev.key in ZOOM_KEYS):
                 if ev.key in ZOOM_KEYS and not ev.mod & pygame.KMOD_SHIFT:   # a step; with Shift, below
                     canvas.scroll(ZOOM_KEYS[ev.key] * KEY_STEP, (MAP_W / 2, MAP_H / 2))
-            elif ev.type == pygame.KEYDOWN and (name := key_name(ev)):
+            elif ev.type == pygame.KEYDOWN and (name := key_name(ev) or symbol_key_name(ev)):
                 mods = pygame.key.get_mods()
                 if not mods & (pygame.KMOD_ALT | pygame.KMOD_GUI):
                     scene.key(name, bool(mods & pygame.KMOD_CTRL), bool(mods & pygame.KMOD_SHIFT))

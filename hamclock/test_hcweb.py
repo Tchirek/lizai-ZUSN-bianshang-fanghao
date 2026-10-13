@@ -639,6 +639,37 @@ class MapTests(unittest.TestCase):
         self.assertEqual(out[0], out[-1])
         np.testing.assert_allclose(out[0], f.map_data.coordinate(ring[0]), atol=1)
 
+    def test_symbol_board_adds_moves_removes_and_undoes(self):
+        from milsym import Board, Desk, AFFILIATIONS, FUNCTIONS, shapes
+        path = os.path.join(self.fixture.map_data.model, 'symbols.json')
+        desk, other = Desk(Board(path)), Board(path)
+        desk.arm('hostile', 'armour')
+        desk.place(30.5, 105.6)
+        self.assertTrue(other.poll())
+        [placed] = other.symbols
+        self.assertEqual((placed['affiliation'], placed['function'], placed['lat']), ('hostile', 'armour', 30.5))
+        desk.pick(placed['id'])
+        desk.drop(30.6, 105.7)
+        other.poll()
+        self.assertEqual((other.symbols[0]['lat'], other.symbols[0]['lon']), (30.6, 105.7))
+        desk.pick(placed['id'])
+        desk.remove()
+        other.poll()
+        self.assertEqual(other.symbols, [])
+        desk.undo()                                         # back where it was moved to, same symbol
+        other.poll()
+        self.assertEqual([(s['id'], s['lat']) for s in other.symbols], [(placed['id'], 30.6)])
+        desk.undo()
+        desk.undo()
+        other.poll()
+        self.assertEqual(other.symbols, [])
+        self.assertFalse(desk.undo())
+        with self.assertRaises(ValueError):
+            other.change('add', affiliation='friend', function='cavalry', lat=0, lon=0)
+        geometry = shapes()['shapes']
+        self.assertEqual(set(geometry), set(AFFILIATIONS))
+        self.assertTrue(all(set(geometry[a]) == set(FUNCTIONS) for a in AFFILIATIONS))
+
     def test_search_ranks_exact_then_prefix_and_bounds_results(self):
         from map_search import search, LIMIT
         rows = [dict(name=name, point=[660, 330], kind='地点') for name in
