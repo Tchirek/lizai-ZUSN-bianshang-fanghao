@@ -670,6 +670,24 @@ class MapTests(unittest.TestCase):
         self.assertEqual(set(geometry), set(AFFILIATIONS))
         self.assertTrue(all(set(geometry[a]) == set(FUNCTIONS) for a in AFFILIATIONS))
 
+    def test_symbols_go_through_the_web_in_map_coordinates(self):
+        f = self.fixture
+        point = f.map_data.coordinate((700, 350))
+        status, _, body = f.request('/map/symbols', dict(op='add', affiliation='friend', function='infantry',
+                                                         x=point[0], y=point[1]))
+        self.assertEqual(status, 200)
+        data = json.loads(body)
+        [symbol] = data['symbols']
+        np.testing.assert_allclose(symbol['point'], point, atol=1)
+        self.assertIsNone(data['before'])
+        self.assertEqual(f.request(f"/map/symbols?rev={data['rev']}")[0], 204)
+        moved = json.loads(f.request('/map/symbols', dict(op='move', id=symbol['id'], x=0, y=0))[2])
+        np.testing.assert_allclose(moved['before']['point'], point, atol=1)
+        np.testing.assert_allclose(moved['symbols'][0]['point'], [0, 0], atol=1)
+        self.assertEqual(json.loads(f.request('/map/symbols', dict(op='remove', id=symbol['id']))[2])['symbols'], [])
+        self.assertEqual(f.request('/map/symbols', dict(op='add', affiliation='ally', function='infantry', x=0, y=0))[0], 400)
+        self.assertEqual(f.request('/map/milsym')[0], 200)
+
     def test_search_ranks_exact_then_prefix_and_bounds_results(self):
         from map_search import search, LIMIT
         rows = [dict(name=name, point=[660, 330], kind='地点') for name in

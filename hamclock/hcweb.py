@@ -353,10 +353,21 @@ class Server(ThreadingHTTPServer):
     def __init__(self, address, renderer, map_data=None):
         self.renderer, self.weather = renderer, renderer.weather
         self.map_data, self.map_lock = map_data, threading.Lock()
+        self.board = None
         self.profile_slots = threading.BoundedSemaphore(2)
         self.night_slots = threading.BoundedSemaphore(2)
         self.address_family = socket.AF_INET6 if ':' in address[0] else socket.AF_INET
         super().__init__(address, Handler)
+
+    def get_board(self):
+        """The military symbols' board, read again whenever its file changed."""
+        model = self.get_map().model
+        with self.map_lock:
+            if self.board is None:
+                from milsym import Board
+                self.board = Board(os.path.join(model, 'symbols.json'))
+            self.board.poll()
+        return self.board
 
     def get_map(self):
         if self.map_data is None:
@@ -396,6 +407,16 @@ class Handler(BaseHTTPRequestHandler):
             self.send_header('X-Frame-Rects', ';'.join(','.join(map(str, r)) for r in rects))
         self.end_headers()
         self.wfile.write(body)
+
+    def symbol_reply(self, symbol):
+        """A symbol for the page: where it is in map coordinates instead of lat/lon."""
+        map_data = self.server.get_map()
+        point = map_data.coordinate(map_data.base.xy(symbol['lat'], symbol['lon']))
+        return dict(id=symbol['id'], affiliation=symbol['affiliation'], function=symbol['function'],
+                    placed=symbol['placed'], point=point)
+
+    def symbols_reply(self, board):
+        return dict(rev=board.rev, symbols=[self.symbol_reply(s) for s in board.symbols])
 
     def json_reply(self, data):
         body = json.dumps(data, ensure_ascii=False, allow_nan=False, separators=(',', ':')).encode()
@@ -473,6 +494,16 @@ class Handler(BaseHTTPRequestHandler):
                 self.file_reply(Path(__file__).parent / route.path[1:],
                                 'application/javascript' if route.path.endswith('.js') else 'text/css',
                                 cache='public, max-age=86400')
+            elif route.path == '/map/milsym':
+                import milsym
+                self.reply(200, json.dumps(milsym.shapes(), separators=(',', ':')).encode(), 'application/json',
+                           cache='public, max-age=86400')
+            elif route.path == '/map/symbols':
+                board = self.server.get_board()
+                if parse_qs(route.query).get('rev', [''])[0] == str(board.rev):
+                    self.reply(204)
+                else:
+                    self.json_reply(self.symbols_reply(board))
             elif route.path == '/map/dots':
                 import dots
                 text = parse_qs(route.query).get('t', [''])[0]
@@ -582,6 +613,16 @@ class Handler(BaseHTTPRequestHandler):
                     if self.server.weather:
                         self.server.weather.show('web:' + token, *map_data.base.latlon(*map_data.pixel((x, y))))
                 self.reply(204)
+            elif route == '/map/symbols':
+                # a page put a military symbol down, moved one or threw one away (milsym.py)
+                map_data, board = self.server.get_map(), self.server.get_board()
+                fields = {key: data[key] for key in ('id', 'affiliation', 'function', 'placed') if key in data}
+                if 'x' in data:
+                    limit = max(abs(value) for value in map_data.extent)
+                    fields['lat'], fields['lon'] = map_data.base.latlon(
+                        *map_data.pixel((number(data, 'x', limit), number(data, 'y', limit))))
+                before = board.change(str(data.get('op')), **fields)
+                self.json_reply(dict(self.symbols_reply(board), before=before and self.symbol_reply(before)))
             elif route == '/session':
                 result = self.server.renderer.call('open')
                 self.reply(200, json.dumps(result).encode(), 'application/json')

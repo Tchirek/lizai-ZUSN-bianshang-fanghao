@@ -214,8 +214,11 @@ async function initMap(){
   const vector=source=>new ol.layer.Vector({source,style:geometryStyle,renderBuffer:150});
   const labels=source=>new ol.layer.Vector({source,style:labelStyle,declutter:'labels',renderBuffer:150});
   // in the native map's order: ground and night, what is drawn on the ground, the terminator, names
-  map=new ol.Map({target:mapElement,view,controls:[],interactions:ol.interaction.defaults.defaults({altShiftDragRotate:false,pinchRotate:false,keyboard:false}),layers:[tiles,new ol.layer.Image({source:veilSource}),vector(staticSource),vector(gridSource),new ol.layer.Vector({source:ringSource,style:new ol.style.Style({stroke:new ol.style.Stroke({color:'rgba(190,190,190,.35)',width:1})})}),vector(liveSource),new ol.layer.Image({source:lineSource}),labels(gridSource),labels(staticSource),labels(liveSource),new ol.layer.Vector({source:markSource,style:markStyle,updateWhileAnimating:true,updateWhileInteracting:true}),new ol.layer.Vector({source:selectedSource,style:new ol.style.Style({stroke:new ol.style.Stroke({color:'#e6e6b4',width:1}),image:new ol.style.RegularShape({points:4,radius:6,radius2:0,angle:0,stroke:new ol.style.Stroke({color:'#fff',width:1})})})}),new ol.layer.Vector({source:tagSource})]});
-  map.on('singleclick',event=>{if(touching())return;if(searchElement.hidden)mapElement.focus({preventScroll:true});inspect(event.coordinate);});
+  map=new ol.Map({target:mapElement,view,controls:[],interactions:ol.interaction.defaults.defaults({altShiftDragRotate:false,pinchRotate:false,keyboard:false}),layers:[tiles,new ol.layer.Image({source:veilSource}),vector(staticSource),vector(gridSource),new ol.layer.Vector({source:ringSource,style:new ol.style.Style({stroke:new ol.style.Stroke({color:'rgba(190,190,190,.35)',width:1})})}),vector(liveSource),new ol.layer.Image({source:lineSource}),labels(gridSource),labels(staticSource),labels(liveSource),new ol.layer.Vector({source:markSource,style:markStyle,updateWhileAnimating:true,updateWhileInteracting:true}),new ol.layer.Vector({source:symbolSource,style:symbolStyle,updateWhileAnimating:true,updateWhileInteracting:true}),new ol.layer.Vector({source:handSource,style:handStyle,updateWhileAnimating:true,updateWhileInteracting:true}),new ol.layer.Vector({source:selectedSource,style:new ol.style.Style({stroke:new ol.style.Stroke({color:'#e6e6b4',width:1}),image:new ol.style.RegularShape({points:4,radius:6,radius2:0,angle:0,stroke:new ol.style.Stroke({color:'#fff',width:1})})})}),new ol.layer.Vector({source:tagSource})]});
+  map.addInteraction(new SymbolHand());
+  map.on('pointermove',event=>{symbolPointer=event.coordinate;if(armed||carried)showHand();});
+  mapElement.addEventListener('pointerleave',()=>{symbolPointer=null;showHand();});
+  map.on('singleclick',event=>{if(touching()||Date.now()<symbolQuiet)return;if(searchElement.hidden)mapElement.focus({preventScroll:true});inspect(event.coordinate);});
   map.on('moveend',()=>{scheduleFeatures();rings();positionProfile();updateLegend();placeTag();});
   map.on('postrender',positionProfile);map.on('change:size',resized);
   updateFeatures();rings();startLive();
@@ -240,6 +243,103 @@ document.addEventListener('mousemove',e=>{
  const [x,y]=view.getCenter(),r=view.getResolution()*TOUCH_GAIN;
  view.setCenter([x-e.movementX*r,y+e.movementY*r]);
 });
+// MIL-STD-2525 / APP-6 symbols, drawn from the station's geometry (milsym.py) and shared with the
+// X230's map: hold F1..F4 (friend, hostile, neutral, unknown) and press 1..9, 0 for one; Enter or
+// Space puts it down at the pointer, once a press; a click picks one up and the next puts it down,
+// a drag moves it; Delete or Backspace throws away the one in hand, Ctrl+Z undoes, Esc lets go
+const JITTER=5,SYMBOL_HELD=140/255,symbolSource=new ol.source.Vector(),handSource=new ol.source.Vector(),symbolImages=new Map();
+let milsym=null,symbolRev=-1,armed=null,carried=null,symbolPointer=null,symbolPress=null,symbolQuiet=0;
+const symbolDone=[],affiliationKeys=[];
+fetch('/map/milsym').then(r=>r.ok?r.json():null).then(data=>{milsym=data;symbolSource.changed();}).catch(()=>{});
+// a symbol as an image: its frame filled and outlined, its icon stroked, drawn at full strength
+// and then laid down see-through when it is in hand
+function symbolImage(affiliation,fn,alpha){
+ const s=milsym.size*dotPx()*devicePixelRatio,key=[affiliation,fn,alpha,s.toFixed(3)].join();
+ if(!symbolImages.has(key)){
+  const shape=milsym.shapes[affiliation][fn],size=Math.ceil(200*s),solid=document.createElement('canvas'),c=solid.getContext('2d');
+  solid.width=solid.height=size;c.scale(s,s);c.lineWidth=milsym.line;c.lineJoin=c.lineCap='round';c.strokeStyle=c.fillStyle='#000';
+  const path=(points,closed)=>{c.beginPath();points.forEach(([x,y],i)=>i?c.lineTo(x,y):c.moveTo(x,y));if(closed)c.closePath();};
+  path(shape.frame,true);c.fillStyle=shape.fill;c.fill();c.stroke();c.fillStyle='#000';
+  for(const stroke of shape.icon){path(stroke.points,stroke.closed);if(stroke.filled)c.fill();else c.stroke();}
+  let image=solid;
+  if(alpha<1){image=document.createElement('canvas');image.width=image.height=size;const d=image.getContext('2d');d.globalAlpha=alpha;d.drawImage(solid,0,0);}
+  symbolImages.set(key,new ol.style.Style({image:new ol.style.Icon({img:image,scale:1/devicePixelRatio})}));
+ }
+ return symbolImages.get(key);
+}
+function symbolStyle(feature){return milsym&&!(carried&&carried.id===feature.getId())?symbolImage(feature.get('affiliation'),feature.get('function'),1):null;}
+function handStyle(feature){return milsym?symbolImage(feature.get('affiliation'),feature.get('function'),SYMBOL_HELD):null;}
+// the symbol in hand, or the one about to be put down, at the pointer; off the map, one in hand
+// shows where it was
+function showHand(){
+ handSource.clear();
+ const held=carried||armed,at=symbolPointer||carried?.point;
+ if(!held||!at)return;
+ const f=new ol.Feature(new ol.geom.Point(at));f.set('affiliation',held.affiliation);f.set('function',held.function);handSource.addFeature(f);
+}
+function showSymbols(data){
+ symbolRev=data.rev;
+ symbolSource.clear();
+ symbolSource.addFeatures(data.symbols.map(s=>{const f=new ol.Feature(new ol.geom.Point(s.point));f.setId(s.id);for(const k of ['affiliation','function','placed'])f.set(k,s[k]);return f;}));
+ if(carried&&!symbolSource.getFeatureById(carried.id))carried=null;      // thrown away elsewhere
+ showHand();
+}
+async function changeSymbol(body,undo){
+ try{
+  const r=await fetch('/map/symbols',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)});
+  if(!r.ok)return;const data=await r.json();showSymbols(data);
+  if(undo)symbolDone.push({op:body.op,id:body.id,before:data.before});
+ }catch(e){}
+}
+setInterval(async()=>{
+ if(document.hidden||!map)return;
+ try{const r=await fetch('/map/symbols?rev='+symbolRev);if(r.status===200)showSymbols(await r.json());}catch(e){}
+},2000);
+function symbolAt(pixel){return map.forEachFeatureAtPixel(pixel,f=>f,{layerFilter:l=>l.getSource()===symbolSource,hitTolerance:2})||null;}
+function heldSymbol(f){return {id:f.getId(),affiliation:f.get('affiliation'),function:f.get('function'),placed:f.get('placed'),point:f.getGeometry().getCoordinates()};}
+function dropSymbol(at){
+ const held=carried;carried=null;showHand();symbolSource.changed();
+ if(held&&at)changeSymbol({op:'move',id:held.id,x:at[0],y:at[1]},true);
+}
+function undoSymbol(){
+ const last=symbolDone.pop();if(!last)return;
+ if(last.op==='add')changeSymbol({op:'remove',id:last.id});
+ else if(last.before){const b=last.before;changeSymbol({op:last.op==='remove'?'add':'move',id:b.id,affiliation:b.affiliation,function:b.function,placed:b.placed,x:b.point[0],y:b.point[1]});}
+}
+// presses on the map: on a symbol it is picked up (and moved, if dragged); with one in hand, it goes down
+class SymbolHand extends ol.interaction.Pointer{
+ handleDownEvent(e){
+  if(!milsym||touching()||e.originalEvent.button!==0)return false;
+  if(carried){symbolPress={at:e.pixel,moved:false,dropping:true};return true;}
+  const f=symbolAt(e.pixel);if(!f)return false;
+  carried=heldSymbol(f);symbolPress={at:e.pixel,moved:false,dropping:false};symbolPointer=e.coordinate;symbolSource.changed();showHand();return true;
+ }
+ handleDragEvent(e){
+  symbolPointer=e.coordinate;
+  if(Math.hypot(e.pixel[0]-symbolPress.at[0],e.pixel[1]-symbolPress.at[1])>JITTER)symbolPress.moved=true;
+  showHand();
+ }
+ handleUpEvent(e){
+  const press=symbolPress;symbolPress=null;symbolQuiet=Date.now()+600;     // not a tap on the map as well
+  if(press.dropping||press.moved)dropSymbol(e.coordinate);
+  return false;
+ }
+}
+document.addEventListener('keydown',e=>{
+ if(!milsym||!view||!searchElement.hidden||e.target.closest('input,textarea,select,[contenteditable]'))return;
+ const key=e.key,affiliation=/^F[1-4]$/.test(key)?milsym.affiliations[Number(key[1])-1]:null;
+ let done=true;
+ if(affiliation){if(!affiliationKeys.includes(affiliation))affiliationKeys.push(affiliation);}
+ else if(/^[0-9]$/.test(key)&&affiliationKeys.length){armed={affiliation:affiliationKeys.at(-1),function:milsym.functions[(Number(key)+9)%10]};showHand();}
+ else if((key==='Enter'||key===' ')&&armed&&symbolPointer){if(!e.repeat)changeSymbol({op:'add',affiliation:armed.affiliation,function:armed.function,x:symbolPointer[0],y:symbolPointer[1]},true);}
+ else if((key==='Delete'||key==='Backspace')&&carried){const held=carried;carried=null;showHand();changeSymbol({op:'remove',id:held.id},true);}
+ else if((e.ctrlKey||e.metaKey)&&key.toLowerCase()==='z'){undoSymbol();}
+ else if(key==='Escape'&&(carried||armed)){if(carried){carried=null;symbolSource.changed();}else armed=null;showHand();}
+ else done=false;
+ if(done){e.preventDefault();e.stopImmediatePropagation();}
+},true);
+document.addEventListener('keyup',e=>{const i=/^F[1-4]$/.test(e.key)?affiliationKeys.indexOf(milsym?.affiliations[Number(e.key[1])-1]):-1;if(i>=0){affiliationKeys.splice(i,1);e.preventDefault();}},true);
+window.addEventListener('blur',()=>{affiliationKeys.length=0;});
 function startMap(){if(!map&&!mapTask)mapTask=initMap().finally(()=>{mapTask=null;if(active&&!map)startMap();});}
 
 // HamClock's weather pane shows the open popup's place, DE's again once it closes (dxwx.py)
