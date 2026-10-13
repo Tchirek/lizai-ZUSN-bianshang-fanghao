@@ -228,7 +228,7 @@ async function initMap(){
 // the middle button makes the touchpad a touch screen for the map, as on the X230: the pointer
 // is locked and hidden and its moves drag the map along under the finger, pinches and the wheel
 // zoom as ever; once more (or Esc, the browser's) and it is back
-const TOUCH_GAIN=0.3;
+const TOUCH_GAIN=0.15;
 function touching(){return document.pointerLockElement===mapElement;}
 mapElement.addEventListener('mousedown',e=>{if(e.button===1)e.preventDefault();});        // no autoscroll
 mapElement.addEventListener('auxclick',e=>{
