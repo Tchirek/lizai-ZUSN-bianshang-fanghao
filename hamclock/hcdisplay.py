@@ -15,7 +15,8 @@ behaves like a HamClock window. Reconnects by itself whenever HamClock restarts.
 Over HamClock's world map goes the UV-K5 range map with the live amateur activity (map_view.py;
 if it cannot start, the pictures build_rangemap.py and activity.py leave in ~/influ/model stand
 in). A touchpad pinch or the wheel zooms it, a two-finger scroll or a drag pans it (touchpad
-gestures come from Wayland, gestures.py), and so do the arrow keys, + and - (or PgUp, PgDn: a press
+gestures come from Wayland, gestures.py), a click of the middle button hides the pointer and lets
+a finger's slide drag it as on a phone until the next, and so do the arrow keys, + and - (or PgUp, PgDn: a press
 zooms a step; held with Shift they zoom on and on), and a gamepad (pygame.joystick: left stick or D-pad pans, shoulders
 zoom, A is Enter, B Escape). Tapping a place opens its popup (map_panel.py), and HamClock's weather
 pane shows that place's weather until it closes (dxwx.py). Over the foot of the left column goes
@@ -50,6 +51,7 @@ OVERLAYS = [("rangemap.png", MAP_BOX), ("night.png", MAP_BOX), ("activity.png", 
 POLL = 0.1                      # s between update requests, as live.html (UPDATE_MS)
 JITTER = 5                      # app px a press may move and still count as a tap
 CURSOR_IDLE = 3                 # s before the pointer is hidden
+TOUCH_GAIN = 2                  # map px a pointer px moves the map in touch mode, as a finger on a phone
 FPS = 60
 MAP_KEYS = {pygame.K_LEFT: (1, 0), pygame.K_RIGHT: (-1, 0), pygame.K_UP: (0, 1), pygame.K_DOWN: (0, -1)}
 ZOOM_KEYS = {pygame.K_EQUALS: 1, pygame.K_PLUS: 1, pygame.K_KP_PLUS: 1, pygame.K_PAGEUP: 1,
@@ -340,7 +342,7 @@ class Scene:
             if consumed:
                 return
         if not self.covered(at):
-            alternate = button == 2 or button == 1 and ctrl
+            alternate = button == 3 or button == 1 and ctrl
             self.link.send(f"set_touch?x={int(at[0])}&y={int(at[1])}&button={int(alternate)}")
 
     def hover(self, at):
@@ -528,6 +530,12 @@ def main():
     clock, dt = pygame.time.Clock(), 0.0
     pressed = drag = None                # app px of the press; (last window px, dragging?)
     last_move, last_input = 0.0, time.time()
+    touch = False                        # the touchpad as a touch screen for the map (middle button)
+    centre = (MAP_BOX[0] + MAP_BOX[2] / 2, MAP_BOX[1] + MAP_BOX[3] / 2)
+
+    def pointer():
+        """Where the pointer is, app px; the map's middle while it is hidden in touch mode."""
+        return centre if touch else screen.app_xy(pygame.mouse.get_pos())
     while True:
         for ev in pygame.event.get():
             if ev.type == pygame.QUIT:
@@ -537,7 +545,26 @@ def main():
                 scene.whole = True
             if ev.type in (pygame.MOUSEMOTION, pygame.MOUSEBUTTONDOWN, pygame.MOUSEWHEEL, pygame.KEYDOWN):
                 last_input = time.time()
-                pygame.mouse.set_visible(True)
+                pygame.mouse.set_visible(not touch)
+            # the middle button (the TrackPoint's) makes the touchpad a touch screen for the map:
+            # the pointer goes and a finger's slide drags the map along under it; pinches and
+            # two-finger scrolls do as ever; once more, or leaving the window, and it is back
+            middle = ev.type == pygame.MOUSEBUTTONUP and ev.button == 2 and canvas
+            if middle or ev.type == pygame.WINDOWFOCUSLOST and touch:
+                touch = not touch
+                pygame.mouse.set_visible(not touch)
+                pygame.event.set_grab(touch)
+                if touch:
+                    link.send("set_mouse?x=-1&y=-1")
+                    scene.map_dirty = scene.search and scene.search.hover(None) or scene.map_dirty
+                pressed = drag = None
+                continue
+            if ev.type == pygame.MOUSEBUTTONDOWN and ev.button == 2 and canvas:
+                continue
+            if touch and ev.type in (pygame.MOUSEMOTION, pygame.MOUSEBUTTONDOWN, pygame.MOUSEBUTTONUP):
+                if ev.type == pygame.MOUSEMOTION:
+                    canvas.pan(ev.rel[0] * TOUCH_GAIN * MAP_W / box.w, ev.rel[1] * TOUCH_GAIN * MAP_H / box.h)
+                continue
             # an open search takes the keys; the pointer only over its box, the map moving beside it
             if scene.search and ev.type in (pygame.TEXTINPUT, pygame.TEXTEDITING, pygame.KEYDOWN, pygame.KEYUP,
                                             pygame.JOYBUTTONDOWN):
@@ -574,7 +601,7 @@ def main():
                 pressed = drag = None
                 continue
             if ev.type == pygame.MOUSEWHEEL:              # without Wayland gestures: zoom
-                at = screen.app_xy(pygame.mouse.get_pos())
+                at = pointer()
                 if canvas and not gestures and on_map(at):
                     canvas.scroll(ev.precise_y * (-1 if ev.flipped else 1), map_xy(at))
             elif ev.type == pygame.MOUSEBUTTONDOWN and ev.button in (1, 2, 3):
@@ -619,8 +646,8 @@ def main():
         if gestures:
             for e in gestures.poll():
                 last_input = time.time()
-                at = screen.app_xy(pygame.mouse.get_pos())
-                if over_search() and e[0] in ("wheel", "scroll"):
+                at = pointer()
+                if not touch and over_search() and e[0] in ("wheel", "scroll"):
                     scene.map_dirty = scene.search.turn(e) or scene.map_dirty
                     continue
                 if not on_map(at):
