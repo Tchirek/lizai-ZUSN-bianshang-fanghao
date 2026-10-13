@@ -27,6 +27,7 @@ mkdir -p "$PKG/DEBIAN" "$PKG/usr/share/influ" "$PKG/usr/lib/influ" "$PKG/usr/lib
 git -C "$ROOT" -c core.autocrlf=false archive HEAD hamclock tools sdrmux scheduler collector analysis \
     deploy/station.example.json | tar -x -C "$PKG/usr/share/influ"
 install -m 755 "$HAMCLOCK" "$PKG/usr/lib/influ/hamclock-web"
+strip --strip-unneeded --remove-section=.comment --remove-section=.note "$PKG/usr/lib/influ/hamclock-web"
 
 # the units: the code from /usr/share/influ, HamClock from /usr/lib/influ, python3 from the
 # system; the station's own files (env files, data) still under %h/influ
@@ -40,6 +41,13 @@ install -m 755 "$ROOT/deploy/influ-admin" "$PKG/usr/sbin/influ-admin"
 install -m 644 "$ROOT/deploy/influ-hamclock.desktop" "$PKG/usr/share/applications/influ-hamclock.desktop"
 gzip -9n -c "$ROOT/README.md" > "$PKG/usr/share/doc/influ/README.md.gz"
 install -m 644 "$ROOT/LICENSE" "$PKG/usr/share/doc/influ/LICENSE"
+gzip -9n > "$PKG/usr/share/doc/influ/changelog.gz" <<EOF
+influ ($VERSION) unstable; urgency=low
+
+  * Release $VERSION, from commit $(git -C "$ROOT" rev-parse --short HEAD).
+
+ -- Tchirek <tchirek@users.noreply.github.com>  $(date -R)
+EOF
 
 cat > "$PKG/usr/share/doc/influ/copyright" <<EOF
 Format: https://www.debian.org/doc/packaging-manuals/copyright-format/1.0/
@@ -67,10 +75,8 @@ Version: $VERSION
 Architecture: amd64
 Maintainer: Tchirek <tchirek@users.noreply.github.com>
 Installed-Size: $INSTALLED
-Depends: python3 (>= 3.11), python3-numpy, python3-pandas, python3-scipy, python3-pil,
- python3-pygame, python3-websocket, python3-serial, python3-aprslib, python3-pypinyin,
- xfonts-base, libstdc++6
-Recommends: python3-pywayland, rtl-sdr, wsjtx, dump1090-fa | readsb
+Depends: python3 (>= 3.11), python3-numpy, python3-pandas, python3-scipy, python3-pil, python3-pygame, python3-websocket, python3-serial, python3-aprslib, python3-pypinyin, libc6, libstdc++6
+Recommends: xfonts-base, python3-pywayland, rtl-sdr, wsjtx, dump1090-fa | readsb
 Suggests: piaware
 Section: hamradio
 Priority: optional
@@ -93,7 +99,7 @@ EOF
 chmod 755 "$PKG/DEBIAN/postinst"
 
 find "$PKG" -type d -exec chmod 755 {} +
-find "$PKG/usr/share" -type f -exec chmod 644 {} +
+find "$PKG/usr/share" "$PKG/usr/lib/systemd" -type f -exec chmod 644 {} +
 find "$PKG/usr/share/influ" -name '*.sh' -exec chmod 755 {} +
 dpkg-deb --root-owner-group --build "$PKG" "$OUT" >/dev/null
 echo "$OUT/influ_${VERSION}_amd64.deb"
