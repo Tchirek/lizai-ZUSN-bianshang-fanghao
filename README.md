@@ -50,7 +50,7 @@
 - `deploy/` 里的单元都按用户服务启用。
 - `influ-admin` 由站主以 root 安装到 `/usr/local/sbin`，用法见它的文件头。
 
-站点的位置、呼号和网格只放在 `~/influ/station.json`（模板是 `deploy/station.example.json`），不进仓库。发往公共接口（adsb.lol、adsb.fi、Open-Meteo）的位置只取到 0.01°。密钥和登录口令放在 `~/influ/private/`，同样不进仓库。
+站点的位置、呼号和网格只放在 `~/influ/station.json`（模板是 `deploy/station.example.json`），不进仓库。发往公共接口（adsb.lol、adsb.fi、Open-Meteo）的位置只取到 0.01°。密钥和登录口令放在 `~/influ/private/`，同样不进仓库。站点位置每半小时经 APRS-IS 发一次信标（`tools/aprs_beacon.py`，aprs.fi 上可见），只报到整分（APRS 位置模糊 2 级，约 1.8 公里）；登录要本呼号的 APRS-IS passcode，写进 `~/influ/private/aprs.env` 的 `APRS_PASSCODE=` 才会发，没有就不发。
 
 ### Debian 软件包
 

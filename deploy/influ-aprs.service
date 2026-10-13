@@ -1,0 +1,8 @@
+[Unit]
+Description=influ - beacon the station position to APRS-IS
+After=network-online.target
+
+[Service]
+Type=oneshot
+WorkingDirectory=%h/influ/tools
+ExecStart=%h/influ/.venv/bin/python aprs_beacon.py

@@ -1,0 +1,9 @@
+[Unit]
+Description=Beacon the station position to APRS-IS every half hour
+
+[Timer]
+OnCalendar=*:07/30
+Persistent=false
+
+[Install]
+WantedBy=timers.target
