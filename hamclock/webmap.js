@@ -160,7 +160,7 @@ async function updateFeatures(){
 }
 function scheduleFeatures(){clearTimeout(featureTimer);featureTimer=setTimeout(updateFeatures,180);}
 function rings(){
- if(!view)return;
+ if(!view||!map)return;          // the view may change while the map is still being made
  const wanted=view.getResolution()*180,power=10**Math.floor(Math.log10(wanted)),step=Math.max(...[1,2,5].map(x=>x*power).filter(x=>x<=wanted));
  const e=view.calculateExtent(map.getSize()),centre=view.getCenter(),distance=Math.hypot(...centre),span=Math.hypot(e[2]-e[0],e[3]-e[1])/2;
  const features=[];for(let r=Math.max(step,Math.floor((distance-span)/step)*step);r<distance+span;r+=step)features.push(new ol.Feature(new ol.geom.Circle([0,0],r)));
@@ -200,6 +200,7 @@ function resized(){
 }
 async function initMap(){
  while(active&&!map){try{
+  mapElement.replaceChildren();  // a try that failed half way may have left a map's viewport behind
   const r=await fetch('/map/config');if(!r.ok)throw Error('config');config=await r.json();
   config.projection=new ol.proj.Projection({code:'INFLU:AEQD',units:'m',extent:config.extent});
   const resolutions=config.levels.map(level=>config.metres_per_pixel/level);
