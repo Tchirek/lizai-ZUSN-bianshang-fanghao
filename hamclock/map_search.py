@@ -1,10 +1,10 @@
 """Search the names already on the map, in base pixels, for both displays."""
 import json
 from pathlib import Path
-from functools import lru_cache
 import unicodedata
 
 import activity as a
+import dots
 import map_view as maps
 
 
@@ -52,20 +52,8 @@ def search(rows, query):
                   r['name']))[:8]
 
 
-@lru_cache(maxsize=8)
-def font(px):
-    import pygame.freetype
-    face = pygame.freetype.Font(str(Path(__file__).parent / 'vendor/search-fonts/search.ttf'), px)
-    face.antialiased, face.pad = False, True
-    return face
-
-
-def fit_name(text, face, width):
-    if face.get_rect(text).width <= width:
-        return text
-    while text and face.get_rect(text + '...').width > width:
-        text = text[:-1]
-    return text + '...' if face.get_rect('...').width <= width else ''
+WIDTH, ROW, PAD, GAP = 600, 30, 6, 12   # HamClock px: panel, line, margin, name to position
+CURSOR = 8                              # a line's top to HamClock's text cursor
 
 
 class SearchPanel:
@@ -106,36 +94,29 @@ class SearchPanel:
         return changed
 
     def draw(self, frame, map_box):
+        """Drawn in HamClock's own pixels, as its panes are, then scaled with the clock."""
         import pygame
-        k = map_box.w / a.W
-        row = max(22, round(30 * k))
         status = self.error or ('No matches' if self.query.strip() and not self.future and not self.results else '')
-        self.box = pygame.Rect(map_box.x + 4, map_box.y + 4, min(map_box.w - 8, round(600 * k)),
-                               row * (1 + len(self.results) + bool(status)))
-        self.row_height = row
-        pygame.draw.rect(frame, (0, 0, 0), self.box)
-        pygame.draw.rect(frame, (136, 136, 136), self.box, 1)
-        clip = frame.get_clip()
-        frame.set_clip(self.box.inflate(-8, -2))
-        face, small = font(max(12, round(20 * k))), font(max(10, round(15 * k)))
+        panel = pygame.Surface((WIDTH, ROW * (1 + len(self.results) + bool(status))))
         text = self.query + self.composition
-        while text and face.get_rect('>' + text + '_').width > self.box.w - 12:
+        while text and dots.width('>' + text + '_') > WIDTH - 2 * PAD:
             text = text[1:]
-        x, y = self.box.x + 6, self.box.y + 3
-        face.render_to(frame, (x, y), '>' + text + '_', (255, 255, 255))
+        dots.blit(panel, '>' + text + '_', (PAD, CURSOR), (255, 255, 255))
+        lit = self.hovered if self.hovered is not None else self.selected
         for i, result in enumerate(self.results):
-            y = self.box.y + (i + 1) * row
-            if i == (self.hovered if self.hovered is not None else self.selected):
-                pygame.draw.rect(frame, (45, 45, 45), (self.box.x + 1, y, self.box.w - 2, row))
-            right = self.box.right - 6 - small.get_rect(result['position']).width
-            frame.set_clip(pygame.Rect(x, y, max(0, right - x - 10), row))
-            name = fit_name(result['name'], face, max(0, right - x - 10))
-            if name:
-                face.render_to(frame, (x, y + 3), name, (221, 221, 221))
-            frame.set_clip(self.box.inflate(-8, -2))
-            small.render_to(frame, (right, y + 5), result['position'], pygame.Color(result['colour']))
+            y = (i + 1) * ROW
+            if i == lit:
+                panel.fill((45, 45, 45), (1, y, WIDTH - 2, ROW))
+            right = WIDTH - PAD - dots.width(result['position'])
+            dots.blit(panel, dots.fit(result['name'], right - GAP - PAD), (PAD, y + CURSOR), (221, 221, 221))
+            dots.blit(panel, result['position'], (right, y + CURSOR), pygame.Color(result['colour'])[:3])
         if status:
-            face.render_to(frame, (x, self.box.y + row + 3), status, (150, 150, 150))
-        frame.set_clip(clip)
-        pygame.key.set_text_input_rect(pygame.Rect(self.box.x, self.box.y, self.box.w, row)
+            dots.blit(panel, status, (PAD, ROW + CURSOR), (150, 150, 150))
+        pygame.draw.rect(panel, (136, 136, 136), panel.get_rect(), 1)
+        k = map_box.w / a.W
+        size = round(panel.get_width() * k), round(panel.get_height() * k)
+        self.box = pygame.Rect((map_box.x + round(4 * k), map_box.y + round(4 * k)), size)
+        self.row_height = ROW * k
+        frame.blit(panel if size == panel.get_size() else pygame.transform.smoothscale(panel, size), self.box)
+        pygame.key.set_text_input_rect(pygame.Rect(self.box.x, self.box.y, self.box.w, round(self.row_height))
                                        .move(frame.get_abs_offset()))

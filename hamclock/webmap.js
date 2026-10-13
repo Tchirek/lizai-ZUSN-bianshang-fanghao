@@ -261,21 +261,73 @@ async function inspect(point){
 }
 
 function keyName(e){return e.key===' '?'Space':e.key;}
-const searchElement=document.querySelector('#search'),searchInput=document.querySelector('#search-query'),searchResults=document.querySelector('#search-results'),searchNote=document.querySelector('#search-note');
+const searchElement=document.querySelector('#search'),searchInput=document.querySelector('#search-query'),searchResults=document.querySelector('#search-results'),searchNote=document.querySelector('#search-note'),searchCanvas=document.querySelector('#search-dots');
 let searchRows=[],searchIndex=0,searchHover=null,searchTimer=0,searchRequest=null,searchFocus=null;
-// the prompt's _ is drawn where the caret is (the field's own caret is hidden): >text_
-const searchMeasure=document.createElement('canvas').getContext('2d');
-function searchCaret(){
- searchMeasure.font=getComputedStyle(searchInput).font;
- const x=16+searchMeasure.measureText(searchInput.value.slice(0,searchInput.selectionStart)).width-searchInput.scrollLeft;
- document.querySelector('#search-field').style.setProperty('--caret',Math.max(16,Math.min(searchInput.clientWidth-12,x))+'px');
+// The box is the native one (map_search.py): drawn in HamClock's own 1600x960 pixels, scaled with the
+// clock, its letters lit dot by dot from the station's tables (/map/dots), fetched as characters appear
+const SEARCH={width:600,row:30,pad:6,gap:12,cursor:8},ELLIPSIS='…',dotTable=new Map(),dotAsked=new Set();
+async function needDots(text){
+ const missing=[...new Set(text)].filter(c=>!dotAsked.has(c));if(!missing.length)return false;
+ missing.forEach(c=>dotAsked.add(c));
+ try{
+  const r=await fetch('/map/dots?t='+encodeURIComponent(missing.join('')));if(!r.ok)throw Error(r.status);
+  for(const [c,[xo,yo,adv,w,h,hex]] of Object.entries(await r.json()))dotTable.set(c,{xo,yo,adv,w,h,bits:Uint8Array.from(hex.match(/../g)||[],b=>parseInt(b,16))});
+  return true;
+ }catch(e){missing.forEach(c=>dotAsked.delete(c));return false;}
+}
+function dotWidth(text){let w=0;for(const c of text)w+=dotTable.get(c)?.adv??0;return w;}
+function dotFit(text,room){
+ if(dotWidth(text)<=room)return text;
+ const tail=dotTable.has(ELLIPSIS)?ELLIPSIS:'...',chars=[...text];
+ while(chars.length&&dotWidth(chars.join('')+tail)>room)chars.pop();
+ return dotWidth(tail)<=room?chars.join('')+tail:'';
+}
+function dotColour(colour){const [r,g,b]=[1,3,5].map(i=>parseInt(colour.slice(i,i+2),16));return (255<<24|b<<16|g<<8|r)>>>0;}
+function dotFill(image,x,y,w,h,colour){
+ const px=new Uint32Array(image.data.buffer),c=dotColour(colour);
+ for(let row=y;row<y+h;row++)px.fill(c,row*image.width+x,row*image.width+x+w);
+}
+// as HamClock's plotChar: the cursor at the top of the line, a dot wherever a glyph's bit is set
+function dotPrint(image,text,x,y,colour,right=image.width){
+ const px=new Uint32Array(image.data.buffer),c=dotColour(colour);
+ for(const ch of text){
+  const g=dotTable.get(ch);if(!g)continue;
+  for(let i=0;i<g.w*g.h;i++)if(g.bits[i>>3]&128>>(i&7)){
+   const dx=x+g.xo+i%g.w,dy=y+g.yo+Math.floor(i/g.w);
+   if(dx>=0&&dx<right&&dy>=0&&dy<image.height)px[dy*image.width+dx]=c;
+  }
+  x+=g.adv;
+ }
+}
+function drawSearch(){
+ if(searchElement.hidden)return;
+ const {width,row,pad,gap,cursor}=SEARCH,status=searchNote.textContent,lines=1+searchRows.length+(status?1:0);
+ const image=new ImageData(width,row*lines);dotFill(image,0,0,width,row*lines,'#000000');
+ // >text_ with the _ where the caret is; the start scrolls off to keep the caret in the box
+ const value=searchInput.value,at=searchInput.selectionStart??value.length;
+ let before=[...value.slice(0,at)];
+ while(before.length&&dotWidth('>'+before.join('')+'_')>width-2*pad)before.shift();
+ dotPrint(image,'>'+before.join('')+value.slice(at),pad,cursor,'#ffffff',width-pad);
+ dotPrint(image,'_',pad+dotWidth('>'+before.join('')),cursor,'#ffffff',width-pad);
+ const lit=searchHover??searchIndex;
+ searchRows.forEach((r,i)=>{
+  const y=(i+1)*row,right=width-pad-dotWidth(r.position);
+  if(i===lit)dotFill(image,1,y,width-2,row,'#2d2d2d');
+  dotPrint(image,dotFit(r.name,right-gap-pad),pad,y+cursor,'#dddddd');
+  dotPrint(image,r.position,right,y+cursor,r.colour);
+ });
+ if(status)dotPrint(image,status,pad,row+cursor,'#969696');
+ dotFill(image,0,0,width,1,'#888888');dotFill(image,0,row*lines-1,width,1,'#888888');
+ dotFill(image,0,0,1,row*lines,'#888888');dotFill(image,width-1,0,1,row*lines,'#888888');
+ searchCanvas.width=width;searchCanvas.height=row*lines;searchCanvas.style.setProperty('--lines',lines);
+ searchCanvas.getContext('2d').putImageData(image,0,0);
 }
 function closeSearch(){
  clearTimeout(searchTimer);if(searchRequest)searchRequest.abort();searchElement.hidden=true;searchInput.setAttribute('aria-expanded','false');
  searchInput.blur();(searchFocus&&searchFocus!==document.body?searchFocus:mapElement).focus({preventScroll:true});
 }
 function showSearch(){
- if(!view)return;release();searchFocus=document.activeElement;searchElement.hidden=false;searchInput.focus({preventScroll:true});searchInput.select();queueSearch();searchCaret();document.fonts.ready.then(searchCaret);
+ if(!view)return;release();searchFocus=document.activeElement;searchInput.value='';searchElement.hidden=false;searchInput.focus({preventScroll:true});queueSearch();
 }
 // the row under the pointer is lit while it is there; otherwise the one the arrow keys chose
 function highlightSearch(){
@@ -283,27 +335,35 @@ function highlightSearch(){
  [...searchResults.children].forEach((item,i)=>item.setAttribute('aria-selected',String(i===index)));
  if(searchRows.length)searchInput.setAttribute('aria-activedescendant',searchResults.children[index].id);
  else searchInput.removeAttribute('aria-activedescendant');
+ drawSearch();
 }
-function selectSearch(index){searchIndex=index;highlightSearch();if(searchRows.length)searchResults.children[index].scrollIntoView({block:'nearest'});}
+function selectSearch(index){searchIndex=index;highlightSearch();}
 function chooseSearch(index){
  const row=searchRows[index];if(!row)return;
  closeSearch();view.setResolution(Math.min(view.getResolution(),initialResolution/8));view.setCenter(row.point);inspect(row.point);mapElement.focus({preventScroll:true});
 }
 function queueSearch(){
- clearTimeout(searchTimer);if(searchRequest)searchRequest.abort();searchRows=[];searchHover=null;searchResults.replaceChildren();selectSearch(0);searchInput.setAttribute('aria-expanded','false');
- const query=searchInput.value.trim();searchNote.textContent='';if(!query)return;
+ clearTimeout(searchTimer);if(searchRequest)searchRequest.abort();searchRows=[];searchHover=null;searchResults.replaceChildren();searchNote.textContent='';selectSearch(0);searchInput.setAttribute('aria-expanded','false');
+ const query=searchInput.value.trim();if(!query)return;
  const request=searchRequest=new AbortController();
  searchTimer=setTimeout(async()=>{
   try{
-   const r=await fetch('/map/search?q='+encodeURIComponent(query),{signal:request.signal});if(!r.ok)throw Error('Search unavailable');const rows=await r.json();if(request.signal.aborted)return;
-   searchRows=rows;rows.forEach((row,i)=>{const item=document.createElement('div'),name=document.createElement('span'),position=document.createElement('small');item.id='search-result-'+i;item.setAttribute('role','option');name.textContent=row.name;position.textContent=row.position;position.style.color=row.colour;item.append(name,position);item.addEventListener('click',()=>chooseSearch(i));item.addEventListener('pointerenter',()=>{searchHover=i;highlightSearch();});item.addEventListener('pointerleave',()=>{searchHover=null;highlightSearch();});searchResults.append(item);});
-   selectSearch(0);searchInput.setAttribute('aria-expanded',String(rows.length>0));searchNote.textContent=rows.length?'':'No matches';
-  }catch(e){if(!request.signal.aborted)searchNote.textContent='Search unavailable';}
+   const r=await fetch('/map/search?q='+encodeURIComponent(query),{signal:request.signal});if(!r.ok)throw Error('Search unavailable');const rows=await r.json();
+   await needDots(rows.map(row=>row.name+row.position).join(''));if(request.signal.aborted)return;
+   searchRows=rows;rows.forEach((row,i)=>{const item=document.createElement('div');item.id='search-result-'+i;item.setAttribute('role','option');item.textContent=row.name+' '+row.position;item.addEventListener('click',()=>chooseSearch(i));searchResults.append(item);});
+   searchInput.setAttribute('aria-expanded',String(rows.length>0));searchNote.textContent=rows.length?'':'No matches';selectSearch(0);
+  }catch(e){if(!request.signal.aborted){searchNote.textContent='Search unavailable';drawSearch();}}
  },150);
 }
-searchInput.addEventListener('input',e=>{searchCaret();if(!e.isComposing)queueSearch();});
-for(const event of ['select','keyup','click','scroll'])searchInput.addEventListener(event,searchCaret);
-window.addEventListener('resize',searchCaret);
+needDots(String.fromCharCode(...Array.from({length:95},(_,i)=>32+i))+ELLIPSIS).then(drawSearch);
+searchInput.addEventListener('input',e=>{drawSearch();needDots(searchInput.value).then(fetched=>fetched&&drawSearch());if(!e.isComposing)queueSearch();});
+for(const event of ['select','keyup','click'])searchInput.addEventListener(event,drawSearch);
+document.addEventListener('selectionchange',()=>{if(document.activeElement===searchInput)drawSearch();});
+function searchLine(e){const box=searchCanvas.getBoundingClientRect();return Math.floor((e.clientY-box.top)*searchCanvas.height/box.height/SEARCH.row)-1;}
+searchCanvas.addEventListener('mousedown',e=>e.preventDefault());           // the field keeps the keyboard
+searchCanvas.addEventListener('pointermove',e=>{const i=searchLine(e),hover=i>=0&&i<searchRows.length?i:null;if(hover!==searchHover){searchHover=hover;highlightSearch();}});
+searchCanvas.addEventListener('pointerleave',()=>{if(searchHover!==null){searchHover=null;highlightSearch();}});
+searchCanvas.addEventListener('click',e=>{const i=searchLine(e);if(i>=0&&i<searchRows.length)chooseSearch(i);else searchInput.focus({preventScroll:true});});
 searchInput.addEventListener('compositionstart',()=>{clearTimeout(searchTimer);if(searchRequest)searchRequest.abort();});
 searchInput.addEventListener('compositionend',queueSearch);
 searchElement.addEventListener('keydown',e=>{

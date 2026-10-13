@@ -197,7 +197,7 @@ class Tests(unittest.TestCase):
         self.assertIsNotNone(native.inspector.point)
 
     def test_search_repeat_empty_close_hover_restore_and_long_names(self):
-        from map_search import fit_name, font
+        import dots
         f = self.fixture
         native = f.scene(web.SIZE, f.link)
         self.addCleanup(native.close)
@@ -222,12 +222,11 @@ class Tests(unittest.TestCase):
         self.assertEqual((panel.hovered, panel.selected), (0, 1))
         panel.hover(None)
         self.assertEqual(panel.selected, 1)
-        face = font(16)
-        shown = fit_name('Very long name ' * 20, face, 120)
-        self.assertTrue(shown.endswith('...'))
-        self.assertLessEqual(face.get_rect(shown).width, 120)
-        self.assertEqual(fit_name('Short', face, 120), 'Short')
-        self.assertEqual(fit_name('Long', face, 0), '')
+        shown = dots.fit('Very long name ' * 20, 120)
+        self.assertTrue(shown.endswith(('…', '...')))
+        self.assertLessEqual(dots.width(shown), 120)
+        self.assertEqual(dots.fit('Short', 120), 'Short')
+        self.assertEqual(dots.fit('Long', 0), '')
         for _ in range(8):
             native.key('Backspace', repeat=True)
         self.assertEqual(panel.query, '')
@@ -574,6 +573,50 @@ class MapTests(unittest.TestCase):
         for query in ('', 'Outside', 'no-such-place'):
             self.assertEqual(json.loads(f.request('/map/search?q=' + query)[2]), [])
         self.assertEqual(f.request('/map/search?q=' + 'x' * 129)[0], 400)
+
+    def test_search_box_is_hamclock_pixels_scaled_with_the_clock(self):
+        from map_search import WIDTH, ROW
+        f = self.fixture
+        native = f.scene(web.SIZE, f.link)
+        self.addCleanup(native.close)
+        native.update(f.source)
+        native.key('s')
+        panel = native.search
+        panel.future.result(timeout=10)
+        native.tick(0)
+        panel.rows = [dict(name='Test', point=[700, 350], colour='#96afff', position='30.0000N 105.0000E')]
+        panel.query = 'test'
+        panel.filter()
+        native.draw()
+        k = native.box.w / 1320
+        self.assertEqual(panel.box.size, (round(WIDTH * k), round(2 * ROW * k)))
+        self.assertAlmostEqual(panel.row_height, ROW * k)
+        prompt = native.frame.subsurface(panel.box.x, panel.box.y, panel.box.w, round(ROW * k))
+        self.assertGreater(sum(prompt.get_at((x, y))[0] > 128 for x in range(prompt.get_width())
+                               for y in range(prompt.get_height())), 20)      # >test_ is lit
+
+    def test_dots_are_hamclock_and_x11_glyphs_as_they_are(self):
+        import dots
+        self.assertEqual(dots.glyph('A')[:5], (-1, -1, 12, 13, 14))     # HamClock's record at 1600x960
+        self.assertEqual(dots.width('BG8TEST'), 7 * 12)
+        self.assertIsNone(dots.glyph(''))
+        lit = dots.glyph('A')
+        self.assertEqual(len(lit.bits), (13 * 14 + 7) // 8)
+        f = self.fixture
+        status, _, body = f.request('/map/dots?t=' + urllib.parse.quote('AA'))
+        self.assertEqual(status, 200)
+        self.assertEqual(json.loads(body), {'A': [-1, -1, 12, 13, 14, lit.bits.hex()]})
+        self.assertEqual(f.request('/map/dots?t=' + 'x' * 513)[0], 400)
+        self.assertEqual(f.request('/vendor/search-fonts/search.ttf')[0], 404)
+        if not dots.SONG.exists():
+            self.skipTest('no X11 16-dot Song here')
+        g = dots.glyph('遂')
+        self.assertEqual(g[:5], (0, -1, 17, 17, 16))
+        rows = [[g.bits[(y * g.w + x) // 8] >> 7 - (y * g.w + x) % 8 & 1 for x in range(g.w)] for y in range(g.h)]
+        for row in rows:                       # printed twice, a dot apart: no run is one dot wide
+            runs = ''.join(map(str, row)).split('0')
+            self.assertTrue(all(len(run) != 1 for run in runs), row)
+        self.assertEqual(json.loads(f.request('/map/dots?t=' + urllib.parse.quote('遂'))[2])['遂'][5], g.bits.hex())
 
     def test_search_ranks_exact_then_prefix_and_bounds_results(self):
         from map_search import search

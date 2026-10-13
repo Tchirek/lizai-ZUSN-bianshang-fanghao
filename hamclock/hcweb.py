@@ -470,9 +470,12 @@ class Handler(BaseHTTPRequestHandler):
                 self.file_reply(Path(__file__).parent / route.path[1:],
                                 'application/javascript' if route.path.endswith('.js') else 'text/css',
                                 cache='public, max-age=86400')
-            elif route.path == '/vendor/search-fonts/search.ttf':
-                self.file_reply(Path(__file__).parent / 'vendor/search-fonts/search.ttf', 'font/ttf',
-                                cache='public, max-age=86400')
+            elif route.path == '/map/dots':
+                import dots
+                text = parse_qs(route.query).get('t', [''])[0]
+                if len(text) > 512:
+                    raise ValueError('too many characters')
+                self.json_reply(dots.table(text))
             elif route.path == '/map/config':
                 self.json_reply(self.server.get_map().config())
             elif route.path in ('/map/features', '/map/grid'):

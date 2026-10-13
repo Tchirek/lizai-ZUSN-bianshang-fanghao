@@ -13,7 +13,8 @@
     <div id="foot"><div id="scale"><span id="km"></span><i id="bar"></i><span id="dem"></span></div><div id="legend"></div></div>
   </div>
   <div id="search" hidden role="search" aria-label="Map search" lang="en">
-    <div id="search-field"><input id="search-query" type="text" aria-label="Search" maxlength="128" autocomplete="off" spellcheck="false" role="combobox" aria-autocomplete="list" aria-controls="search-results" aria-expanded="false"></div>
+    <canvas id="search-dots" width="600" height="30" aria-hidden="true"></canvas>
+    <input id="search-query" type="text" aria-label="Search" maxlength="128" autocomplete="off" spellcheck="false" role="combobox" aria-autocomplete="list" aria-controls="search-results" aria-expanded="false">
     <div id="search-results" role="listbox" aria-label="Results"></div>
     <div id="search-note" role="status"></div>
   </div>

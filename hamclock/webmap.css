@@ -1,6 +1,6 @@
 html,body{margin:0;background:#000;color:#ddd;height:100%;overflow:hidden}
 body{display:grid;place-items:center;font:12px Arial,"Microsoft YaHei","PingFang SC",sans-serif}
-#stage{position:relative;width:min(100vw,calc(100dvh * 5 / 3));aspect-ratio:5/3}
+#stage{position:relative;width:min(100vw,calc(100dvh * 5 / 3));aspect-ratio:5/3;container-type:inline-size}
 #clock{display:block;width:100%;height:100%;outline:none}
 #map,#map-ui{position:absolute;left:17.375%;top:31.0416667%;width:82.5%;height:68.75%}
 #map{background:#101018;outline:none;touch-action:none}
@@ -31,14 +31,10 @@ body{display:grid;place-items:center;font:12px Arial,"Microsoft YaHei","PingFang
 #nearby{color:#00dcdc;margin-top:5px;height:26px;overflow:hidden;display:-webkit-box;-webkit-box-orient:vertical;-webkit-line-clamp:2;line-clamp:2}
 #conditions{color:#999;margin-top:6px;font-size:10px}
 @media(max-width:700px){#sun{font-size:9px}#legend,#scale{font-size:9px}#legend{gap:4px}#profile{width:235px;font-size:10px}#reach-table th:first-child{width:42px}}
-@font-face{font-family:HamClockSearch;src:url('/vendor/search-fonts/search.ttf') format('truetype');font-display:block}
-#search{position:absolute;left:calc(17.375% + 4px);top:calc(31.0416667% + 4px);width:min(480px,calc(82.5% - 8px));box-sizing:border-box;background:#000;border:1px solid #888;z-index:6;font:16px/24px HamClockSearch,monospace}
+/* the search box is drawn in HamClock's 1600x960 pixels (--dot is one) and scaled as the clock is;
+   the field under its prompt is invisible and only takes the keys, the lists are for screen readers */
+#search{--dot:calc(100cqw / 1600);position:absolute;left:calc(17.375% + 4 * var(--dot));top:calc(31.0416667% + 4 * var(--dot));z-index:6}
 #search[hidden]{display:none}
-#search-field{position:relative;overflow:hidden;color:#fff}
-#search-field::before,#search-field::after{position:absolute;top:1px;pointer-events:none}
-#search-field::before{content:'>';left:6px}#search-field::after{content:'_';left:var(--caret,16px)}
-#search-query{appearance:none;-webkit-appearance:none;box-sizing:border-box;display:block;width:100%;height:26px;background:#000;border:0;border-radius:0;box-shadow:none;color:#fff;caret-color:transparent;font:inherit;padding:1px 6px 1px 16px;outline:none}
-#search-results{max-height:24vh;overflow:auto}#search-results [role=option]{display:flex;align-items:center;gap:10px;padding:0 6px;cursor:pointer}
-#search-results [role=option]>span{flex:1;min-width:0;overflow:hidden;white-space:nowrap;text-overflow:ellipsis}
-#search-results [aria-selected=true]{background:#2d2d2d;color:#fff}#search-results small{flex:none;font:12px/24px HamClockSearch,monospace;white-space:nowrap}
-#search-note{color:#999;padding:0 6px}#search-note:empty{display:none}
+#search-dots{display:block;width:calc(600 * var(--dot));height:calc(var(--lines,1) * 30 * var(--dot));cursor:pointer}
+#search-query{position:absolute;left:0;top:0;width:100%;height:calc(30 * var(--dot));box-sizing:border-box;margin:0;padding:0;border:0;opacity:0;font-size:calc(16 * var(--dot))}
+#search-results,#search-note{position:absolute;width:1px;height:1px;overflow:hidden;clip-path:inset(50%);white-space:nowrap}
