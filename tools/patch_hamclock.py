@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """Patch HamClock V4.22: an ADS-B pane, no data credits on screen, the main clock in local time,
-our version.
+our version, no world map.
 
 1. plot.cpp / dxpeds.cpp / contests.cpp: no data-source text on screen (weather attribution
    column, DXpeditions and Contests credit rows); the data and its readiness checks stay.
@@ -12,6 +12,10 @@ our version.
    tools/adsb_scope.py writes. PLOT_CH_ADSB and NV_ADSB_RANGE (its range) are appended to their
    enums, so saved pane choices and settings keep their numbers. Adafruit_RA8875::holdCanvas()
    lets a pane redraw as one frame for live viewers.
+5. No world map: hcdisplay.py and the web page draw their own over its box, so HamClock makes,
+   fetches and draws none. The box is erased once and left black; nothing counts as over the
+   map, so no marker, spot, path, beacon or tap lands there; no map scale, no news banner, and
+   the messages HamClock would show across it are only logged.
 
 Idempotent: refuses if a hunk is not found exactly once. Run inside the ESPHamClock source dir.
 """
@@ -206,3 +210,69 @@ patch("ArduinoLib/Adafruit_RA8875.h",
       "                pthread_mutex_unlock (&fb_lock);\n"
       "            }\n"
       "        }\n")
+
+
+# 5. no world map: the map box is hcdisplay's, so HamClock neither makes nor fetches nor draws one
+
+patch("earthmap.cpp",
+      "void drawMoreEarth()\n"
+      "{\n",
+      "void drawMoreEarth()\n"
+      "{\n"
+      "    return;     // influ: no world map: no rows to sweep, no maps to fetch, rotate or redraw over\n")
+
+patch("earthmap.cpp",
+      "void initEarthMap()\n"
+      "{\n",
+      "void initEarthMap()\n"
+      "{\n"
+      "    // influ: no world map: the box stays black under hcdisplay's map; the DE and DX panes as ever\n"
+      "    fillSBox (map_b, RA8875_BLACK);\n"
+      "    updateClocks(true);\n"
+      "    drawDEInfo();\n"
+      "    drawDXInfo();\n"
+      "    return;\n")
+
+patch("ESPHamClock.cpp",
+      "bool overMap (const SCoord &s)\n"
+      "{\n",
+      "bool overMap (const SCoord &s)\n"
+      "{\n"
+      "    return (false);     // influ: no world map, so nothing is over it: no marks, spots, paths or taps\n")
+
+patch("ESPHamClock.cpp",
+      "void drawAllSymbols()\n"
+      "{\n"
+      "    updateClocks(false);\n",
+      "void drawAllSymbols()\n"
+      "{\n"
+      "    updateClocks(false);\n"
+      "    return;             // influ: no world map to draw them on, nor its scale\n")
+
+patch("spots.cpp",
+      "void drawSpotLabelOnMap (DXSpot &spot, LabelOnMapEnd txrx, LabelOnMapDot dot)\n"
+      "{\n",
+      "void drawSpotLabelOnMap (DXSpot &spot, LabelOnMapEnd txrx, LabelOnMapDot dot)\n"
+      "{\n"
+      "    return;             // influ: no world map\n")
+
+patch("spots.cpp",
+      "void drawSpotPathOnMap (const DXSpot &spot)\n"
+      "{\n",
+      "void drawSpotPathOnMap (const DXSpot &spot)\n"
+      "{\n"
+      "    return;             // influ: no world map\n")
+
+patch("rss.cpp",
+      "void checkRSS(void)\n"
+      "{\n",
+      "void checkRSS(void)\n"
+      "{\n"
+      "    return;             // influ: no world map, so no news banner across its foot, nor its fetching\n")
+
+patch("mapmanage.cpp",
+      "    // log\n"
+      "    Serial.printf (\"mapMsg: %s\\n\", msg);\n",
+      "    // log\n"
+      "    Serial.printf (\"mapMsg: %s\\n\", msg);\n"
+      "    return;             // influ: no world map to show it over, nor to wait on\n")
