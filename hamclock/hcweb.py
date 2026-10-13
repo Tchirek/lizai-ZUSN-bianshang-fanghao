@@ -60,6 +60,7 @@ class ClockScene(Scene):
         self.frame, self.fitted = pygame.Surface(size), Fitted(size)
         self.box = pygame.Rect(*(round(v * self.k) for v in MAP_BOX))
         self.canvas = self.inspector = None
+        self.search = None
         self.overlays = [Overlay(name, box) for name, box in OVERLAYS if box != MAP_BOX]   # the FT8 tally
         self.whole = self.clock_dirty = True
         self.last_check = self.last_panel = 0
@@ -469,6 +470,9 @@ class Handler(BaseHTTPRequestHandler):
                 self.file_reply(Path(__file__).parent / route.path[1:],
                                 'application/javascript' if route.path.endswith('.js') else 'text/css',
                                 cache='public, max-age=86400')
+            elif route.path == '/vendor/search-fonts/search.ttf':
+                self.file_reply(Path(__file__).parent / 'vendor/search-fonts/search.ttf', 'font/ttf',
+                                cache='public, max-age=86400')
             elif route.path == '/map/config':
                 self.json_reply(self.server.get_map().config())
             elif route.path in ('/map/features', '/map/grid'):
@@ -476,6 +480,16 @@ class Handler(BaseHTTPRequestHandler):
                 self.json_reply(data.static(bbox, zoom) if route.path.endswith('features') else data.grid(bbox, zoom))
             elif route.path == '/map/live':
                 self.json_reply(self.server.get_map().live())
+            elif route.path == '/map/search':
+                from map_search import entries, search
+                query = parse_qs(route.query).get('q', [''])[0]
+                if len(query) > 128:
+                    raise ValueError('query too long')
+                data = self.server.get_map()
+                with data.lock:
+                    rows = search(entries(data.base, data.model), query) if query.strip() else []
+                self.json_reply([dict(row, point=data.coordinate(row['point']),
+                                      colour=row.get('web_colour', row['colour'])) for row in rows])
             elif route.path == '/map/veil.png':
                 bbox, width, height, _ = self.night_query(parse_qs(route.query))
                 self.night_reply(self.server.get_map().veil, 'image/png', bbox, width, height)

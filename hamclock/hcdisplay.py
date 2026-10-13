@@ -258,6 +258,36 @@ class Scene:
         self.last_check = self.last_panel = 0
         self.held = set()
         self.weather = None                  # dxwx.DXWeather: the weather pane follows the popup
+        self.search = None
+
+    def close_search(self):
+        if self.search:
+            pygame.key.set_repeat(*self.search.repeat)
+        if self.search and self.search.future:
+            self.search.future.cancel()
+        self.search = None
+        pygame.key.stop_text_input()
+        self.map_dirty = True
+
+    def choose_search(self):
+        if not self.search.results:
+            return
+        from map_view import clamp
+        before = self.popup()
+        index = self.search.hovered if self.search.hovered is not None else self.search.selected
+        point = self.search.results[index]['point']
+        camera = self.canvas.camera
+        camera.zoom = camera.goal = max(8, camera.zoom)
+        camera.centre = clamp(point, camera.zoom)
+        camera.anchor = (self.map_size[0] / 2, self.map_size[1] / 2)
+        camera.anchor_base = camera.centre
+        self.canvas.view = camera.view()
+        self.canvas.dirty = True
+        if self.inspector:
+            self.inspector.m = self.canvas.view
+            self.inspector.open(self.canvas.view.project(point))
+        self.follow(before)
+        self.close_search()
 
     def covered(self, at):
         return (self.canvas and on_map(at)) or any(o.covers(at) for o in self.overlays)
@@ -284,6 +314,17 @@ class Scene:
                     and self.inspector.box.collidepoint(at[0] * self.k, at[1] * self.k))
 
     def tap(self, at, button=1, ctrl=False):
+        if self.search:
+            panel = self.search
+            if panel.box and panel.box.collidepoint(at[0] * self.k, at[1] * self.k):
+                row = int((at[1] * self.k - panel.box.y) // panel.row_height) - 1
+                if button == 1 and 0 <= row < len(panel.results):
+                    panel.selected = row
+                    panel.hovered = row
+                    self.choose_search()
+            else:
+                self.close_search()
+            return
         if self.canvas and self.inspector:
             self.inspector.m = self.canvas.view
         if self.inspector and button == 1 and not ctrl:
@@ -301,8 +342,30 @@ class Scene:
         x, y = (int(at[0]), int(at[1])) if at and not self.covered(at) else (-1, -1)
         self.link.send(f"set_mouse?x={x}&y={y}")
 
-    def key(self, name, ctrl=False, shift=False):
-        if name == "Escape" and self.inspector and self.inspector.point is not None:
+    def key(self, name, ctrl=False, shift=False, repeat=False):
+        if self.search:
+            if name == 'Escape':
+                self.close_search()
+            elif name == 'Enter':
+                self.choose_search()
+            elif name in ('ArrowUp', 'ArrowDown') and self.search.results:
+                self.search.selected = (self.search.selected + (1 if name == 'ArrowDown' else -1)) % len(self.search.results)
+            elif name == 'Backspace':
+                if not self.search.query:
+                    if not repeat:                  # held down to empty it: the box stays
+                        self.close_search()
+                else:
+                    self.search.query = '' if ctrl else self.search.query[:-1]
+                    self.search.filter()
+            self.map_dirty = True
+        elif name.lower() == 's' and not ctrl and self.canvas:
+            from map_search import SearchPanel
+            self.search = SearchPanel(self.canvas)
+            pygame.key.set_repeat(400, 40)          # Backspace held deletes on and on
+            self.held.clear()
+            pygame.key.start_text_input()
+            self.map_dirty = True
+        elif name == "Escape" and self.inspector and self.inspector.point is not None:
             before = self.popup()
             self.inspector.close()
             self.map_dirty = True
@@ -320,6 +383,8 @@ class Scene:
 
     def tick(self, dt):
         now = time.monotonic()
+        if self.search:
+            self.map_dirty = self.search.update() or self.map_dirty
         if now - self.last_check > 5:
             self.last_check = now
             self.clock_dirty = any([o.refresh() for o in self.overlays]) or self.clock_dirty
@@ -356,10 +421,14 @@ class Scene:
             self.canvas.draw(frame, self.box)
         if self.inspector and (self.whole or self.map_dirty or not self.canvas):
             self.inspector.draw(frame, tuple(self.box))
+        if self.search and (self.whole or self.map_dirty):
+            self.search.draw(frame, self.box)
         self.whole = self.clock_dirty = self.map_dirty = False
         return True
 
     def close(self):
+        if self.search:
+            self.close_search()
         if self.canvas:
             self.canvas.close()
         if self.inspector:
@@ -423,6 +492,7 @@ def main():
     link = Link(frames)
     link.start()
     mirror, screen = Mirror(), Screen()
+    pygame.key.stop_text_input()
     scene = Scene(screen.view.size, link, screen.frame)
     from dxwx import DXWeather
     scene.weather = DXWeather("native")
@@ -454,6 +524,34 @@ def main():
             if ev.type in (pygame.MOUSEMOTION, pygame.MOUSEBUTTONDOWN, pygame.MOUSEWHEEL, pygame.KEYDOWN):
                 last_input = time.time()
                 pygame.mouse.set_visible(True)
+            if scene.search:
+                if ev.type == pygame.TEXTINPUT:
+                    scene.search.query = (scene.search.query + ev.text)[:128]
+                    scene.search.composition = ''
+                    scene.search.filter()
+                    scene.map_dirty = True
+                elif ev.type == pygame.TEXTEDITING:
+                    scene.search.composition = ev.text
+                    scene.map_dirty = True
+                elif ev.type == pygame.KEYDOWN and not scene.search.composition:
+                    repeat = ev.key == pygame.K_BACKSPACE and scene.search.backspace_down
+                    if ev.key == pygame.K_BACKSPACE:
+                        scene.search.backspace_down = True
+                    scene.key(key_name(ev) or '', bool(ev.mod & pygame.KMOD_CTRL), repeat=repeat)
+                elif ev.type == pygame.KEYUP and ev.key == pygame.K_BACKSPACE:
+                    scene.search.backspace_down = False
+                elif ev.type in (pygame.MOUSEMOTION, pygame.WINDOWLEAVE):
+                    at = screen.app_xy(ev.pos) if ev.type == pygame.MOUSEMOTION else None
+                    scene.map_dirty = scene.search.hover((at[0] * k, at[1] * k) if at else None) or scene.map_dirty
+                elif ev.type == pygame.MOUSEBUTTONDOWN:
+                    at = screen.app_xy(ev.pos)
+                    if at:
+                        scene.tap(at, ev.button)
+                elif ev.type == pygame.JOYBUTTONDOWN and ev.button in PAD_KEYS:
+                    scene.key(PAD_KEYS[ev.button])
+                if ev.type not in (pygame.JOYDEVICEADDED, pygame.JOYDEVICEREMOVED):
+                    pressed = drag = None
+                    continue
             if ev.type == pygame.MOUSEWHEEL:              # without Wayland gestures: zoom
                 at = screen.app_xy(pygame.mouse.get_pos())
                 if canvas and not gestures and on_map(at):
@@ -483,7 +581,8 @@ def main():
                     canvas.scroll(ZOOM_KEYS[ev.key] * KEY_STEP, (MAP_W / 2, MAP_H / 2))
             elif ev.type == pygame.KEYDOWN and (name := key_name(ev)):
                 mods = pygame.key.get_mods()
-                scene.key(name, bool(mods & pygame.KMOD_CTRL), bool(mods & pygame.KMOD_SHIFT))
+                if not mods & (pygame.KMOD_ALT | pygame.KMOD_GUI):
+                    scene.key(name, bool(mods & pygame.KMOD_CTRL), bool(mods & pygame.KMOD_SHIFT))
             elif ev.type == pygame.JOYDEVICEADDED:
                 pad = pygame.joystick.Joystick(ev.device_index)
                 pads[pad.get_instance_id()] = pad
@@ -500,7 +599,7 @@ def main():
             for e in gestures.poll():
                 last_input = time.time()
                 at = screen.app_xy(pygame.mouse.get_pos())
-                if not on_map(at):
+                if scene.search or not on_map(at):
                     continue
                 if e[0] == "pinch":                      # fingers spread, and their middle moved
                     canvas.pinch(e[1], map_xy(at))
@@ -509,7 +608,7 @@ def main():
                     canvas.pan(-e[1] * surface_k * MAP_W / box.w, -e[2] * surface_k * MAP_H / box.h)
                 elif e[0] == "wheel":
                     canvas.scroll(e[1], map_xy(at))
-        if canvas:
+        if canvas and not scene.search:
             held = pygame.key.get_pressed()
             vx = sum(v[0] for key, v in MAP_KEYS.items() if held[key])
             vy = sum(v[1] for key, v in MAP_KEYS.items() if held[key])

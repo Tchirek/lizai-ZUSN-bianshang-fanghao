@@ -167,6 +167,76 @@ class Tests(unittest.TestCase):
         native.key('Escape')                             # nothing open: HamClock's key, no change
         self.assertEqual(len(calls), 3)
 
+    def test_native_search_consumes_keys_and_locates_without_station_input(self):
+        f = self.fixture
+        native = f.scene(web.SIZE, f.link)
+        self.addCleanup(native.close)
+        native.update(f.source)
+        native.key('s')
+        self.assertIsNotNone(native.search)
+        native.search.future.result(timeout=10)
+        native.tick(0)
+        native.key('Enter')
+        self.assertIsNotNone(native.search)
+        native.search.rows = [dict(name='Test airport', point=[700, 350], colour='#96afff', position='30.0000N 105.0000E'),
+                              dict(name='Test town', point=[800, 350], colour='#969696', position='30.0000N 105.0000E')]
+        native.search.query = 'test'
+        native.search.filter()
+        native.draw()
+        native.key('ArrowDown')
+        self.assertEqual(native.search.selected, 1)
+        native.key('Enter')
+        self.assertIsNone(native.search)
+        self.assertEqual(native.canvas.camera.centre, (800, 350))
+        self.assertEqual(native.canvas.camera.zoom, 8)
+        np.testing.assert_allclose(native.inspector.target, f.base.latlon(800, 350))
+        self.assertEqual(f.link.sent, [])
+        native.key('S')
+        native.key('Escape')
+        self.assertIsNone(native.search)
+        self.assertIsNotNone(native.inspector.point)
+
+    def test_search_repeat_empty_close_hover_restore_and_long_names(self):
+        from map_search import fit_name, font
+        f = self.fixture
+        native = f.scene(web.SIZE, f.link)
+        self.addCleanup(native.close)
+        native.update(f.source)
+        previous_repeat = pygame.key.get_repeat()
+        native.key('s')
+        panel = native.search
+        panel.future.result(timeout=10)
+        native.tick(0)
+        panel.rows = [dict(name='Test ' + str(i), point=[700, 350], colour='#96afff',
+                           position='30.0000N 105.0000E') for i in range(3)]
+        panel.query = 'test'
+        panel.filter()
+        native.draw()
+        self.assertEqual(pygame.key.get_repeat(), (400, 40))
+        panel.hover((panel.box.x + 8, panel.box.y + panel.row_height * 3 + 2))
+        self.assertEqual((panel.hovered, panel.selected), (2, 0))
+        panel.hover(None)
+        self.assertEqual((panel.hovered, panel.selected), (None, 0))
+        native.key('ArrowDown')
+        panel.hover((panel.box.x + 8, panel.box.y + panel.row_height + 2))
+        self.assertEqual((panel.hovered, panel.selected), (0, 1))
+        panel.hover(None)
+        self.assertEqual(panel.selected, 1)
+        face = font(16)
+        shown = fit_name('Very long name ' * 20, face, 120)
+        self.assertTrue(shown.endswith('...'))
+        self.assertLessEqual(face.get_rect(shown).width, 120)
+        self.assertEqual(fit_name('Short', face, 120), 'Short')
+        self.assertEqual(fit_name('Long', face, 0), '')
+        for _ in range(8):
+            native.key('Backspace', repeat=True)
+        self.assertEqual(panel.query, '')
+        self.assertIs(native.search, panel)
+        native.key('Backspace')
+        self.assertIsNone(native.search)
+        self.assertEqual(pygame.key.get_repeat(), previous_repeat)
+        self.assertEqual(f.link.sent, [])
+
     def test_two_pages_and_native_have_independent_pan_zoom_and_popups(self):
         f = self.fixture
         first, second = f.open(), f.open()
@@ -480,6 +550,40 @@ class MapTests(unittest.TestCase):
         self.assertEqual(f.request('/map/dx', dict(session=token, x=float('nan'), y=0))[0], 400)
         self.assertEqual(f.request('/close', dict(session=token))[0], 204)   # the page went away
         self.assertEqual(calls[-1], ('close', 'web:' + token))
+
+    def test_search_uses_all_local_names_and_returns_projected_points(self):
+        f = self.fixture
+        model = f.map_data.model
+        (model / 'rangemap_osm.json').write_text(json.dumps(dict(lines=[], places=[
+            dict(name='测试镇', lat=30, lon=105.02), dict(name='Outside', lat=0, lon=0)])))
+        (model / 'airports.json').write_text(json.dumps(dict(runways=[], airports=[
+            dict(code='ZUSN', name='测试机场', point=[30, 105.03])])))
+        (model / 'activity.json').write_text(json.dumps(dict(reports=[], aprs={'BG8TEST-1': [30, 105.04, True, 0]})))
+        for query, name in [('测试镇', '测试镇'), ('机场', 'ZUSN 测试机场'), ('ｚｕｓｎ', 'ZUSN 测试机场'), ('bg8test', 'BG8TEST-1')]:
+            status, _, body = f.request('/map/search?q=' + urllib.parse.quote(query))
+            self.assertEqual(status, 200)
+            rows = json.loads(body)
+            self.assertEqual(rows[0]['name'], name)
+            self.assertEqual(len(rows[0]['point']), 2)
+            self.assertRegex(rows[0]['position'], r'^\d+\.\d{4}[NS] \d+\.\d{4}[EW]$')
+            self.assertNotIn('kind', rows[0])
+            self.assertEqual(rows[0]['colour'], '#00dcff' if name == 'BG8TEST-1' else
+                             '#96afff' if 'ZUSN' in name else '#969696')
+        rows = json.loads(f.request('/map/search?q=bg8test')[2])
+        np.testing.assert_allclose(rows[0]['point'], f.map_data.coordinate(f.base.xy(30, 105.04)))
+        for query in ('', 'Outside', 'no-such-place'):
+            self.assertEqual(json.loads(f.request('/map/search?q=' + query)[2]), [])
+        self.assertEqual(f.request('/map/search?q=' + 'x' * 129)[0], 400)
+
+    def test_search_ranks_exact_then_prefix_and_bounds_results(self):
+        from map_search import search
+        rows = [dict(name=name, point=[660, 330], kind='地点') for name in
+                ['xTest', 'test station', 'ＴＥＳＴ'] + ['test ' + str(i) for i in range(20)]]
+        result = search(rows, ' T e s t ')
+        self.assertEqual(result[0]['name'], 'ＴＥＳＴ')
+        self.assertEqual(len(result), 8)
+        self.assertNotIn('xTest', [r['name'] for r in result])
+        self.assertEqual(search(rows, '  '), [])
 
     def test_frontend_has_no_loading_text_or_spinner(self):
         f = self.fixture

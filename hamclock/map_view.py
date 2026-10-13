@@ -211,7 +211,8 @@ def font(kind, px):
     to its line height so labels share a baseline."""
     if (kind, px) not in _fonts:
         path, index = FONTS[kind]
-        f = pygame.freetype.Font(path if os.path.exists(path) else None, px, font_index=index)
+        exists = os.path.exists(path)
+        f = pygame.freetype.Font(path if exists else None, px, font_index=index if exists else 0)
         f.antialiased, f.pad = True, True
         _fonts[kind, px] = f
     return _fonts[kind, px]
@@ -384,7 +385,8 @@ def static_scene(base):
         for x in sorted(found["airports"], key=lambda x: not x["code"]):          # coded first
             point = base.xy(*x["point"])
             if 0 <= point[0] < W and 0 <= point[1] < H:
-                airports.append(dict(text=airport_label(x["code"], x["name"]), point=point))
+                airports.append(dict(text=airport_label(x["code"], x["name"]),
+                                     name=' '.join(filter(None, (x['code'], x['name']))), point=point))
         runways = [dict(line=np.array([base.xy(*p) for p in r["line"]]), width=r["width"], area=r["area"])
                    for r in found["runways"]]
     _static.clear()

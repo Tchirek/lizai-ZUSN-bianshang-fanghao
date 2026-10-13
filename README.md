@@ -67,6 +67,8 @@ systemctl --user enable --now hamclock-http.service
 
 OpenLayers 10.11.0 的 JS、CSS 和许可证随仓库提供；网页不依赖外部 CDN 或外部地图服务。瓦片来自 `~/influ/model/tiles/`，复用原生窗口的投影与缓存。可达性计算复用 `map_panel.path_profile`，按完整 DEM 分辨率计算判定，图表仅缩减传输采样点。静态图层按视野获取，活动台站与航迹定期更新，图例只数视野内的台站，与本机窗口一致。夜色和晨昏线用本机窗口的同一套算法，按页面当前视野和屏幕像素在站上算出，每分钟更新：夜色垫在河流、路径之下，金线压在它们之上，斜体 SUNSET / SUNRISE 沿线标注，放大多少倍都不糊。
 
+本机窗口与网页均可按 `S` 搜索地图已有的地点、机场和电台呼号：弹出一个 `>_` 输入框，输入名称的一部分即可，不区分英文大小写；`↑` / `↓` 选择（鼠标悬停时临时高亮所指一项），`Enter` 或点击结果定位并查询可达性，结果右侧是与地图标记同色的经纬度。`Esc` 关闭；长按退格连续删字，删空后停住，空框再按一次退格才关闭。搜索覆盖整张本地地图，不受当前缩放或视野限制，最多显示 8 项；只查站内已有数据，不请求外部搜索服务。英文用 HamClock DX 集群栏同款点阵字形，中文用 16 点阵宋体（`hamclock/vendor/search-fonts/`）。
+
 关闭：`systemctl --user disable --now hamclock-http.service`。也可仅监听本机：`~/influ/.venv/bin/python ~/influ/hamclock/hcweb.py`，默认地址为 `127.0.0.1:8075`。
 
 ## 1090 MHz 接收设置

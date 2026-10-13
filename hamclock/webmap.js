@@ -261,7 +261,67 @@ async function inspect(point){
 }
 
 function keyName(e){return e.key===' '?'Space':e.key;}
+const searchElement=document.querySelector('#search'),searchInput=document.querySelector('#search-query'),searchResults=document.querySelector('#search-results'),searchNote=document.querySelector('#search-note');
+let searchRows=[],searchIndex=0,searchHover=null,searchTimer=0,searchRequest=null,searchFocus=null;
+// the prompt's _ is drawn where the caret is (the field's own caret is hidden): >text_
+const searchMeasure=document.createElement('canvas').getContext('2d');
+function searchCaret(){
+ searchMeasure.font=getComputedStyle(searchInput).font;
+ const x=16+searchMeasure.measureText(searchInput.value.slice(0,searchInput.selectionStart)).width-searchInput.scrollLeft;
+ document.querySelector('#search-field').style.setProperty('--caret',Math.max(16,Math.min(searchInput.clientWidth-12,x))+'px');
+}
+function closeSearch(){
+ clearTimeout(searchTimer);if(searchRequest)searchRequest.abort();searchElement.hidden=true;searchInput.setAttribute('aria-expanded','false');
+ searchInput.blur();(searchFocus&&searchFocus!==document.body?searchFocus:mapElement).focus({preventScroll:true});
+}
+function showSearch(){
+ if(!view)return;release();searchFocus=document.activeElement;searchElement.hidden=false;searchInput.focus({preventScroll:true});searchInput.select();queueSearch();searchCaret();document.fonts.ready.then(searchCaret);
+}
+// the row under the pointer is lit while it is there; otherwise the one the arrow keys chose
+function highlightSearch(){
+ const index=searchHover??searchIndex;
+ [...searchResults.children].forEach((item,i)=>item.setAttribute('aria-selected',String(i===index)));
+ if(searchRows.length)searchInput.setAttribute('aria-activedescendant',searchResults.children[index].id);
+ else searchInput.removeAttribute('aria-activedescendant');
+}
+function selectSearch(index){searchIndex=index;highlightSearch();if(searchRows.length)searchResults.children[index].scrollIntoView({block:'nearest'});}
+function chooseSearch(index){
+ const row=searchRows[index];if(!row)return;
+ closeSearch();view.setResolution(Math.min(view.getResolution(),initialResolution/8));view.setCenter(row.point);inspect(row.point);mapElement.focus({preventScroll:true});
+}
+function queueSearch(){
+ clearTimeout(searchTimer);if(searchRequest)searchRequest.abort();searchRows=[];searchHover=null;searchResults.replaceChildren();selectSearch(0);searchInput.setAttribute('aria-expanded','false');
+ const query=searchInput.value.trim();searchNote.textContent='';if(!query)return;
+ const request=searchRequest=new AbortController();
+ searchTimer=setTimeout(async()=>{
+  try{
+   const r=await fetch('/map/search?q='+encodeURIComponent(query),{signal:request.signal});if(!r.ok)throw Error('Search unavailable');const rows=await r.json();if(request.signal.aborted)return;
+   searchRows=rows;rows.forEach((row,i)=>{const item=document.createElement('div'),name=document.createElement('span'),position=document.createElement('small');item.id='search-result-'+i;item.setAttribute('role','option');name.textContent=row.name;position.textContent=row.position;position.style.color=row.colour;item.append(name,position);item.addEventListener('click',()=>chooseSearch(i));item.addEventListener('pointerenter',()=>{searchHover=i;highlightSearch();});item.addEventListener('pointerleave',()=>{searchHover=null;highlightSearch();});searchResults.append(item);});
+   selectSearch(0);searchInput.setAttribute('aria-expanded',String(rows.length>0));searchNote.textContent=rows.length?'':'No matches';
+  }catch(e){if(!request.signal.aborted)searchNote.textContent='Search unavailable';}
+ },150);
+}
+searchInput.addEventListener('input',e=>{searchCaret();if(!e.isComposing)queueSearch();});
+for(const event of ['select','keyup','click','scroll'])searchInput.addEventListener(event,searchCaret);
+window.addEventListener('resize',searchCaret);
+searchInput.addEventListener('compositionstart',()=>{clearTimeout(searchTimer);if(searchRequest)searchRequest.abort();});
+searchInput.addEventListener('compositionend',queueSearch);
+searchElement.addEventListener('keydown',e=>{
+ e.stopPropagation();if(e.isComposing||e.keyCode===229)return;
+ if(e.key==='Escape'){e.preventDefault();closeSearch();}
+ // Backspace held empties the field and stops there; a fresh press on an empty field closes it
+ else if(e.target===searchInput&&e.key==='Backspace'&&!searchInput.value){e.preventDefault();if(!e.repeat)closeSearch();}
+ else if(e.target===searchInput&&['ArrowUp','ArrowDown','Enter'].includes(e.key)){
+  e.preventDefault();if(e.key==='Enter')chooseSearch(searchHover??searchIndex);else if(searchRows.length)selectSearch((searchIndex+(e.key==='ArrowDown'?1:-1)+searchRows.length)%searchRows.length);
+ }
+});
+searchElement.addEventListener('keyup',e=>e.stopPropagation());
+document.addEventListener('keydown',e=>{
+ if(e.defaultPrevented||e.isComposing||e.ctrlKey||e.altKey||e.metaKey||e.target.closest('input,textarea,select,[contenteditable]'))return;
+ if(e.key.toLowerCase()==='s'&&view){e.preventDefault();if(!e.repeat)showSearch();}
+},true);
 stage.addEventListener('keydown',e=>{
+ if(e.defaultPrevented||e.isComposing||!searchElement.hidden||e.target.closest('input,textarea,select,[contenteditable]')||e.ctrlKey||e.altKey||e.metaKey)return;
  shiftDown=e.shiftKey;
  const name=keyName(e);if(e.target.closest('button')&&name!=='Escape')return;
  if(mapKeys.has(name)&&view){
@@ -273,8 +333,7 @@ stage.addEventListener('keydown',e=>{
  if(name==='Enter'&&view&&mapElement.contains(document.activeElement)){e.preventDefault();inspect(view.getCenter());return;}
  if(namedKeys.has(name)||name.length===1&&name.charCodeAt(0)>=33&&name.charCodeAt(0)<=126){e.preventDefault();enqueue({type:'key',key:name,down:true,ctrl:e.ctrlKey,shift:e.shiftKey});}
 });
-// + is Shift and =: let go of Shift first and the key comes up as =, so any zoom key up ends them all
-stage.addEventListener('keyup',e=>{shiftDown=e.shiftKey;const name=keyName(e);if(mapKeys.has(name)){e.preventDefault();if(zoomIn.has(name)||zoomOut.has(name))for(const k of [...zoomIn,...zoomOut])keys.delete(k);else keys.delete(name);}else if(namedKeys.has(name)||name.length===1&&name.charCodeAt(0)>=33&&name.charCodeAt(0)<=126)enqueue({type:'key',key:name,down:false});});
+stage.addEventListener('keyup',e=>{shiftDown=e.shiftKey;const name=keyName(e);keys.delete(name);if(zoomIn.has(name)||zoomOut.has(name))for(const k of [...zoomIn,...zoomOut])keys.delete(k);if(!searchElement.hidden||name.toLowerCase()==='s'||e.target.closest('input,textarea,select,[contenteditable]'))return;if(mapKeys.has(name))e.preventDefault();else if(namedKeys.has(name)||name.length===1&&name.charCodeAt(0)>=33&&name.charCodeAt(0)<=126)enqueue({type:'key',key:name,down:false});});
 function padState(){
  let x=0,y=0,z=0,enter=false,escape=false;
  if(navigator.getGamepads)for(const pad of navigator.getGamepads()){
@@ -291,7 +350,7 @@ function zoomStep(step){view.animate({resolution:view.getResolution()*Math.exp(-
 function zooming(name){return shiftDown&&keys.has(name);}
 function controls(now){
  const dt=Math.min(.05,(now-lastTick)/1000);lastTick=now;
- if(view&&!document.hidden&&document.hasFocus()){
+ if(view&&searchElement.hidden&&!document.hidden&&document.hasFocus()){
   let pad={x:0,y:0,z:0,enter:false,escape:false};try{pad=padState();}catch(e){}
   const x=(keys.has('ArrowRight')?1:0)-(keys.has('ArrowLeft')?1:0)+pad.x,y=(keys.has('ArrowDown')?1:0)-(keys.has('ArrowUp')?1:0)+pad.y,z=([...zoomIn].some(zooming)?1:0)-([...zoomOut].some(zooming)?1:0)+pad.z;
   const moving=!!(x||y||z);if(moving&&!heldInteraction){view.beginInteraction();heldInteraction=true;}

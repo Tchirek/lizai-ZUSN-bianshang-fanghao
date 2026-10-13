@@ -12,6 +12,11 @@
     <div id="sun"></div>
     <div id="foot"><div id="scale"><span id="km"></span><i id="bar"></i><span id="dem"></span></div><div id="legend"></div></div>
   </div>
+  <div id="search" hidden role="search" aria-label="Map search" lang="en">
+    <div id="search-field"><input id="search-query" type="text" aria-label="Search" maxlength="128" autocomplete="off" spellcheck="false" role="combobox" aria-autocomplete="list" aria-controls="search-results" aria-expanded="false"></div>
+    <div id="search-results" role="listbox" aria-label="Results"></div>
+    <div id="search-note" role="status"></div>
+  </div>
   <div id="profile" hidden role="dialog" aria-label="地点可达性">
     <button id="profile-close" aria-label="关闭">×</button>
     <div class="title">VHF/UHF DE–DX</div><div id="position"></div>
