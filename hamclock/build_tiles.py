@@ -12,7 +12,8 @@ airports  every aerodrome under the map from OpenStreetMap, live, by its code (I
         ~/influ/model/airports.json.
 admin   province (admin level 4), prefecture (5) and county (6) boundaries under the map from
         OpenStreetMap, live, each boundary way once with the highest level it bounds, the same
-        way, into ~/influ/model/admin.json.
+        way, into ~/influ/model/admin.json; and each such area by name, its outline joined from
+        its ways, into ~/influ/model/admin_areas.json.
 military  every military area under the map from OpenStreetMap, live (landuse military, or a
         military base, barracks, airfield, naval base, range or training area): outlines with
         their name if mapped, else a point, the same way, into ~/influ/model/military.json.
@@ -261,7 +262,12 @@ def write_military():
 
 
 def admin(rounds=30):
-    return fetch_cells(ADMIN_CELLS, ADMIN_QUERY, write_admin, "admin boundaries", rounds)
+    """The admin cells, then both files once more from all of them (the areas file comes from
+    cells kept before there was one)."""
+    done = fetch_cells(ADMIN_CELLS, ADMIN_QUERY, write_admin, "admin boundaries", rounds)
+    if done:
+        write_admin()
+    return done
 
 
 def write_admin():
@@ -283,6 +289,92 @@ def write_admin():
     os.replace(os.path.join(a.MODEL, "admin.json.tmp"), os.path.join(a.MODEL, "admin.json"))
     print(f"admin: {sum(x['level'] == 4 for x in lines)} province, {sum(x['level'] == 5 for x in lines)} prefecture, "
           f"{sum(x['level'] == 6 for x in lines)} county boundary ways, {sum(len(x['p']) for x in lines)} points", flush=True)
+    write_admin_areas(found)
+
+
+AREA_TOLERANCE = 0.0003                # deg an area's outline may stray, simplified (~30 m)
+
+
+def write_admin_areas(found):
+    """admin_areas.json: every province, prefecture and county with a way under the map, by
+    name, its rings (outer and inner, even-odd) joined from its boundary ways and simplified,
+    and a point inside it for its label."""
+    ways = {e["id"]: [(g["lat"], g["lon"]) for g in e["geometry"] if g]
+            for e in found.values() if e["type"] == "way" and len(e.get("geometry", [])) > 1}
+    out = []
+    for e in found.values():
+        tags = e.get("tags", {})
+        rank = re.match(r"\d+", tags.get("admin_level", ""))
+        if e["type"] != "relation" or not rank or not tags.get("name"):
+            continue
+        rings = [simplify(r, AREA_TOLERANCE) for r in join_rings(
+            [ways[m["ref"]] for m in e.get("members", []) if m["type"] == "way" and m["ref"] in ways])]
+        rings = [r for r in rings if len(r) > 3]
+        if rings:
+            out.append(dict(name=tags["name"], level=int(rank.group()), point=inside(rings),
+                            rings=[[[round(la, 5), round(lo, 5)] for la, lo in r] for r in rings]))
+    with open(os.path.join(a.MODEL, "admin_areas.json.tmp"), "w") as f:
+        json.dump(out, f, ensure_ascii=False, separators=(",", ":"))
+    os.replace(os.path.join(a.MODEL, "admin_areas.json.tmp"), os.path.join(a.MODEL, "admin_areas.json"))
+    print(f"admin areas: {sum(x['level'] == 4 for x in out)} province, {sum(x['level'] == 5 for x in out)} prefecture, "
+          f"{sum(x['level'] == 6 for x in out)} county, {sum(len(r) for x in out for r in x['rings'])} points", flush=True)
+
+
+def join_rings(ways):
+    """Rings joined end to end from ways (lists of (lat, lon)); a chain whose other ways lie
+    off the map, so it never meets its start, is closed straight across."""
+    chains, rings = [list(w) for w in ways], []
+    while chains:
+        ring = chains.pop()
+        while ring[0] != ring[-1]:
+            for i, c in enumerate(chains):
+                if c[0] == ring[-1]:
+                    ring += c[1:]
+                elif c[-1] == ring[-1]:
+                    ring += c[-2::-1]
+                elif c[-1] == ring[0]:
+                    ring = c + ring[1:]
+                elif c[0] == ring[0]:
+                    ring = c[::-1] + ring[1:]
+                else:
+                    continue
+                del chains[i]
+                break
+            else:
+                ring.append(ring[0])
+        rings.append(ring)
+    return rings
+
+
+def simplify(line, tolerance):
+    """line with the points Douglas-Peucker can drop at this tolerance dropped."""
+    p = np.array(line, dtype=float)
+    keep = np.zeros(len(p), bool)
+    keep[[0, -1]] = True
+    stack = [(0, len(p) - 1)]
+    while stack:
+        i, j = stack.pop()
+        if j - i < 2:
+            continue
+        d, seg = p[i + 1:j] - p[i], p[j] - p[i]
+        n = np.hypot(*seg)
+        far = np.abs(d[:, 0] * seg[1] - d[:, 1] * seg[0]) / n if n else np.hypot(d[:, 0], d[:, 1])
+        k = int(far.argmax())
+        if far[k] > tolerance:
+            keep[i + 1 + k] = True
+            stack += [(i, i + 1 + k), (i + 1 + k, j)]
+    return [tuple(q) for q in p[keep]]
+
+
+def inside(rings):
+    """A (lat, lon) inside the rings (even-odd), for a label: the middle of the widest span
+    across them at the latitude halfway up the largest."""
+    big = max(rings, key=len)
+    lat = (min(q[0] for q in big) + max(q[0] for q in big)) / 2
+    cross = sorted(lo0 + (lat - la0) * (lo1 - lo0) / (la1 - la0)
+                   for r in rings for (la0, lo0), (la1, lo1) in zip(r, r[1:]) if (la0 > lat) != (la1 > lat))
+    lo0, lo1 = max(zip(cross[::2], cross[1::2]), key=lambda s: s[1] - s[0], default=(big[0][1], big[0][1]))
+    return [round(lat, 5), round((lo0 + lo1) / 2, 5)]
 
 
 def kept(*folders):
