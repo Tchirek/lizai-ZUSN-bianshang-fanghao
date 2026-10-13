@@ -60,6 +60,7 @@ KEY_STEP = 2                    # wheel notches a press of + or - zooms at once 
 PAD_DEAD = 0.2                  # stick travel ignored around the centre
 PAD_ZOOM = {5: 1, 4: -1}        # gamepad buttons held to zoom: right / left shoulder
 PAD_KEYS = {0: "Enter", 1: "Escape"}   # gamepad buttons sent as keys: A, B
+PAGE_KEYS = {pygame.K_PAGEUP: "PageUp", pygame.K_PAGEDOWN: "PageDown"}   # turn the search's pages
 KEYS = {pygame.K_RETURN: "Enter", pygame.K_KP_ENTER: "Enter", pygame.K_TAB: "Tab",
         pygame.K_ESCAPE: "Escape", pygame.K_BACKSPACE: "Backspace", pygame.K_SPACE: "Space",
         pygame.K_LEFT: "ArrowLeft", pygame.K_RIGHT: "ArrowRight",
@@ -318,9 +319,9 @@ class Scene:
             panel = self.search
             if panel.box and panel.box.collidepoint(at[0] * self.k, at[1] * self.k):
                 row = int((at[1] * self.k - panel.box.y) // panel.row_height) - 1
-                if button == 1 and 0 <= row < len(panel.results):
-                    panel.selected = row
-                    panel.hovered = row
+                first, page = panel.shown()
+                if button == 1 and 0 <= row < len(page):
+                    panel.selected = panel.hovered = first + row
                     self.choose_search()
             else:
                 self.close_search()
@@ -350,6 +351,8 @@ class Scene:
                 self.choose_search()
             elif name in ('ArrowUp', 'ArrowDown', 'Tab'):
                 self.search.step(-1 if name == 'ArrowUp' or name == 'Tab' and shift else 1)
+            elif name in ('PageUp', 'PageDown') or ctrl and name in ('b', 'f'):     # as less and vi page
+                self.search.page(1 if name in ('PageDown', 'f') else -1)
             elif name == 'Backspace':
                 if not self.search.query:
                     if not repeat:                  # held down to empty it: the box stays
@@ -508,6 +511,10 @@ def main():
     # Wayland scrolls come in the window's own px; SDL scales the frame onto it
     surface_k = screen.surface.get_width() / pygame.display.get_window_size()[0]
     map_xy = scene.map_xy
+
+    def over_search():
+        at = screen.app_xy(pygame.mouse.get_pos())
+        return bool(scene.search and scene.search.box and at and scene.search.box.collidepoint(at[0] * k, at[1] * k))
     pygame.joystick.init()
     pads = {}                            # plugged-in gamepads by instance id (hot-plug events)
 
@@ -537,13 +544,17 @@ def main():
                     repeat = ev.key == pygame.K_BACKSPACE and scene.search.backspace_down
                     if ev.key == pygame.K_BACKSPACE:
                         scene.search.backspace_down = True
-                    scene.key(key_name(ev) or '', bool(ev.mod & pygame.KMOD_CTRL), bool(ev.mod & pygame.KMOD_SHIFT),
-                              repeat=repeat)
+                    ctrl = ev.mod & pygame.KMOD_CTRL
+                    name = PAGE_KEYS.get(ev.key) or (chr(ev.key) if ctrl and pygame.K_a <= ev.key <= pygame.K_z
+                                                     else key_name(ev))
+                    scene.key(name or '', bool(ctrl), bool(ev.mod & pygame.KMOD_SHIFT), repeat=repeat)
                 elif ev.type == pygame.KEYUP and ev.key == pygame.K_BACKSPACE:
                     scene.search.backspace_down = False
                 elif ev.type in (pygame.MOUSEMOTION, pygame.WINDOWLEAVE):
                     at = screen.app_xy(ev.pos) if ev.type == pygame.MOUSEMOTION else None
                     scene.map_dirty = scene.search.hover((at[0] * k, at[1] * k) if at else None) or scene.map_dirty
+                elif ev.type == pygame.MOUSEWHEEL and not gestures and ev.y and over_search():
+                    scene.map_dirty = scene.search.page(-1 if ev.y * (-1 if ev.flipped else 1) > 0 else 1)                         or scene.map_dirty
                 elif ev.type == pygame.MOUSEBUTTONDOWN:
                     at = screen.app_xy(ev.pos)
                     if at:
@@ -600,6 +611,9 @@ def main():
             for e in gestures.poll():
                 last_input = time.time()
                 at = screen.app_xy(pygame.mouse.get_pos())
+                if scene.search and over_search() and e[0] in ("wheel", "scroll"):
+                    scene.map_dirty = scene.search.turn(e) or scene.map_dirty
+                    continue
                 if scene.search or not on_map(at):
                     continue
                 if e[0] == "pinch":                      # fingers spread, and their middle moved

@@ -265,7 +265,7 @@ const searchElement=document.querySelector('#search'),searchInput=document.query
 let searchRows=[],searchIndex=0,searchHover=null,searchTimer=0,searchRequest=null,searchFocus=null;
 // The box is the native one (map_search.py): drawn in HamClock's own 1600x960 pixels, scaled with the
 // clock, its letters lit dot by dot from the station's tables (/map/dots), fetched as characters appear
-const SEARCH={width:600,row:30,pad:6,gap:12,cursor:8},ELLIPSIS='…',dotTable=new Map(),dotAsked=new Set();
+const SEARCH={width:600,row:30,pad:6,gap:12,cursor:8,page:8,scroll:90},ELLIPSIS='…',dotTable=new Map(),dotAsked=new Set();
 async function needDots(text){
  const missing=[...new Set(text)].filter(c=>!dotAsked.has(c));if(!missing.length)return false;
  missing.forEach(c=>dotAsked.add(c));
@@ -301,17 +301,20 @@ function dotPrint(image,text,x,y,colour,right=image.width){
 }
 function drawSearch(){
  if(searchElement.hidden)return;
- const {width,row,pad,gap,cursor}=SEARCH,status=searchNote.textContent,lines=1+searchRows.length+(status?1:0);
+ const {width,row,pad,gap,cursor}=SEARCH,status=searchNote.textContent,[first,page]=searchPage(),lines=1+page.length+(status?1:0);
  const image=new ImageData(width,row*lines);dotFill(image,0,0,width,row*lines,'#000000');
+ // the ruler, as a pager's: which of how many are on the page
+ const ruler=searchRows.length>SEARCH.page?`${first+1}-${first+page.length}/${searchRows.length}`:'',room=width-pad-(ruler?dotWidth(ruler)+gap:0);
+ dotPrint(image,ruler,width-pad-dotWidth(ruler),cursor,'#969696');
  // >text_ with the _ where the caret is; the start scrolls off to keep the caret in the box
  const value=searchInput.value,at=searchInput.selectionStart??value.length;
  let before=[...value.slice(0,at)];
- while(before.length&&dotWidth('>'+before.join('')+'_')>width-2*pad)before.shift();
- dotPrint(image,'>'+before.join('')+value.slice(at),pad,cursor,'#ffffff',width-pad);
- dotPrint(image,'_',pad+dotWidth('>'+before.join('')),cursor,'#ffffff',width-pad);
+ while(before.length&&dotWidth('>'+before.join('')+'_')>room-pad)before.shift();
+ dotPrint(image,'>'+before.join('')+value.slice(at),pad,cursor,'#ffffff',room);
+ dotPrint(image,'_',pad+dotWidth('>'+before.join('')),cursor,'#ffffff',room);
  const lit=searchHover??searchIndex;
- searchRows.forEach((r,i)=>{
-  const y=(i+1)*row,right=width-pad-dotWidth(r.position);
+ page.forEach((r,j)=>{
+  const i=first+j,y=(j+1)*row,right=width-pad-dotWidth(r.position);
   if(i===lit)dotFill(image,1,y,width-2,row,'#2d2d2d');
   dotPrint(image,dotFit(r.name,right-gap-pad),pad,y+cursor,'#dddddd');
   dotPrint(image,r.position,right,y+cursor,r.colour);
@@ -340,6 +343,12 @@ function highlightSearch(){
 function selectSearch(index){searchIndex=index;highlightSearch();}
 // the keys go on from the row lit, the pointer's or their own, and take over from the pointer
 function stepSearch(delta){if(searchRows.length){const from=searchHover??searchIndex;searchHover=null;selectSearch((from+delta+searchRows.length)%searchRows.length);}}
+// a page at a time, as a pager shows a file: the page of the row the keys chose
+function searchPage(){const first=Math.floor(searchIndex/SEARCH.page)*SEARCH.page;return [first,searchRows.slice(first,first+SEARCH.page)];}
+function turnSearch(delta){
+ const from=Math.floor((searchHover??searchIndex)/SEARCH.page),to=Math.min(Math.max(from+delta,0),Math.ceil(searchRows.length/SEARCH.page)-1);
+ if(searchRows.length&&to!==from){searchHover=null;selectSearch(to*SEARCH.page);}
+}
 function chooseSearch(index){
  const row=searchRows[index];if(!row)return;
  closeSearch();view.setResolution(Math.min(view.getResolution(),initialResolution/8));view.setCenter(row.point);inspect(row.point);mapElement.focus({preventScroll:true});
@@ -363,9 +372,16 @@ for(const event of ['select','keyup','click'])searchInput.addEventListener(event
 document.addEventListener('selectionchange',()=>{if(document.activeElement===searchInput)drawSearch();});
 function searchLine(e){const box=searchCanvas.getBoundingClientRect();return Math.floor((e.clientY-box.top)*searchCanvas.height/box.height/SEARCH.row)-1;}
 searchCanvas.addEventListener('mousedown',e=>e.preventDefault());           // the field keeps the keyboard
-searchCanvas.addEventListener('pointermove',e=>{const i=searchLine(e),hover=i>=0&&i<searchRows.length?i:null;if(hover!==searchHover){searchHover=hover;highlightSearch();}});
+searchCanvas.addEventListener('pointermove',e=>{const i=searchLine(e),[first,page]=searchPage(),hover=i>=0&&i<page.length?first+i:null;if(hover!==searchHover){searchHover=hover;highlightSearch();}});
 searchCanvas.addEventListener('pointerleave',()=>{if(searchHover!==null){searchHover=null;highlightSearch();}});
-searchCanvas.addEventListener('click',e=>{const i=searchLine(e);if(i>=0&&i<searchRows.length)chooseSearch(i);else searchInput.focus({preventScroll:true});});
+searchCanvas.addEventListener('click',e=>{const i=searchLine(e),[first,page]=searchPage();if(i>=0&&i<page.length)chooseSearch(first+i);else searchInput.focus({preventScroll:true});});
+// a wheel's notch turns a page; a touchpad's scroll once it has gone far enough
+let searchScrolled=0;
+searchElement.addEventListener('wheel',e=>{
+ e.preventDefault();e.stopPropagation();
+ if(e.deltaMode){turnSearch(Math.sign(e.deltaY));return;}
+ searchScrolled+=e.deltaY;if(Math.abs(searchScrolled)>=SEARCH.scroll){turnSearch(Math.sign(searchScrolled));searchScrolled=0;}
+},{passive:false});
 searchInput.addEventListener('compositionstart',()=>{clearTimeout(searchTimer);if(searchRequest)searchRequest.abort();});
 searchInput.addEventListener('compositionend',queueSearch);
 searchElement.addEventListener('keydown',e=>{
@@ -376,6 +392,8 @@ searchElement.addEventListener('keydown',e=>{
  else if(e.target===searchInput&&['ArrowUp','ArrowDown','Tab','Enter'].includes(e.key)){
   e.preventDefault();if(e.key==='Enter')chooseSearch(searchHover??searchIndex);else stepSearch(e.key==='ArrowUp'||e.key==='Tab'&&e.shiftKey?-1:1);
  }
+ // a page on or back, as less and vi turn them
+ else if(e.target===searchInput&&(['PageUp','PageDown'].includes(e.key)||e.ctrlKey&&['b','f'].includes(e.key.toLowerCase()))){e.preventDefault();turnSearch(['PageDown','f','F'].includes(e.key)?1:-1);}
 });
 searchElement.addEventListener('keyup',e=>e.stopPropagation());
 document.addEventListener('keydown',e=>{

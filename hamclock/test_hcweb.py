@@ -598,13 +598,14 @@ class MapTests(unittest.TestCase):
         self.assertEqual(json.loads(f.request('/map/dots?t=' + urllib.parse.quote('遂'))[2])['遂'][5], g.bits.hex())
 
     def test_search_ranks_exact_then_prefix_and_bounds_results(self):
-        from map_search import search
+        from map_search import search, LIMIT
         rows = [dict(name=name, point=[660, 330], kind='地点') for name in
                 ['xTest', 'test station', 'ＴＥＳＴ'] + ['test ' + str(i) for i in range(20)]]
         result = search(rows, ' T e s t ')
         self.assertEqual(result[0]['name'], 'ＴＥＳＴ')
-        self.assertEqual(len(result), 8)
-        self.assertNotIn('xTest', [r['name'] for r in result])
+        self.assertEqual(len(result), 23)
+        self.assertEqual(result[-1]['name'], 'xTest')
+        self.assertEqual(len(search(rows * 20, 'test')), LIMIT)
         self.assertEqual(search(rows, '  '), [])
 
     def test_frontend_has_no_loading_text_or_spinner(self):

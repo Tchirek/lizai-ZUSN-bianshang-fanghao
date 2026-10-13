@@ -49,9 +49,11 @@ def search(rows, query):
     return sorted(matches, key=lambda r: (normalize(r['name']) != query,
                   not normalize(r['name']).startswith(query),
                   (r['point'][0] - a.W / 2) ** 2 + (r['point'][1] - a.H / 2) ** 2,
-                  r['name']))[:8]
+                  r['name']))[:LIMIT]
 
 
+LIMIT, PAGE = 200, 8                    # results kept, and shown a page at a time
+SCROLL = 90                             # window px of a two-finger scroll that turn a page
 WIDTH, ROW, PAD, GAP = 600, 30, 6, 12   # HamClock px: panel, line, margin, name to position
 CURSOR = 8                              # a line's top to HamClock's text cursor
 
@@ -67,6 +69,7 @@ class SearchPanel:
         self.selected = 0
         self.hovered = None
         self.backspace_down = False
+        self.scrolled = 0
         self.repeat = pygame.key.get_repeat()
         self.box = None
 
@@ -92,9 +95,34 @@ class SearchPanel:
             lit = self.hovered if self.hovered is not None else self.selected
             self.selected, self.hovered = (lit + delta) % len(self.results), None
 
+    def page(self, delta):
+        """Turn a page on or back, its first result lit; at either end it stays."""
+        lit = self.hovered if self.hovered is not None else self.selected
+        to = min(max(lit // PAGE + delta, 0), (len(self.results) - 1) // PAGE)
+        if self.results and to != lit // PAGE:
+            self.selected, self.hovered = to * PAGE, None
+            return True
+        return False
+
+    def turn(self, gesture):
+        """A page turned by a wheel's notch, or by a two-finger scroll once it goes far enough."""
+        if gesture[0] == 'wheel':
+            return self.page(-1 if gesture[1] > 0 else 1)
+        self.scrolled += gesture[2]
+        if abs(self.scrolled) < SCROLL:
+            return False
+        delta, self.scrolled = (1 if self.scrolled > 0 else -1), 0
+        return self.page(delta)
+
+    def shown(self):
+        """The first result on the page shown, and that page's results."""
+        first = self.selected // PAGE * PAGE
+        return first, self.results[first:first + PAGE]
+
     def hover(self, at):
         row = int((at[1] - self.box.y) // self.row_height) - 1 if at and self.box and self.box.collidepoint(at) else -1
-        hovered = row if 0 <= row < len(self.results) else None
+        first, page = self.shown()
+        hovered = first + row if 0 <= row < len(page) else None
         changed = hovered != self.hovered
         self.hovered = hovered
         return changed
@@ -103,14 +131,18 @@ class SearchPanel:
         """Drawn in HamClock's own pixels, as its panes are, then scaled with the clock."""
         import pygame
         status = self.error or ('No matches' if self.query.strip() and not self.future and not self.results else '')
-        panel = pygame.Surface((WIDTH, ROW * (1 + len(self.results) + bool(status))))
+        first, page = self.shown()
+        panel = pygame.Surface((WIDTH, ROW * (1 + len(page) + bool(status))))
+        # the ruler, as a pager's: which of how many are on the page
+        ruler = f'{first + 1}-{first + len(page)}/{len(self.results)}' if len(self.results) > PAGE else ''
+        dots.blit(panel, ruler, (WIDTH - PAD - dots.width(ruler), CURSOR), (150, 150, 150))
         text = self.query + self.composition
-        while text and dots.width('>' + text + '_') > WIDTH - 2 * PAD:
+        while text and dots.width('>' + text + '_') > WIDTH - 2 * PAD - (dots.width(ruler) + GAP if ruler else 0):
             text = text[1:]
         dots.blit(panel, '>' + text + '_', (PAD, CURSOR), (255, 255, 255))
         lit = self.hovered if self.hovered is not None else self.selected
-        for i, result in enumerate(self.results):
-            y = (i + 1) * ROW
+        for i, result in enumerate(page, first):
+            y = (i - first + 1) * ROW
             if i == lit:
                 panel.fill((45, 45, 45), (1, y, WIDTH - 2, ROW))
             right = WIDTH - PAD - dots.width(result['position'])
