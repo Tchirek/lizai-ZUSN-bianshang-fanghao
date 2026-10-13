@@ -21,6 +21,7 @@ import os
 import re
 import socket
 import sys
+import time
 
 STATION = os.path.expanduser("~/influ/station.json")
 SECRETS = os.path.expanduser("~/influ/private/aprs.env")
@@ -77,6 +78,7 @@ def main():
             sys.exit(f"APRS-IS login not verified: {reply.strip()}")
         f.write(packet.encode() + b"\r\n")
         f.flush()
+        time.sleep(3)                            # let the server take it before the line closes
     print(packet, flush=True)
 
 
