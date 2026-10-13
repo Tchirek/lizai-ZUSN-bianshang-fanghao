@@ -19,7 +19,7 @@
 
 > **In English.** Software for an amateur radio station on an old ThinkPad X230 running Debian. Its one RTL-SDR stays on 1090 MHz feeding ADS-B (FlightAware, Flightradar24) without dropping the feed or MLAT; a scheduler with a model of aircraft arrivals takes it to the 2 m band for seconds at a time to hear FT8 and watch the band, and a Quansheng UV-K5 sends FT8. A patched HamClock is the station clock: a native ADS-B scope pane, no world map of its own, and in its place a zoomable terrain map of the radio's line-of-sight coverage with APRS, FT8 and WSPR activity, search (pinyin aware), on the built-in screen and in a web page. Packaged for Debian 13: see the Releases page.
 
-- **接收**：站里只有一个 RTL-SDR V4，平时守在 1090 MHz，给 FlightAware 和 Flightradar24 喂 ADS-B。调度器在不影响喂数的空当，把它切到 2 米波段听十几秒，收 FT8、看频段活动。
+- **接收**：站里只有一个 RTL-SDR V4，平时守在 1090 MHz，给 FlightAware 和 Flightradar24 喂 ADS-B。调度器在不影响喂数的空当，把它切到 2 米波段听十几秒，收 FT8、看频段活动。收到的 FT8 每五分钟上报 PSK Reporter（`tools/pskreport.py`，与 WSJT-X 同一格式），本站因此列在它的监听站里；什么也没收到时也隔半小时报一次站名与 6 位网格。
 - **发射**：一台 UV-K5，用 CEC 固件经写频线发 FT8。
 - **显示**：机器自带屏幕上跑一个本地化的 HamClock。ADS-B 雷达屏是补丁给 HamClock 加的原生窗格，和其他窗格一样在菜单里选，点一下可在 10–100 英里间换量程；HamClock 经补丁不再有世界地图：不生成、不下载、不绘制，标记、路径、比例尺、新闻横幅和借地图显示的消息一概不画，地图框只留一片黑；覆盖图由显示程序画在那里，本周 FT8 统计叠在左栏下方。在覆盖图上点任意一处，弹出该处的可达性，HamClock 的天气窗格同时换成那里的天气（DX 设在该处），关掉弹窗才换回本站天气。
 
@@ -34,7 +34,7 @@
 | `collector/` | 只读记录：Beast 帧、aircraft.json、接收统计、云端参考航迹、天气 |
 | `analysis/` | 模型与报告：到达风险模型、训练时段统计、覆盖模型、虚拟切换回测、实际窗口对账、增益 A/B 诊断 |
 | `hamclock/` | HamClock 原生全屏窗口：可缩放的 UV-K5 视距覆盖图、业余活动图层、本周 FT8 统计 |
-| `tools/` | FT8 网页、UV-K5 读写与刷机、HamClock 补丁、ADS-B 雷达屏、DX 集群过滤 |
+| `tools/` | FT8 网页、PSK Reporter 上报、UV-K5 读写与刷机、HamClock 补丁、ADS-B 雷达屏、DX 集群过滤 |
 | `deploy/` | systemd 用户服务与定时器，以及唯一需要 root 的 `influ-admin` |
 
 说明文档：
