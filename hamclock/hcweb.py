@@ -2,7 +2,9 @@
 """Optional HTTP HamClock display; each page has its own map and reachability popup.
 
 Run separately from hcdisplay.py. One live HamClock connection feeds all pages; the
-native window and every page keep independent browsing state. No new dependencies.
+native window and every page keep independent browsing state. No new dependencies. The weather
+pane is HamClock's, one for all: a page's popup turns it to its place as the native one does,
+the last opened having it (dxwx.py).
 """
 import argparse
 from concurrent.futures import Future, ThreadPoolExecutor
@@ -213,6 +215,13 @@ class Renderer(threading.Thread):
         self.base = None
         self.mirror, self.fitted, self.revision = Mirror(), Fitted(SIZE), 0
         self.stopping = threading.Event()
+        self.weather = None                # dxwx.DXWeather: a page's popup turns the weather pane
+
+    def forget(self, token):
+        """A page gone: its view closed, the weather pane given back if its popup had it."""
+        self.sessions.pop(token).scene.close()
+        if self.weather:
+            self.weather.close('web:' + token)
 
     def call(self, kind, payload=None):
         future = Future()
@@ -250,8 +259,7 @@ class Renderer(threading.Thread):
         session.seen = time.monotonic()
         scene = session.scene
         if kind == 'close':
-            scene.close()
-            del self.sessions[token]
+            self.forget(token)
         elif kind == 'input':
             session.input_at = session.seen
             for event in payload['events']:
@@ -299,8 +307,7 @@ class Renderer(threading.Thread):
                         self.revision += 1
                 for token, session in list(self.sessions.items()):
                     if now - session.seen > IDLE_S:
-                        session.scene.close()
-                        del self.sessions[token]
+                        self.forget(token)
                     else:
                         if now - session.input_at > 3:
                             session.scene.held.clear()
@@ -308,8 +315,7 @@ class Renderer(threading.Thread):
                             session.scene.tick(dt)
                         except Exception:
                             log.exception('map update failed')
-                            session.scene.close()
-                            del self.sessions[token]
+                            self.forget(token)
                 for _ in range(32):
                     try:
                         future, kind, payload = self.commands.get_nowait()
@@ -341,7 +347,7 @@ class Server(ThreadingHTTPServer):
     daemon_threads = True
 
     def __init__(self, address, renderer, map_data=None):
-        self.renderer = renderer
+        self.renderer, self.weather = renderer, renderer.weather
         self.map_data, self.map_lock = map_data, threading.Lock()
         self.profile_slots = threading.BoundedSemaphore(2)
         self.night_slots = threading.BoundedSemaphore(2)
@@ -541,6 +547,21 @@ class Handler(BaseHTTPRequestHandler):
                     self.reply(503, b'terrain unavailable')
                 finally:
                     self.server.profile_slots.release()
+            elif route == '/map/dx':
+                # a page's popup opened on a place, or closed: HamClock's weather pane follows (dxwx.py)
+                token = data.get('session')
+                if not isinstance(token, str) or token not in self.server.renderer.sessions:
+                    raise Gone('page expired; reload')
+                if data.get('close') is True:
+                    if self.server.weather:
+                        self.server.weather.close('web:' + token)
+                else:
+                    map_data = self.server.get_map()
+                    limit = max(abs(value) for value in map_data.extent)
+                    x, y = number(data, 'x', limit), number(data, 'y', limit)
+                    if self.server.weather:
+                        self.server.weather.show('web:' + token, *map_data.base.latlon(*map_data.pixel((x, y))))
+                self.reply(204)
             elif route == '/session':
                 result = self.server.renderer.call('open')
                 self.reply(200, json.dumps(result).encode(), 'application/json')
@@ -583,6 +604,8 @@ def main():
         raise KeyboardInterrupt
     signal.signal(signal.SIGTERM, stop_signal)
     renderer = Renderer()
+    from dxwx import DXWeather
+    renderer.weather = DXWeather('web')
     with Server((args.host, args.port), renderer) as server:
         renderer.start()
         host = f'[{args.host}]' if ':' in args.host else args.host

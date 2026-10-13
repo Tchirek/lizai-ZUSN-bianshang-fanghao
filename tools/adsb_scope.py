@@ -186,8 +186,9 @@ def map_text(basemap):
             lines.append(f"C {p['lat']:.5f} {p['lon']:.5f} {ascii_name(p['name'])}".rstrip())
         else:
             lines.append(f"W {p['lat']:.5f} {p['lon']:.5f}")
-    for ap in basemap.get("airports", []):
-        lines.append(f"R {ap['lat']:.5f} {ap['lon']:.5f} {ascii_name(ap['name'])}".rstrip())
+    for ap in basemap.get("airports", []):            # named by code (ZUSN), not by a long name
+        code = ap["name"] if ap["name"].isascii() and ap["name"].isalnum() and len(ap["name"]) <= 5 else ""
+        lines.append(f"R {ap['lat']:.5f} {ap['lon']:.5f} {code}".rstrip())
     return "\n".join(lines) + "\n"
 
 

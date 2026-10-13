@@ -50,14 +50,15 @@ typedef struct {
     const char *kind;
     uint16_t color;
     uint8_t thick;                              // raw px
+    uint8_t to_mi;                              // drawn at ranges up to this
 } MapStyle;
 static const MapStyle map_styles[] = {
-    {"water",    RGB565(20,45,110),   1},
-    {"river",    RGB565(30,70,160),   1},
-    {"rail",     RGB565(70,70,70),    1},
-    {"trunk",    RGB565(75,55,20),    1},
-    {"motorway", RGB565(120,85,25),   1},
-    {"runway",   RGB565(175,175,175), 3},
+    {"water",    RGB565(20,45,110),   1, 100},
+    {"river",    RGB565(30,70,160),   1, 100},
+    {"rail",     RGB565(70,70,70),    1, 50},     // past 50 mi rail and trunk roads crowd the scope
+    {"trunk",    RGB565(75,55,20),    1, 50},
+    {"motorway", RGB565(120,85,25),   1, 100},
+    {"runway",   RGB565(175,175,175), 3, 100},
 };
 
 // altitude bands, top of each in feet, and their colours; unknown is white
@@ -116,10 +117,23 @@ typedef struct {
     float km;                                   // range
 } Scope;
 
+// the base map's lines as last laid on the scope, and for what: worked out again only when the
+// range, DE or the map changes, so a redraw every ADSB_INTERVAL just draws them
+typedef struct {
+    int16_t x0, y0, x1, y1;
+    uint8_t style;
+} Segment;
+
 static uint8_t range_mi;                        // 0 until read from NV
 static std::vector<MapLine> map_lines;
 static std::vector<MapPlace> map_places;
 static time_t map_mtime;
+static std::vector<Segment> map_segs;
+static struct {
+    uint8_t mi;
+    float lat, lng;
+    time_t mtime;
+} segs_for;
 
 
 /* our_dir/fn
@@ -342,10 +356,19 @@ static bool clear (const Area &a, const std::vector<Area> &taken)
 /* the base map within the scope: lines whose both ends are in it, then cities and airfields named
  * where they are clear of what is taken (the aircraft's labels), which they add to
  */
-static void drawMap (const Scope &sc, const SBox &box, std::vector<Area> &taken)
+/* the base map's lines on the scope for this range and DE: the parts whose both ends are on it, in
+ * map_styles[] order, steps under 2 raw px merged into the next
+ */
+static void layMap (const Scope &sc)
 {
+    if (segs_for.mi == rangeMi() && segs_for.lat == de_ll.lat && segs_for.lng == de_ll.lng
+                                && segs_for.mtime == map_mtime)
+        return;
+    segs_for = {rangeMi(), de_ll.lat, de_ll.lng, map_mtime};
+    map_segs.clear();
     for (unsigned s = 0; s < NARRAY(map_styles); s++) {
-        const MapStyle &ms = map_styles[s];
+        if (rangeMi() > map_styles[s].to_mi)
+            continue;
         for (const MapLine &ml : map_lines) {
             if (ml.style != s)
                 continue;
@@ -353,12 +376,22 @@ static void drawMap (const Scope &sc, const SBox &box, std::vector<Area> &taken)
             bool in0 = project (sc, ml.spots[0], x0, y0);
             for (size_t i = 1; i < ml.spots.size(); i++) {
                 bool in1 = project (sc, ml.spots[i], x1, y1);
+                bool last = i + 1 == ml.spots.size();
+                if (in0 && in1 && !last && abs(x1-x0) < 2 && abs(y1-y0) < 2)
+                    continue;                               // too short to see: go on from x0, y0
                 if (in0 && in1)
-                    tft.drawLineRaw (x0, y0, x1, y1, ms.thick, ms.color);
+                    map_segs.push_back ({x0, y0, x1, y1, (uint8_t)s});
                 x0 = x1, y0 = y1, in0 = in1;
             }
         }
     }
+}
+
+static void drawMap (const Scope &sc, const SBox &box, std::vector<Area> &taken)
+{
+    layMap (sc);
+    for (const Segment &g : map_segs)
+        tft.drawLineRaw (g.x0, g.y0, g.x1, g.y1, map_styles[g.style].thick, map_styles[g.style].color);
 
     const int k = tft.SCALESZ;
     for (int pass = 0; pass < 2; pass++) {              // cities first, so towns never crowd them out
@@ -385,7 +418,7 @@ static void drawMap (const Scope &sc, const SBox &box, std::vector<Area> &taken)
     std::vector<std::string> done;
     for (const MapPlace &pl : map_places) {
         int16_t x, y;
-        if (pl.kind != 'R' || !project (sc, pl.spot, x, y))
+        if (pl.kind != 'R' || pl.name.empty() || !project (sc, pl.spot, x, y))
             continue;
         bool seen = false;
         for (const std::string &d : done)
@@ -397,6 +430,19 @@ static void drawMap (const Scope &sc, const SBox &box, std::vector<Area> &taken)
             fastText (b.x, b.y, map_styles[NARRAY(map_styles)-1].color, pl.name.c_str());
         }
     }
+}
+
+static const char *compass[] = {"N", "E", "S", "W"};
+
+/* where compass point i's letter goes, app px, just inside the ring
+ */
+static Area compassPoint (const Scope &sc, int i)
+{
+    const int k = tft.SCALESZ;
+    float s = sinf(deg2rad(90*i)), c = cosf(deg2rad(90*i));
+    int r = sc.r - 20;
+    int w = getTextWidth (compass[i]);
+    return {(int)roundf((sc.cx + r*s)/k) - w/2, (int)roundf((sc.cy - r*c)/k) - 4, w, 9};
 }
 
 /* range rings, ticks every 30 degrees, compass points and the centre
@@ -413,11 +459,9 @@ static void drawFrame (const Scope &sc)
         tft.drawLineRaw (roundf(sc.cx + r0*s), roundf(sc.cy - r0*c), roundf(sc.cx + sc.r*s), roundf(sc.cy - sc.r*c),
                         1, EDGE_COLOR);
     }
-    static const char *points[] = {"N", "E", "S", "W"};
     for (int i = 0; i < 4; i++) {
-        float s = sinf(deg2rad(90*i)), c = cosf(deg2rad(90*i));
-        int r = sc.r - 20;
-        fastText (roundf((sc.cx + r*s)/k) - getTextWidth(points[i])/2, roundf((sc.cy - r*c)/k) - 4, EDGE_COLOR, points[i]);
+        Area a = compassPoint (sc, i);
+        fastText (a.x, a.y, EDGE_COLOR, compass[i]);
     }
     char str[16];
     for (int i = 1; i <= 2; i++) {
@@ -608,6 +652,8 @@ static void drawPane (const SBox &box, const Feed *feed)
     readMap();
     std::vector<Shown> shown;
     std::vector<Area> taken = {{box.x, box.y, 40, 20}, {box.x+box.w-62, box.y, 62, 20}};     // the top corners' text
+    for (int i = 0; i < 4; i++)
+        taken.push_back (compassPoint (sc, i));                             // and the compass points
     if (live) {
         shown = locate (sc, *feed);
         placeLabels (shown, box, taken);                // the aircraft's labels first: the map's give way

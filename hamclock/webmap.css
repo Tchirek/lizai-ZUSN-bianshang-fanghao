@@ -17,13 +17,17 @@ body{display:grid;place-items:center;font:12px Arial,"Microsoft YaHei","PingFang
 #dem{grid-row:1/3;grid-column:2;color:#969696;white-space:pre;padding-bottom:1px}
 #legend{flex:0 1 auto;min-width:0;display:flex;flex-wrap:wrap;justify-content:flex-end;gap:7px;background:#000;border:1px solid #fff;padding:3px 5px}
 #legend i{display:inline-block;width:7px;height:7px;margin-right:4px}
-#profile{position:absolute;box-sizing:border-box;width:260px;background:#000;border:1px solid #888;color:#ddd;padding:5px 7px;font:11px Arial,sans-serif;z-index:5}
+#profile{position:absolute;box-sizing:border-box;width:260px;background:#000;border:1px solid #888;color:#ddd;padding:5px 7px;font:11px/13px Arial,sans-serif;z-index:5}
+/* every line keeps its height while the place is worked out, as the native popup: it never jumps */
+#position,#loss,#conditions{height:13px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
 #profile[hidden]{display:none}#profile .title{text-align:center;color:#fff;margin-bottom:9px}
 #profile-close{position:absolute;right:3px;top:2px;border:1px solid #777;background:#000;color:#ddd;width:18px;height:18px;padding:0;cursor:pointer}
-#position{color:#ffb400;margin-bottom:9px}#reach-table{border-collapse:collapse;width:100%;margin-bottom:7px}
+#position{color:#ffb400;margin-bottom:9px}#reach-table{border-collapse:collapse;width:100%;margin-bottom:7px;table-layout:fixed}
+#reach-table th,#reach-table td{height:13px;white-space:nowrap}#reach-table th:first-child{width:46px}
 #reach-table th{font-weight:400;color:#fff;padding:2px}#reach-table td{text-align:center;border:1px solid #444;padding:3px 1px}
 #reach-table td:first-child{border:0;text-align:left;color:#ddd;padding-right:4px}
 #reach-table .OK{background:#009100;color:#fff}#reach-table .LOS{background:#af7d00;color:#fff}#reach-table .BLK{background:#910000;color:#fff}
 #terrain{display:block;width:100%;height:35px;margin-top:3px;border-bottom:1px solid #666}
-#nearby{color:#00dcdc;margin-top:5px}#conditions{color:#999;margin-top:6px;font-size:10px}
-@media(max-width:700px){#sun{font-size:9px}#legend,#scale{font-size:9px}#legend{gap:4px}#profile{width:235px;font-size:10px}}
+#nearby{color:#00dcdc;margin-top:5px;height:26px;overflow:hidden;display:-webkit-box;-webkit-box-orient:vertical;-webkit-line-clamp:2;line-clamp:2}
+#conditions{color:#999;margin-top:6px;font-size:10px}
+@media(max-width:700px){#sun{font-size:9px}#legend,#scale{font-size:9px}#legend{gap:4px}#profile{width:235px;font-size:10px}#reach-table th:first-child{width:42px}}

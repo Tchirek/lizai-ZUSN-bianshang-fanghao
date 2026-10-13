@@ -1,10 +1,11 @@
 #!/usr/bin/env python3
-"""Fetch a small vector base map around the station from OpenStreetMap (Overpass) for the
-ADS-B scope: rivers, lakes/reservoirs, expressways, railways, county boundaries, runways,
-airports and towns. Simplified and cached as ~/influ/model/basemap.json.
+"""Fetch a vector base map around the station from OpenStreetMap (Overpass) for the ADS-B
+scope: rivers, lakes/reservoirs, expressways, railways, county boundaries, runways, airports and
+towns, out to the scope's largest range (100 mi, 161 km). Simplified, more coarsely past NEAR_KM,
+where the scope shows a pixel for a kilometre or more, and cached as ~/influ/model/basemap.json.
 Map data (c) OpenStreetMap contributors, ODbL.
 
-usage: build_basemap.py [--radius-km 60]
+usage: build_basemap.py [--radius-km 165] [--out PATH]
 """
 import argparse
 import json
@@ -14,6 +15,8 @@ import urllib.parse
 import urllib.request
 
 OUT = os.path.expanduser("~/influ/model/basemap.json")
+NEAR_KM = 60                   # within this the 10-30 mi ranges show it: full detail
+FAR_TOL_M = 400                # past it, simplified to this
 OVERPASS = ["https://overpass-api.de/api/interpreter", "https://overpass.kumi.systems/api/interpreter",
             "https://overpass.private.coffee/api/interpreter"]
 
@@ -47,7 +50,8 @@ def simplify(pts, tol_m):
 
 def main():
     ap = argparse.ArgumentParser()
-    ap.add_argument("--radius-km", type=float, default=60)
+    ap.add_argument("--radius-km", type=float, default=165)
+    ap.add_argument("--out", default=OUT)
     a = ap.parse_args()
     st = json.load(open(os.path.expanduser("~/influ/station.json")))
     # query a coarse box (2 decimals) so the request does not carry the exact station position
@@ -55,7 +59,7 @@ def main():
     dlat = a.radius_km / 110.5
     dlon = a.radius_km / (111.3 * math.cos(math.radians(lat)))
     bbox = f"{lat - dlat:.3f},{lon - dlon:.3f},{lat + dlat:.3f},{lon + dlon:.3f}"
-    q = f"""[out:json][timeout:120];
+    q = f"""[out:json][timeout:300];
 (
   way["waterway"="river"]({bbox});
   way["natural"="water"]["water"~"^(lake|reservoir|river)$"]({bbox});
@@ -72,7 +76,7 @@ out tags geom;"""
         req = urllib.request.Request(url, data=urllib.parse.urlencode({"data": q}).encode(),
                                      headers={"User-Agent": "influ-adsb-scope/1.0 (personal station)"})
         try:
-            els = json.load(urllib.request.urlopen(req, timeout=180))["elements"]
+            els = json.load(urllib.request.urlopen(req, timeout=360))["elements"]
             print("from", url)
             break
         except (OSError, ValueError) as e:
@@ -84,9 +88,12 @@ out tags geom;"""
     tol = {"river": 60, "water": 60, "motorway": 60, "trunk": 80, "rail": 60, "boundary": 120,
            "runway": 5}
 
+    def near(p):
+        return math.hypot(p[0] - lat, (p[1] - lon) * math.cos(math.radians(lat))) * 110.5 < NEAR_KM
+
     def add(kind, geom):
         pts = [(g["lat"], g["lon"]) for g in geom if g]
-        pts = simplify(pts, tol[kind])
+        pts = simplify(pts, tol[kind] if any(map(near, pts)) else max(tol[kind], FAR_TOL_M))
         if len(pts) >= 2:
             lines.append({"k": kind, "p": [[round(p[0], 5), round(p[1], 5)] for p in pts]})
 
@@ -125,9 +132,11 @@ out tags geom;"""
         if key not in seen:
             seen.add(key)
             uniq.append(ln)
-    os.makedirs(os.path.dirname(OUT), exist_ok=True)
-    json.dump({"bbox": bbox, "lines": uniq, "places": places, "airports": airports,
-               "attribution": "(c) OpenStreetMap contributors"}, open(OUT, "w"))
+    os.makedirs(os.path.dirname(a.out), exist_ok=True)
+    with open(a.out + ".part", "w") as f:
+        json.dump({"bbox": bbox, "lines": uniq, "places": places, "airports": airports,
+                   "attribution": "(c) OpenStreetMap contributors"}, f)
+    os.replace(a.out + ".part", a.out)
     from collections import Counter
     print("lines:", dict(Counter(l["k"] for l in uniq)), "points:", sum(len(l["p"]) for l in uniq))
     print("airports:", [(x["name"]) for x in airports])

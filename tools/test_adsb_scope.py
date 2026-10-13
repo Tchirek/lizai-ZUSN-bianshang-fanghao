@@ -58,13 +58,15 @@ class Tests(unittest.TestCase):
             places=[dict(kind='city', name='Lángzhōng', lat=31.5, lon=106.0),
                     dict(kind='city', name='遂宁', lat=30.5, lon=105.6),
                     dict(kind='town', name='Anju', lat=30.4, lon=105.4)],
-            airports=[dict(name='ZUSN', lat=30.47, lon=105.61)]))
+            airports=[dict(name='ZUSN', lat=30.47, lon=105.61),
+                      dict(name='Baiguo General Aviation Airport', lat=30.9, lon=104.9)]))
         lines = text.splitlines()[1:]
         self.assertEqual(lines, ['L river 30.10000 105.10000 30.20000 105.20000',
                                  'C 31.50000 106.00000 Langzhong',
                                  'C 30.50000 105.60000',                 # no ASCII name: a dot only
                                  'W 30.40000 105.40000',
-                                 'R 30.47000 105.61000 ZUSN'])
+                                 'R 30.47000 105.61000 ZUSN',
+                                 'R 30.90000 104.90000'])                # airfields by code only
 
     def test_files_are_written_whole(self):
         with tempfile.TemporaryDirectory() as folder:

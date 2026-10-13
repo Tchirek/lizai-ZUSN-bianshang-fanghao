@@ -146,6 +146,27 @@ class Tests(unittest.TestCase):
         self.assertEqual(Image.open(io.BytesIO(png)).convert('RGB').tobytes(),
                          pygame.image.tobytes(native.frame, 'RGB'))
 
+    def test_the_native_popup_turns_the_weather_pane_while_open(self):
+        f, calls = self.fixture, []
+
+        class Weather:
+            def show(self, owner, lat, lon):
+                calls.append(('show', owner))
+
+            def close(self, owner):
+                calls.append(('close', owner))
+        native = f.scene(web.SIZE, f.link)
+        self.addCleanup(native.close)
+        native.weather = Weather()
+        native.tap((500, 300))                           # a place on the map: its popup
+        native.tap((300, 250))                           # another place
+        self.assertEqual(calls, [('show', 'native'), ('show', 'native')])
+        self.assertEqual(native.popup(), native.inspector.target)
+        native.key('Escape')
+        self.assertEqual(calls[-1], ('close', 'native'))
+        native.key('Escape')                             # nothing open: HamClock's key, no change
+        self.assertEqual(len(calls), 3)
+
     def test_two_pages_and_native_have_independent_pan_zoom_and_popups(self):
         f = self.fixture
         first, second = f.open(), f.open()
@@ -437,6 +458,28 @@ class MapTests(unittest.TestCase):
         kinds = {item['properties']['kind']: item['geometry'] for item in result['features']['features']}
         self.assertEqual(kinds['qso_path']['coordinates'][0], [0, 0])               # from us
         self.assertEqual(kinds['qso_path']['coordinates'][1], kinds['qso']['coordinates'])
+
+    def test_a_pages_popup_turns_the_weather_pane_and_its_end_gives_it_back(self):
+        f, calls = self.fixture, []
+
+        class Weather:
+            def show(self, owner, lat, lon):
+                calls.append(('show', owner, round(lat, 4), round(lon, 4)))
+
+            def close(self, owner):
+                calls.append(('close', owner))
+        f.renderer.weather = f.server.weather = Weather()
+        token = f.open()
+        point = f.map_data.coordinate((700, 330))
+        self.assertEqual(f.request('/map/dx', dict(session=token, x=point[0], y=point[1]))[0], 204)
+        lat, lon = f.base.latlon(700, 330)
+        self.assertEqual(calls, [('show', 'web:' + token, round(lat, 4), round(lon, 4))])
+        self.assertEqual(f.request('/map/dx', dict(session=token, close=True))[0], 204)
+        self.assertEqual(calls[-1], ('close', 'web:' + token))
+        self.assertEqual(f.request('/map/dx', dict(session='nobody', x=0, y=0))[0], 410)
+        self.assertEqual(f.request('/map/dx', dict(session=token, x=float('nan'), y=0))[0], 400)
+        self.assertEqual(f.request('/close', dict(session=token))[0], 204)   # the page went away
+        self.assertEqual(calls[-1], ('close', 'web:' + token))
 
     def test_frontend_has_no_loading_text_or_spinner(self):
         f = self.fixture

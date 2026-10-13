@@ -1,7 +1,8 @@
 'use strict';
 const stage=document.querySelector('#stage'), clock=document.querySelector('#clock'), ctx=clock.getContext('2d');
 const mapElement=document.querySelector('#map'), profileElement=document.querySelector('#profile');
-const mapKeys=new Set(['ArrowLeft','ArrowRight','ArrowUp','ArrowDown','+','=','-','PageUp','PageDown']);
+const zoomIn=new Set(['+','=','PageUp']), zoomOut=new Set(['-','_','PageDown']);
+const mapKeys=new Set(['ArrowLeft','ArrowRight','ArrowUp','ArrowDown',...zoomIn,...zoomOut]);
 const namedKeys=new Set([...mapKeys,'Enter','Tab','Escape','Backspace','Space']);
 let session=null, revision=-1, active=true, creating=null, sending=false, events=[], frameTask=null;
 let map=null, config=null, view=null, initialResolution=1, featureRequest=null, profileRequest=null, profilePoint=null;
@@ -218,11 +219,14 @@ async function initMap(){
   map.on('moveend',()=>{scheduleFeatures();rings();positionProfile();updateLegend();placeTag();});
   map.on('postrender',positionProfile);map.on('change:size',resized);
   updateFeatures();rings();startLive();
+  if(document.activeElement===document.body)mapElement.focus({preventScroll:true});   // keys work at once
  }catch(e){console.warn('Map setup',e.message);await sleep(1000);}}
 }
 function startMap(){if(!map&&!mapTask)mapTask=initMap().finally(()=>{mapTask=null;if(active&&!map)startMap();});}
 
-function closeProfile(){profileSerial++;if(profileRequest)profileRequest.abort();profilePoint=null;profileElement.hidden=true;selectedSource.clear();}
+// HamClock's weather pane shows the open popup's place, DE's again once it closes (dxwx.py)
+function weather(body){if(session)fetch('/map/dx',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({session,...body})}).catch(()=>{});}
+function closeProfile(){if(profilePoint)weather({close:true});profileSerial++;if(profileRequest)profileRequest.abort();profilePoint=null;profileElement.hidden=true;selectedSource.clear();}
 document.querySelector('#profile-close').addEventListener('click',()=>{closeProfile();mapElement.focus({preventScroll:true});});
 function positionProfile(){
  if(!profilePoint||profileElement.hidden||!map)return;
@@ -239,8 +243,10 @@ function table(data){
 async function inspect(point){
  if(!config||point[0]<config.extent[0]||point[0]>config.extent[2]||point[1]<config.extent[1]||point[1]>config.extent[3])return;
  const serial=++profileSerial;if(profileRequest)profileRequest.abort();profileRequest=new AbortController();
- profilePoint=point.slice();profileElement.hidden=false;table({heights:[10,20,40,80],frequencies:[144.174,144.640,145.025,435]});
- for(const id of ['position','loss','nearby','conditions'])document.querySelector('#'+id).textContent='';
+ profilePoint=point.slice();profileElement.hidden=false;table({heights:[10,20,40,80],frequencies:[144.174,144.640,145.025,435]});weather({x:point[0],y:point[1]});
+ for(const id of ['loss','nearby','conditions'])document.querySelector('#'+id).textContent='';
+ // distance and bearing are the projection's own (azimuthal equidistant about DE): shown at once
+ document.querySelector('#position').textContent=(Math.hypot(...point)/1000).toFixed(1)+' km  '+Math.round((Math.atan2(point[0],point[1])*180/Math.PI+360)%360)+'°';
  const chart=document.querySelector('#terrain'),c=chart.getContext('2d');c.clearRect(0,0,chart.width,chart.height);
  selectedSource.clear();selectedSource.addFeatures([new ol.Feature(new ol.geom.LineString([[0,0],point])),new ol.Feature(new ol.geom.Point(point))]);positionProfile();
  try{
@@ -257,12 +263,17 @@ async function inspect(point){
 function keyName(e){return e.key===' '?'Space':e.key;}
 stage.addEventListener('keydown',e=>{
  const name=keyName(e);if(e.target.closest('button')&&name!=='Escape')return;
- if(mapKeys.has(name)&&view){e.preventDefault();keys.add(name);return;}
+ if(mapKeys.has(name)&&view){
+  e.preventDefault();
+  if(!e.repeat){keyDown.set(name,performance.now());if(zoomIn.has(name)||zoomOut.has(name))zoomStep(zoomIn.has(name)?1:-1);}
+  keys.add(name);return;
+ }
  if(name==='Escape'&&profilePoint){e.preventDefault();closeProfile();return;}
  if(name==='Enter'&&view&&mapElement.contains(document.activeElement)){e.preventDefault();inspect(view.getCenter());return;}
  if(namedKeys.has(name)||name.length===1&&name.charCodeAt(0)>=33&&name.charCodeAt(0)<=126){e.preventDefault();enqueue({type:'key',key:name,down:true,ctrl:e.ctrlKey,shift:e.shiftKey});}
 });
-stage.addEventListener('keyup',e=>{const name=keyName(e);if(mapKeys.has(name)){e.preventDefault();keys.delete(name);}else if(namedKeys.has(name)||name.length===1&&name.charCodeAt(0)>=33&&name.charCodeAt(0)<=126)enqueue({type:'key',key:name,down:false});});
+// + is Shift and =: let go of Shift first and the key comes up as =, so any zoom key up ends them all
+stage.addEventListener('keyup',e=>{const name=keyName(e);if(mapKeys.has(name)){e.preventDefault();if(zoomIn.has(name)||zoomOut.has(name))for(const k of [...zoomIn,...zoomOut])keys.delete(k);else keys.delete(name);}else if(namedKeys.has(name)||name.length===1&&name.charCodeAt(0)>=33&&name.charCodeAt(0)<=126)enqueue({type:'key',key:name,down:false});});
 function padState(){
  let x=0,y=0,z=0,enter=false,escape=false;
  if(navigator.getGamepads)for(const pad of navigator.getGamepads()){
@@ -272,11 +283,16 @@ function padState(){
  return {x:Math.max(-1,Math.min(1,x)),y:Math.max(-1,Math.min(1,y)),z:Math.max(-1,Math.min(1,z)),enter,escape};
 }
 let lastTick=performance.now();
+// a press of + or - zooms a step at once (x1.44, as two wheel notches on the native map); held, it
+// goes on zooming after KEY_REPEAT ms
+const KEY_REPEAT=350, keyDown=new Map();
+function zoomStep(step){view.animate({resolution:view.getResolution()*Math.exp(-step*2*.18),duration:150});}
+function heldLong(name){return keys.has(name)&&performance.now()-(keyDown.get(name)||0)>KEY_REPEAT;}
 function controls(now){
  const dt=Math.min(.05,(now-lastTick)/1000);lastTick=now;
  if(view&&!document.hidden&&document.hasFocus()){
   let pad={x:0,y:0,z:0,enter:false,escape:false};try{pad=padState();}catch(e){}
-  const x=(keys.has('ArrowRight')?1:0)-(keys.has('ArrowLeft')?1:0)+pad.x,y=(keys.has('ArrowDown')?1:0)-(keys.has('ArrowUp')?1:0)+pad.y,z=(keys.has('+')||keys.has('=')||keys.has('PageUp')?1:0)-(keys.has('-')||keys.has('PageDown')?1:0)+pad.z;
+  const x=(keys.has('ArrowRight')?1:0)-(keys.has('ArrowLeft')?1:0)+pad.x,y=(keys.has('ArrowDown')?1:0)-(keys.has('ArrowUp')?1:0)+pad.y,z=([...zoomIn].some(heldLong)?1:0)-([...zoomOut].some(heldLong)?1:0)+pad.z;
   const moving=!!(x||y||z);if(moving&&!heldInteraction){view.beginInteraction();heldInteraction=true;}
   if(x||y){const resolution=view.getResolution();view.adjustCenter([x*700*dt*resolution,-y*700*dt*resolution]);}
   if(z)view.adjustResolution(Math.exp(-z*3*.18*dt),view.getCenter());
