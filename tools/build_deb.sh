@@ -66,6 +66,11 @@ $(sed 's/^/ /; s/^ $/ ./' "$ROOT/hamclock/vendor/hamclock-font/LICENSE")
 Files: usr/share/influ/hamclock/vendor/openlayers/*
 License: BSD-2-Clause
 $(sed 's/^/ /; s/^ $/ ./' "$ROOT/hamclock/vendor/openlayers/LICENSE.md")
+
+Files: usr/share/influ/hamclock/vendor/amiri/*
+Copyright: 2010-2022 The Amiri Project Authors
+License: OFL-1.1
+$(sed 's/^/ /; s/^ $/ ./' "$ROOT/hamclock/vendor/amiri/OFL.txt")
 EOF
 
 INSTALLED=$(du -sk "$PKG/usr" | cut -f1)

@@ -16,6 +16,8 @@ our version, no world map.
    fetches and draws none. The box is erased once and left black; nothing counts as over the
    map, so no marker, spot, path, beacon or tap lands there; no map scale, no news banner, and
    the messages HamClock would show across it are only logged.
+6. callsign.cpp: a picture in place of the call, when HamClock's directory holds one
+   (influ-callbox.rgb565, made by tools/callbox.py): text HamClock's fonts cannot write.
 
 Idempotent: refuses if a hunk is not found exactly once. Run inside the ESPHamClock source dir.
 """
@@ -276,3 +278,48 @@ patch("mapmanage.cpp",
       "    // log\n"
       "    Serial.printf (\"mapMsg: %s\\n\", msg);\n"
       "    return;             // influ: no world map to show it over, nor to wait on\n")
+
+
+# 6. a picture in place of the call: our_dir/influ-callbox.rgb565 (tools/callbox.py), the box's raw
+# px row by row as little-endian RGB565; without one the call is drawn as ever
+patch("callsign.cpp",
+      "#include \"HamClock.h\"\n"
+      "\n"
+      "CallsignInfo cs_info;",
+      "#include <vector>\n"
+      "\n"
+      "#include \"HamClock.h\"\n"
+      "\n"
+      "CallsignInfo cs_info;")
+
+patch("callsign.cpp",
+      "static void drawCallsign (bool all)\n"
+      "{\n",
+      "/* influ: the picture in our_dir/influ-callbox.rgb565 over the whole box, if there is one of its\n"
+      " * size; return whether drawn.\n"
+      " */\n"
+      "static bool drawCallPicture (void)\n"
+      "{\n"
+      "    const SBox &box = cs_info.box;\n"
+      "    const int w = box.w*tft.SCALESZ, h = box.h*tft.SCALESZ;\n"
+      "    std::string path = our_dir;\n"
+      "    if (path.empty() || path.back() != '/')\n"
+      "        path += '/';\n"
+      "    FILE *fp = fopen ((path + \"influ-callbox.rgb565\").c_str(), \"r\");\n"
+      "    if (!fp)\n"
+      "        return (false);\n"
+      "    std::vector<uint16_t> px (w*h);\n"
+      "    bool whole = fread (px.data(), sizeof(uint16_t), px.size(), fp) == px.size() && fgetc (fp) == EOF;\n"
+      "    fclose (fp);\n"
+      "    if (!whole)\n"
+      "        return (false);\n"
+      "    for (int y = 0; y < h; y++)\n"
+      "        for (int x = 0; x < w; x++)\n"
+      "            tft.drawPixelRaw (box.x*tft.SCALESZ + x, box.y*tft.SCALESZ + y, px[y*w + x]);\n"
+      "    return (true);\n"
+      "}\n"
+      "\n"
+      "static void drawCallsign (bool all)\n"
+      "{\n"
+      "    if (drawCallPicture())\n"
+      "        return;\n")

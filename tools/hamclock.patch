@@ -291,3 +291,49 @@
  
      // get msg width
      selectFontStyle (LIGHT_FONT, FAST_FONT);
+--- callsign.cpp.orig-influ	2026-05-21 22:05:11.822906188 +0800
++++ callsign.cpp	2026-10-14 02:12:44.902405052 +0800
+@@ -2,6 +2,8 @@
+  */
+ 
+ 
++#include <vector>
++
+ #include "HamClock.h"
+ 
+ CallsignInfo cs_info;                                   // state, global for setup.cpp::call[] and webserver
+@@ -169,8 +171,34 @@
+ /* draw callsign using cs_info.
+  * draw everything if all, else just fg text as when just changing text color.
+  */
++/* influ: the picture in our_dir/influ-callbox.rgb565 over the whole box, if there is one of its
++ * size; return whether drawn.
++ */
++static bool drawCallPicture (void)
++{
++    const SBox &box = cs_info.box;
++    const int w = box.w*tft.SCALESZ, h = box.h*tft.SCALESZ;
++    std::string path = our_dir;
++    if (path.empty() || path.back() != '/')
++        path += '/';
++    FILE *fp = fopen ((path + "influ-callbox.rgb565").c_str(), "r");
++    if (!fp)
++        return (false);
++    std::vector<uint16_t> px (w*h);
++    bool whole = fread (px.data(), sizeof(uint16_t), px.size(), fp) == px.size() && fgetc (fp) == EOF;
++    fclose (fp);
++    if (!whole)
++        return (false);
++    for (int y = 0; y < h; y++)
++        for (int x = 0; x < w; x++)
++            tft.drawPixelRaw (box.x*tft.SCALESZ + x, box.y*tft.SCALESZ + y, px[y*w + x]);
++    return (true);
++}
++
+ static void drawCallsign (bool all)
+ {
++    if (drawCallPicture())
++        return;
+     uint16_t fg_c = 0, bg_c = 0;
+     bool rainbow = false;
+     const char *text = NULL;
