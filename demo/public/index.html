@@ -1,0 +1,32 @@
+<!doctype html>
+<html lang="zh-CN">
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=1">
+<meta name="description" content="HamClock with a line-of-sight coverage map, live ADS-B, APRS, FT8 and WSPR, from a summit">
+<title>HamClock</title>
+<link rel="stylesheet" href="vendor/openlayers/ol.css">
+<link rel="stylesheet" href="demo.css">
+<div id="stage">
+  <canvas id="clock" width="1600" height="960" tabindex="0" aria-label="HamClock 电台状态"></canvas>
+  <div id="map" tabindex="0" aria-label="电台覆盖地图"></div>
+  <div id="map-ui">
+    <div id="sun"></div>
+    <div id="foot"><div id="scale"><span id="km"></span><i id="bar"></i><span id="dem"></span></div><div id="legend"></div></div>
+  </div>
+  <div id="search" hidden role="search" aria-label="Map search" lang="en">
+    <canvas id="search-dots" width="600" height="30" aria-hidden="true"></canvas>
+    <input id="search-query" type="text" aria-label="Search" maxlength="128" autocomplete="off" spellcheck="false" role="combobox" aria-autocomplete="list" aria-controls="search-results" aria-expanded="false">
+    <div id="search-results" role="listbox" aria-label="Results"></div>
+    <div id="search-note" role="status"></div>
+  </div>
+  <div id="profile" hidden role="dialog" aria-label="地点可达性">
+    <button id="profile-close" aria-label="关闭">×</button>
+    <div class="title">VHF/UHF DE–DX</div><div id="position"></div>
+    <table id="reach-table"></table><div id="loss"></div>
+    <canvas id="terrain" width="300" height="45"></canvas>
+    <div id="nearby"></div><div id="conditions"></div>
+  </div>
+</div>
+<script src="vendor/openlayers/ol.js"></script>
+<script type="module" src="app.js"></script>
+</html>
