@@ -359,7 +359,7 @@ class Scene:
                         self.close_search()
                 else:
                     self.search.query = '' if ctrl else self.search.query[:-1]
-                    self.search.filter()
+                    self.search.ask()
             self.map_dirty = True
         elif name.lower() in ('s', '/') and not ctrl and self.canvas:
             from map_search import SearchPanel
@@ -535,7 +535,7 @@ def main():
                 if ev.type == pygame.TEXTINPUT:
                     scene.search.query = (scene.search.query + ev.text)[:128]
                     scene.search.composition = ''
-                    scene.search.filter()
+                    scene.search.ask()
                     scene.map_dirty = True
                 elif ev.type == pygame.TEXTEDITING:
                     scene.search.composition = ev.text

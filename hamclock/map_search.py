@@ -10,42 +10,73 @@ from contextlib import nullcontext
 from functools import lru_cache
 import json
 from pathlib import Path
+import re
+import time
 import unicodedata
+
+import numpy as np
 
 import activity as a
 import dots
 import map_view as maps
 
 
+KINDS = ('place', 'region', 'campus', 'military', 'office', 'regulator', 'embassy', 'airport', 'station')
+REGION = (255, 255, 255)                # as the boundaries are drawn
+
+
 def entries(base, model=None, said=True):
+    """Everything named on the map, each with its kind (KINDS), the point it is at in base px,
+    the colour it is drawn in, and the outline of an area (rings, base px)."""
     data = maps.static_scene(base)
-    rows = [(name, point, maps.CITY if city else maps.TOWN)
+    rows = [(name, point, maps.CITY if city else maps.TOWN, 'place', [])
             for name, point, city in zip(data['place_names'], data['place_xy'], data['place_city'])]
-    for kind, colour in (('campuses', maps.CAMPUS), ('military', maps.MILITARY),
-                         ('government', maps.GOVERNMENT), ('regulators', maps.REGULATOR),
-                         ('embassies', maps.EMBASSY), ('airports', maps.AIRPORT)):
-        rows.extend((p.get('name', p.get('text', '')), p['point'], colour) for p in data[kind])
+    rows.extend((name, point, REGION, 'region', rings) for name, point, rings in regions(base, model))
+    for group, kind, colour in (('campuses', 'campus', maps.CAMPUS), ('military', 'military', maps.MILITARY),
+                                ('government', 'office', maps.GOVERNMENT), ('regulators', 'regulator', maps.REGULATOR),
+                                ('embassies', 'embassy', maps.EMBASSY), ('airports', 'airport', maps.AIRPORT)):
+        rows.extend((p.get('name', p.get('text', '')), p['point'], colour, kind, p.get('rings', []))
+                    for p in data[group])
     try:
         live = json.loads((Path(model or a.MODEL) / 'activity.json').read_text(encoding='utf-8'))
     except FileNotFoundError:
         live = {}
     stations, *_ = a.digital_graph(base, live.get('reports', []))
-    rows.extend((call, value[:2], value[2]) for call, value in stations.items())
-    rows.extend((call, base.xy(*value[:2]), a.APRS_RF if value[2] else a.APRS_NET,
+    rows.extend((call, value[:2], value[2], 'station', []) for call, value in stations.items())
+    rows.extend((call, base.xy(*value[:2]), a.APRS_RF if value[2] else a.APRS_NET, 'station', [],
                  '#00dcff' if value[2] else '#00647d')
                 for call, value in live.get('aprs', {}).items())
-    rows.extend((call, base.xy(*ll), a.WHITE) for call, grid in live.get('qsos', []) if (ll := a.locator(grid)))
+    rows.extend((call, base.xy(*ll), a.WHITE, 'station', [])
+                for call, grid in live.get('qsos', []) if (ll := a.locator(grid)))
     result = []
-    for name, (x, y), colour, *web_colour in rows:
+    for name, (x, y), colour, kind, rings, *web_colour in rows:
         if name and 0 <= x < a.W and 0 <= y < a.H:
             lat, lon = base.latlon(x, y)
             result.append(dict(name=name, point=[float(x), float(y)], colour='#%02x%02x%02x' % tuple(colour),
-                               position=f'{abs(lat):.4f}{"N" if lat >= 0 else "S"} {abs(lon):.4f}{"E" if lon >= 0 else "W"}'))
+                               position=f'{abs(lat):.4f}{"N" if lat >= 0 else "S"} {abs(lon):.4f}{"E" if lon >= 0 else "W"}',
+                               kind=kind, rings=rings))
             if web_colour:
                 result[-1]['web_colour'] = web_colour[0]
             if said:
                 result[-1]['said'] = spelled(name)
     return result
+
+
+_regions = {}
+
+
+def regions(base, model=None):
+    """(name, label point, rings) of each province, prefecture and county, in base px, from
+    admin_areas.json (build_tiles.py admin); kept while the file stays."""
+    path = Path(model or a.MODEL) / 'admin_areas.json'
+    key = (id(base), path, path.stat().st_mtime_ns if path.exists() else 0)
+    if _regions.get('key') != key:
+        found = json.loads(path.read_text(encoding='utf-8')) if path.exists() else []
+        _regions.update(key=key, regions=[
+            (r['name'], base.xy(*r['point']),
+             [maps.base_xy(base, *np.array(ring, float).T).astype(np.float32) for ring in r['rings']])
+            for r in found])
+    return _regions['regions']
 
 
 def normalize(text):
@@ -95,6 +126,8 @@ class Index:
 
     def __init__(self, rows):
         self.rows = rows
+        self.areas, self.masks = {}, {}          # what inside() found by the region asked for; masks
+        self.points = np.array([row['point'] for row in rows], float).reshape(-1, 2)
         heard_as = {}
         for row in rows:
             row.setdefault('said', spelled(row['name']))
@@ -102,6 +135,27 @@ class Index:
                 if sound != ch:
                     heard_as.setdefault(ch, Counter())[sound] += 1
         self.heard_as = {ch: sounds.most_common(1)[0][0] for ch, sounds in heard_as.items()}
+
+    def kinds(self, text):
+        """Which rows are of a kind whose name begins with text (type:air for airports)."""
+        return np.array([row.get('kind', '').startswith(text) for row in self.rows], bool)
+
+    def inside(self, text):
+        """Which rows are inside a region whose name begins with text, as written or as said."""
+        if text not in self.areas:
+            spell = self.spell(text)
+            hit = np.zeros(len(self.rows), bool)
+            for i, row in enumerate(self.rows):
+                said = row['said']
+                if row.get('kind') == 'region' and (said.text.startswith(text) or spell and said.spell.startswith(spell)):
+                    if i not in self.masks:
+                        self.masks[i] = mask(row['rings'])
+                    lo, area = self.masks[i]
+                    at = np.floor((self.points - lo) * GRID).astype(int)
+                    on = (at >= 0).all(axis=1) & (at[:, 0] < area.shape[1]) & (at[:, 1] < area.shape[0])
+                    hit[on] |= area[at[on, 1], at[on, 0]]
+            self.areas[text] = hit
+        return self.areas[text]
 
     def spell(self, text):
         """text in letters: Chinese read as a name holding it reads it, else as names mostly do."""
@@ -130,23 +184,73 @@ def index(base, model=None, lock=None):
     return built
 
 
+# a word of a query: - to leave out, an operator (city: or its like in:, type:), then the words
+# themselves, "quoted" to be found only as written
+WORD = re.compile(r'(-?)(?:([a-z]+):)?(?:"([^"]*)"?|“([^”]*)”?|(\S+))')
+OPERATORS = ('city', 'in', 'type')
+
+
+def parse(query):
+    """[(leave out?, operator or '', the words, as written only?)] of a query."""
+    words = []
+    for out, op, quoted, curly, bare in WORD.findall(unicodedata.normalize('NFKC', query).casefold()):
+        text = quoted or curly or bare
+        if op and op not in OPERATORS:
+            op, text = '', f'{op}:{text}'
+        if normalize(text):
+            words.append((bool(out), op, normalize(text), bool(quoted or curly)))
+    return words
+
+
+GRID = 4                                # mask px a base px: how finely an area is told
+
+
+def mask(rings):
+    """(where it starts in base px, the area inside rings as a mask GRID times finer), even-odd
+    so a ring within another is a hole, cut to the map."""
+    from PIL import Image, ImageDraw
+    lo = np.floor(np.maximum(np.min([r.min(axis=0) for r in rings], axis=0), 0)).astype(int)
+    hi = np.ceil(np.minimum(np.max([r.max(axis=0) for r in rings], axis=0), (a.W, a.H))).astype(int)
+    size = tuple(int(v) for v in np.maximum((hi - lo) * GRID, 1))
+    out = np.zeros(size[::-1], bool)
+    for ring in rings:
+        im = Image.new('1', size)
+        ImageDraw.Draw(im).polygon([tuple(p) for p in (ring - lo) * GRID], fill=1)
+        out ^= np.asarray(im)
+    return lo, out
+
+
 def search(rows, query):
-    """The rows whose names hold query as written or as said: the name itself first, then those
-    it begins, those holding it as written, and the nearer the station the sooner."""
+    """The rows a query finds, as a search engine's: every word held in the name, as written or
+    as said ("quoted" ones as written), none of those after a -, inside the area city: names (in:
+    too) and of the kind type: names. The name itself first, then those it begins, those found as
+    written, and the nearer the station the sooner."""
     rows = rows if isinstance(rows, Index) else Index(rows)
-    text = normalize(query)
-    if not text:
+    words = parse(query)
+    if not any(not out for out, *_ in words):
         return []
-    spell = rows.spell(text)
-    found = [(row, text in row['said'].text) for row in rows.rows]
-    found = [(row, written) for row, written in found if written or spell and heard(row['said'], spell)]
+    keep = np.ones(len(rows.rows), bool)
+    written = np.ones(len(rows.rows), bool)
+    for out, op, text, literal in words:
+        if op:
+            hit = rows.kinds(text) if op == 'type' else rows.inside(text)
+        else:
+            spell = '' if literal else rows.spell(text)
+            plain = np.array([text in row['said'].text for row in rows.rows], bool)
+            hit = plain | np.array([bool(spell) and heard(row['said'], spell) for row in rows.rows], bool)
+            if not out:
+                written &= plain
+        keep &= ~hit if out else hit
+    terms = ''.join(text for out, op, text, _ in words if not out and not op)
+    found = [(rows.rows[i], written[i]) for i in np.flatnonzero(keep)]
     return [row for row, _ in sorted(found, key=lambda f: (
-        f[0]['said'].text != text, not f[0]['said'].text.startswith(text), not f[1],
+        f[0]['said'].text != terms, not (terms and f[0]['said'].text.startswith(terms)), not f[1],
         (f[0]['point'][0] - a.W / 2) ** 2 + (f[0]['point'][1] - a.H / 2) ** 2, f[0]['name']))][:LIMIT]
 
 
 LIMIT, PAGE = 200, 8                    # results kept, and shown a page at a time
 SCROLL = 90                             # window px of a two-finger scroll that turn a page
+SETTLE = 0.12                           # s the keys rest before the search runs again
 WIDTH, ROW, PAD, GAP = 600, 30, 6, 12   # HamClock px: panel, line, margin, name to position
 CURSOR = 8                              # a line's top to HamClock's text cursor
 
@@ -163,10 +267,18 @@ class SearchPanel:
         self.hovered = None
         self.backspace_down = False
         self.scrolled = 0
+        self.due = None                         # when to search again for what was typed
         self.repeat = pygame.key.get_repeat()
         self.box = None
 
+    def ask(self):
+        """The query changed: search again once the keys rest a moment, as the web page does."""
+        self.due = time.monotonic() + SETTLE
+
     def update(self):
+        if self.due and time.monotonic() >= self.due and not self.future:
+            self.filter()
+            return True
         if not self.future or not self.future.done():
             return False
         try:
@@ -178,6 +290,7 @@ class SearchPanel:
         return True
 
     def filter(self):
+        self.due = None
         self.results = search(self.rows, self.query)
         self.selected = 0
         self.hovered = None

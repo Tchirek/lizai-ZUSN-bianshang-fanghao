@@ -611,6 +611,26 @@ class MapTests(unittest.TestCase):
         self.assertEqual(names('yulin'), {'雨林'})
         self.assertEqual(names('bg8'), {'BG8TEST-1'})
 
+    def test_search_takes_quotes_exclusions_regions_and_kinds(self):
+        from map_search import search
+        square = lambda x0, y0, x1, y1: np.array([[x0, y0], [x1, y0], [x1, y1], [x0, y1], [x0, y0]], np.float32)
+        rows = [dict(name='遂宁市', point=[150, 150], kind='region', rings=[square(100, 100, 300, 300), square(250, 250, 290, 290)]),
+                dict(name='遂宁职业技术学院', point=[150, 160], kind='campus'),
+                dict(name='遂宁能源职业技术学院', point=[160, 170], kind='campus'),
+                dict(name='飞地学院', point=[270, 270], kind='campus'),               # in the hole
+                dict(name='成都学院', point=[500, 500], kind='campus'),
+                dict(name='Suining Xueyuan', point=[200, 200], kind='place')]
+        names = lambda query: [r['name'] for r in search(rows, query)]
+        self.assertEqual(names('city:Suining "学院" -能源'), ['遂宁职业技术学院'])
+        self.assertEqual(sorted(names('in:遂宁 学院')), ['Suining Xueyuan', '遂宁职业技术学院', '遂宁能源职业技术学院'])
+        self.assertEqual(sorted(names('学院 -city:suining')), ['成都学院', '飞地学院'])
+        self.assertEqual(sorted(names('xueyuan')), ['Suining Xueyuan', '成都学院', '遂宁职业技术学院', '遂宁能源职业技术学院', '飞地学院'])
+        self.assertEqual(names('"xueyuan"'), ['Suining Xueyuan'])                  # quoted: as written only
+        self.assertEqual(names('type:camp －能源 “遂宁”'), ['遂宁职业技术学院'])      # full-width and curly marks
+        self.assertEqual(names('city:suining type:region'), ['遂宁市'])
+        self.assertEqual(names('-能源'), [])
+        self.assertEqual(names('foo:学院'), [])                                      # not an operator: a word
+
     def test_search_ranks_exact_then_prefix_and_bounds_results(self):
         from map_search import search, LIMIT
         rows = [dict(name=name, point=[660, 330], kind='地点') for name in
