@@ -284,6 +284,23 @@ static bool project (const Scope &sc, const Spot &sp, int16_t &x, int16_t &y)
     return (km <= sc.km);
 }
 
+/* the end of a line from (x0, y0), on the scope, toward (x1, y1), cut where it would leave the scope:
+ * nothing is drawn past its edge, nor past the pane into its neighbours, where no redraw would clear it
+ */
+static void clipToScope (const Scope &sc, int16_t x0, int16_t y0, float &x1, float &y1)
+{
+    // |f + t d| = r - 1 for the t > 0 where the line meets the edge
+    float dx = x1 - x0, dy = y1 - y0, fx = x0 - sc.cx, fy = y0 - sc.cy, r = sc.r - 1;
+    float a = dx*dx + dy*dy, b = fx*dx + fy*dy, c = fx*fx + fy*fy - r*r;
+    if (a <= 0 || c > 0)
+        return;
+    float t = (-b + sqrtf (b*b - a*c))/a;
+    if (t < 1) {
+        x1 = x0 + t*dx;
+        y1 = y0 + t*dy;
+    }
+}
+
 /* colour of an altitude, and that colour dimmed for trails and vectors
  */
 static uint16_t altColor (int alt)
@@ -532,21 +549,32 @@ static void placeLabels (std::vector<Shown> &shown, const SBox &box, std::vector
     }
 }
 
-/* the aircraft: trails and 1-minute vectors dim, then symbols, then the labels placed for them
+/* the aircraft: dim, where each has been (its trail, solid) and will be in a minute (dotted), then
+ * symbols, then the labels placed for them
  */
 static void drawAircraft (const Scope &sc, const std::vector<Shown> &shown)
 {
     for (const Shown &s : shown) {
         uint16_t dim = dimColor (s.color);
-        for (size_t i = 0; i + 1 < s.ac->trail.size(); i++) {
+        // where it has been: a solid line through its trail up to it, the parts on the scope
+        int16_t px = 0, py = 0;
+        bool pin = false;
+        for (size_t i = 0; i < s.ac->trail.size(); i++) {
             int16_t tx, ty;
-            if (project (sc, s.ac->trail[i], tx, ty))
-                tft.drawPixelRaw (tx, ty, dim);
+            bool in = i + 1 < s.ac->trail.size() ? project (sc, s.ac->trail[i], tx, ty) : (tx = s.x, ty = s.y, true);
+            if (in && pin)
+                tft.drawLineRaw (px, py, tx, ty, 1, dim);
+            px = tx, py = ty, pin = in;
         }
+        // where it will be in a minute: dotted, cut at the scope's edge
         if (s.ac->speed > 0 && s.ac->track >= 0) {
             float r = s.ac->speed*1.852F/60/sc.km*sc.r;
             float t = deg2rad (s.ac->track);
-            tft.drawLineRaw (s.x, s.y, roundf(s.x + r*sinf(t)), roundf(s.y - r*cosf(t)), 1, dim);
+            float x1 = s.x + r*sinf(t), y1 = s.y - r*cosf(t);
+            clipToScope (sc, s.x, s.y, x1, y1);
+            int n = hypotf (x1 - s.x, y1 - s.y)/4;
+            for (int i = 2; i <= n; i++)                    // 2 px dots: they stay dots at the screen's 0.8
+                tft.fillRectRaw (roundf(s.x + (x1 - s.x)*i/n), roundf(s.y + (y1 - s.y)*i/n), 2, 2, dim);
         }
     }
     for (const Shown &s : shown)
@@ -623,6 +651,10 @@ static void drawPane (const SBox &box, const Feed *feed)
         tft.fillRect (box.x + (box.w-w)/2, box.y+22, w, 11, AWAY_COLOR);
         fastText (box.x + (box.w-w)/2 + 3, box.y+24, RA8875_WHITE, msg);
     }
+
+    // prepPlotBox() cleared the box's bottom edge too but draws only its other three: the panes'
+    // borders as HamClock shows them (rotating, holding), in this frame rather than up to a second later
+    showRotatingBorder();
 
     tft.holdCanvas (false);
 
