@@ -48,7 +48,7 @@ async function flush(){
 }
 function clockPoint(e){const r=clock.getBoundingClientRect();return {x:Math.max(0,Math.min(799.999,(e.clientX-r.left)*800/r.width)),y:Math.max(0,Math.min(479.999,(e.clientY-r.top)*480/r.height))};}
 let pressed=null,lastHover=0;
-clock.addEventListener('pointerdown',e=>{clock.focus({preventScroll:true});pressed=clockPoint(e);clock.setPointerCapture(e.pointerId);});
+clock.addEventListener('pointerdown',e=>{if(searchElement.hidden)clock.focus({preventScroll:true});pressed=clockPoint(e);clock.setPointerCapture(e.pointerId);});
 clock.addEventListener('pointerup',e=>{const p=clockPoint(e);if(pressed&&Math.hypot(p.x-pressed.x,p.y-pressed.y)<=5)enqueue({type:'tap',...p,button:e.button+1,ctrl:e.ctrlKey});pressed=null;});
 clock.addEventListener('pointercancel',()=>{pressed=null;});
 clock.addEventListener('pointermove',e=>{if(performance.now()-lastHover>150){lastHover=performance.now();enqueue({type:'hover',...clockPoint(e)});}});
@@ -215,7 +215,7 @@ async function initMap(){
   const labels=source=>new ol.layer.Vector({source,style:labelStyle,declutter:'labels',renderBuffer:150});
   // in the native map's order: ground and night, what is drawn on the ground, the terminator, names
   map=new ol.Map({target:mapElement,view,controls:[],interactions:ol.interaction.defaults.defaults({altShiftDragRotate:false,pinchRotate:false,keyboard:false}),layers:[tiles,new ol.layer.Image({source:veilSource}),vector(staticSource),vector(gridSource),new ol.layer.Vector({source:ringSource,style:new ol.style.Style({stroke:new ol.style.Stroke({color:'rgba(190,190,190,.35)',width:1})})}),vector(liveSource),new ol.layer.Image({source:lineSource}),labels(gridSource),labels(staticSource),labels(liveSource),new ol.layer.Vector({source:selectedSource,style:new ol.style.Style({stroke:new ol.style.Stroke({color:'#e6e6b4',width:1}),image:new ol.style.RegularShape({points:4,radius:6,radius2:0,angle:0,stroke:new ol.style.Stroke({color:'#fff',width:1})})})}),new ol.layer.Vector({source:tagSource})]});
-  map.on('singleclick',event=>{mapElement.focus({preventScroll:true});inspect(event.coordinate);});
+  map.on('singleclick',event=>{if(searchElement.hidden)mapElement.focus({preventScroll:true});inspect(event.coordinate);});
   map.on('moveend',()=>{scheduleFeatures();rings();positionProfile();updateLegend();placeTag();});
   map.on('postrender',positionProfile);map.on('change:size',resized);
   updateFeatures();rings();startLive();
@@ -372,6 +372,8 @@ for(const event of ['select','keyup','click'])searchInput.addEventListener(event
 document.addEventListener('selectionchange',()=>{if(document.activeElement===searchInput)drawSearch();});
 function searchLine(e){const box=searchCanvas.getBoundingClientRect();return Math.floor((e.clientY-box.top)*searchCanvas.height/box.height/SEARCH.row)-1;}
 searchCanvas.addEventListener('mousedown',e=>e.preventDefault());           // the field keeps the keyboard
+// the map moves and answers taps beside an open search, which keeps the keys
+mapElement.addEventListener('mousedown',e=>{if(!searchElement.hidden)e.preventDefault();});
 searchCanvas.addEventListener('pointermove',e=>{const i=searchLine(e),[first,page]=searchPage(),hover=i>=0&&i<page.length?first+i:null;if(hover!==searchHover){searchHover=hover;highlightSearch();}});
 searchCanvas.addEventListener('pointerleave',()=>{if(searchHover!==null){searchHover=null;highlightSearch();}});
 searchCanvas.addEventListener('click',e=>{const i=searchLine(e),[first,page]=searchPage();if(i>=0&&i<page.length)chooseSearch(first+i);else searchInput.focus({preventScroll:true});});

@@ -314,17 +314,20 @@ class Scene:
         return bool(self.inspector and self.inspector.box
                     and self.inspector.box.collidepoint(at[0] * self.k, at[1] * self.k))
 
+    def over_search(self, at):
+        return bool(self.search and self.search.box and at
+                    and self.search.box.collidepoint(at[0] * self.k, at[1] * self.k))
+
     def tap(self, at, button=1, ctrl=False):
-        if self.search:
+        """A tap at app px: on the search box it chooses a result; elsewhere it does what it
+        always does, the search staying open beside it."""
+        if self.over_search(at):
             panel = self.search
-            if panel.box and panel.box.collidepoint(at[0] * self.k, at[1] * self.k):
-                row = int((at[1] * self.k - panel.box.y) // panel.row_height) - 1
-                first, page = panel.shown()
-                if button == 1 and 0 <= row < len(page):
-                    panel.selected = panel.hovered = first + row
-                    self.choose_search()
-            else:
-                self.close_search()
+            row = int((at[1] * self.k - panel.box.y) // panel.row_height) - 1
+            first, page = panel.shown()
+            if button == 1 and 0 <= row < len(page):
+                panel.selected = panel.hovered = first + row
+                self.choose_search()
             return
         if self.canvas and self.inspector:
             self.inspector.m = self.canvas.view
@@ -513,8 +516,7 @@ def main():
     map_xy = scene.map_xy
 
     def over_search():
-        at = screen.app_xy(pygame.mouse.get_pos())
-        return bool(scene.search and scene.search.box and at and scene.search.box.collidepoint(at[0] * k, at[1] * k))
+        return scene.over_search(screen.app_xy(pygame.mouse.get_pos()))
     pygame.joystick.init()
     pads = {}                            # plugged-in gamepads by instance id (hot-plug events)
 
@@ -531,7 +533,9 @@ def main():
             if ev.type in (pygame.MOUSEMOTION, pygame.MOUSEBUTTONDOWN, pygame.MOUSEWHEEL, pygame.KEYDOWN):
                 last_input = time.time()
                 pygame.mouse.set_visible(True)
-            if scene.search:
+            # an open search takes the keys; the pointer only over its box, the map moving beside it
+            if scene.search and ev.type in (pygame.TEXTINPUT, pygame.TEXTEDITING, pygame.KEYDOWN, pygame.KEYUP,
+                                            pygame.JOYBUTTONDOWN):
                 if ev.type == pygame.TEXTINPUT:
                     scene.search.query = (scene.search.query + ev.text)[:128]
                     scene.search.composition = ''
@@ -550,20 +554,20 @@ def main():
                     scene.key(name or '', bool(ctrl), bool(ev.mod & pygame.KMOD_SHIFT), repeat=repeat)
                 elif ev.type == pygame.KEYUP and ev.key == pygame.K_BACKSPACE:
                     scene.search.backspace_down = False
-                elif ev.type in (pygame.MOUSEMOTION, pygame.WINDOWLEAVE):
-                    at = screen.app_xy(ev.pos) if ev.type == pygame.MOUSEMOTION else None
-                    scene.map_dirty = scene.search.hover((at[0] * k, at[1] * k) if at else None) or scene.map_dirty
-                elif ev.type == pygame.MOUSEWHEEL and not gestures and ev.y and over_search():
-                    scene.map_dirty = scene.search.page(-1 if ev.y * (-1 if ev.flipped else 1) > 0 else 1)                         or scene.map_dirty
-                elif ev.type == pygame.MOUSEBUTTONDOWN:
-                    at = screen.app_xy(ev.pos)
-                    if at:
-                        scene.tap(at, ev.button)
                 elif ev.type == pygame.JOYBUTTONDOWN and ev.button in PAD_KEYS:
                     scene.key(PAD_KEYS[ev.button])
-                if ev.type not in (pygame.JOYDEVICEADDED, pygame.JOYDEVICEREMOVED):
-                    pressed = drag = None
-                    continue
+                continue
+            if scene.search and ev.type in (pygame.MOUSEMOTION, pygame.WINDOWLEAVE):
+                at = screen.app_xy(ev.pos) if ev.type == pygame.MOUSEMOTION and not drag else None
+                scene.map_dirty = scene.search.hover((at[0] * k, at[1] * k) if at else None) or scene.map_dirty
+            if scene.search and ev.type in (pygame.MOUSEBUTTONDOWN, pygame.MOUSEWHEEL) and not drag and over_search():
+                if ev.type == pygame.MOUSEBUTTONDOWN:
+                    scene.tap(screen.app_xy(ev.pos), ev.button)
+                elif not gestures and ev.y:
+                    turned = scene.search.page(1 if ev.y * (-1 if ev.flipped else 1) < 0 else -1)
+                    scene.map_dirty = turned or scene.map_dirty
+                pressed = drag = None
+                continue
             if ev.type == pygame.MOUSEWHEEL:              # without Wayland gestures: zoom
                 at = screen.app_xy(pygame.mouse.get_pos())
                 if canvas and not gestures and on_map(at):
@@ -611,10 +615,10 @@ def main():
             for e in gestures.poll():
                 last_input = time.time()
                 at = screen.app_xy(pygame.mouse.get_pos())
-                if scene.search and over_search() and e[0] in ("wheel", "scroll"):
+                if over_search() and e[0] in ("wheel", "scroll"):
                     scene.map_dirty = scene.search.turn(e) or scene.map_dirty
                     continue
-                if scene.search or not on_map(at):
+                if not on_map(at):
                     continue
                 if e[0] == "pinch":                      # fingers spread, and their middle moved
                     canvas.pinch(e[1], map_xy(at))
@@ -623,12 +627,12 @@ def main():
                     canvas.pan(-e[1] * surface_k * MAP_W / box.w, -e[2] * surface_k * MAP_H / box.h)
                 elif e[0] == "wheel":
                     canvas.scroll(e[1], map_xy(at))
-        if canvas and not scene.search:
-            held = pygame.key.get_pressed()
-            vx = sum(v[0] for key, v in MAP_KEYS.items() if held[key])
-            vy = sum(v[1] for key, v in MAP_KEYS.items() if held[key])
+        if canvas:
+            held = [] if scene.search else pygame.key.get_pressed()     # a search's keys are its own
+            vx = sum(v[0] for key, v in MAP_KEYS.items() if held and held[key])
+            vy = sum(v[1] for key, v in MAP_KEYS.items() if held and held[key])
             shift = pygame.key.get_mods() & pygame.KMOD_SHIFT        # zoom keys held with Shift: on and on
-            zoom = sum(v for key, v in ZOOM_KEYS.items() if held[key] and shift)
+            zoom = sum(v for key, v in ZOOM_KEYS.items() if held and held[key] and shift)
             for pad in pads.values():
                 px, py, pz = pad_motion(pad)
                 vx, vy, zoom = vx + px, vy + py, zoom + pz
