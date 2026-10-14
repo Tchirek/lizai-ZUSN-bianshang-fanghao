@@ -339,31 +339,73 @@ const TEX_GOLD = makeTex(64, 64, (x, y) => {
 });
 const TEX_TILE = makeTex(32, 32, (x, y) => (x === 0 || y === 0) ? [.5, .5, .52] : [.68 + .03 * hash2(x >> 3, y >> 3), .68, .7]);
 const TEX_WALLTILE = makeTex(16, 32, (x, y) => (x === 0 || y === 0) ? [.8, .8, .8] : [.95, .95, .95]);
-const TEX_KEYS = makeTex(64, 40, (x, y) => {
-  const black = [.2, .2, .215], gap = [.05, .05, .055];
-  if (y >= 30) { // palm rest: touchpad buttons with their red stripes
-    if (y === 30 || y === 31) return (x > 22 && x < 42) ? ((x % 7 === 0) ? gap : [.6, .1, .1]) : black;
-    if (y > 32 && x > 24 && x < 40) return [.13, .13, .14];
-    return black;
-  }
-  const row = Math.floor(y / 5), ky = y % 5;
-  const off = [0, 1, 2, 3, 1, 0][row] || 0;
-  const kx = (x + off) % 4;
-  if (row === 5) { if (x > 18 && x < 44) return ky === 0 ? gap : black; }
-  if (row === 3 && x === 32 && ky === 4) return [.85, .12, .12]; // TrackPoint
-  return (ky === 0 || kx === 0) ? gap : black;
-});
+// the X230's deck, hinge side at the top: button strip, the six rows of the keyboard (function
+// keys short), then the palm rest with the three TrackPoint buttons and the touchpad. Legends are a
+// single lit point, never letters.
+const TEX_KEYS = (function () {
+  const w = 128, h = 82, U = 7.6, X0 = 6.5;
+  const t = makeTex(w, h, () => [.1, .1, .108]);
+  const put = (x, y, c) => { x = Math.round(x); y = Math.round(y); if (x < 0 || y < 0 || x >= w || y >= h) return; const i = y * w + x; t.r[i] = c[0]; t.g[i] = c[1]; t.b[i] = c[2]; };
+  const rect = (x0, y0, x1, y1, c) => { for (let y = Math.round(y0); y < Math.round(y1); y++) for (let x = Math.round(x0); x < Math.round(x1); x++) put(x, y, c); };
+  const key = (u0, u1, y0, kh) => {
+    const x0 = X0 + u0 * U + .5, x1 = X0 + u1 * U - .5;
+    rect(x0 - .5, y0 - .5, x1 + .5, y0 + kh + .5, [.035, .035, .04]);   // the well
+    rect(x0, y0, x1, y0 + kh, [.165, .165, .175]);                    // the cap
+    rect(x0, y0, x1, y0 + 1, [.24, .24, .25]);                         // its lit upper edge
+    put(x0 + 1.5, y0 + 2, [.72, .73, .74]);                            // a legend, as a point of light
+  };
+  const row = (y0, kh, widths) => { let u = 0; for (const wd of widths) { if (wd > 0) key(u, u + wd, y0, kh); u += Math.abs(wd); } };
+  rect(4, 4.5, 124, 45.5, [.03, .03, .035]);
+  row(5, 4, [.9, -.24, .9, .9, .9, .9, -.24, .9, .9, .9, .9, -.24, .9, .9, .9, .9, -.24, .9, .9, .9, .9].map(v => v * 15 / 16.0));
+  row(10.5, 6, [1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 2]);
+  row(17.5, 6, [1.5, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1.5]);
+  row(24.5, 6, [1.75, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 2.25]);
+  row(31.5, 6, [2.25, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 2.75]);
+  row(38.5, 6, [1, 1.25, 1, 1, 5.25, 1, 1, 1]);
+  key(12.5, 13.33, 41.5, 3); key(13.33, 14.17, 38.5, 3); key(13.33, 14.17, 41.5, 3); key(14.17, 15, 41.5, 3);   // the arrows
+  rect(X0 + 6.7 * U, 30.2, X0 + 6.7 * U + 2, 32.2, [.85, .12, .1]);       // TrackPoint
+  rect(30, 1.5, 44, 3.5, [.2, .2, .21]); rect(47, 2, 48, 3, [.85, .2, .15]); rect(52, 1.5, 57, 3.5, [.17, .17, .18]);
+  rect(111, 1.5, 114, 3.5, [.2, .2, .21]); rect(115, 2, 117, 3, [.2, .95, .35]);
+  // palm rest: three buttons with red stripes, the pad, the sticker, the fingerprint reader
+  for (const [x0, x1] of [[44, 55], [56, 65], [66, 77]]) { rect(x0, 47, x1, 51, [.16, .16, .17]); rect(x0, 47, x1, 48, [.62, .1, .1]); }
+  rect(47, 52, 74, 73, [.135, .135, .145]); rect(47, 52, 74, 53, [.18, .18, .19]);
+  rect(10, 64, 18, 72, [.2, .42, .78]); rect(11, 65, 17, 66, [.9, .9, .92]);
+  rect(100, 56, 106, 64, [.24, .24, .26]); rect(101, 59, 105, 60, [.08, .08, .09]);
+  return t;
+})();
 const TEX_PAPER = makeTex(32, 32, (x, y) => {
   const r = rng(x * 131 + y * 7);
   const lines = (Math.abs(Math.sin(x * .7 + y * .2) * 6 - (y % 9)) < .7) || (x % 11 === 3 && y > 6) || (y % 13 === 4);
   return lines ? [.35, .35, .36] : [.93, .93, .91].map(c => c - r() * .03);
 });
-const TEX_POSTER = makeTex(16, 32, (x, y) => {
-  const n = vnoise(x * .4, y * .3);
-  if (y < 10) return n > .5 ? [.9, .9, .92] : [.75, .78, .85];
-  if (y < 22) return n > .55 ? [.85, .2, .2] : (n > .35 ? [.95, .9, .9] : [.25, .25, .3]);
-  return n > .5 ? [.95, .95, .95] : [.8, .15, .2];
-});
+// three band posters, one above another, 24 x 34 texels each: a crowded colour collage, a pink one
+// with white diamonds and five small figures, a red one with a girl and a yellow guitar. No lettering.
+const TEX_POSTER = (function () {
+  const w = 24, h = 102, t = makeTex(w, h, () => [1, 1, 1]);
+  const put = (x, y, c) => { x = Math.round(x); y = Math.round(y); if (x < 0 || y < 0 || x >= w || y >= h) return; const i = y * w + x; t.r[i] = c[0]; t.g[i] = c[1]; t.b[i] = c[2]; };
+  const disc = (cx, cy, r, c) => { for (let y = -r; y <= r; y++) for (let x = -r; x <= r; x++) if (x * x + y * y <= r * r + .5) put(cx + x, cy + y, c); };
+  const rect = (x0, y0, x1, y1, c) => { for (let y = y0; y < y1; y++) for (let x = x0; x < x1; x++) put(x, y, c); };
+  const skin = [.95, .8, .7];
+  const pal = [[.86, .18, .26], [.2, .4, .85], [.96, .8, .2], [.3, .8, .9], [.95, .95, .95], [.08, .08, .1]];
+  for (let y = 0; y < 34; y++) for (let x = 0; x < w; x++) put(x, y, pal[Math.floor(hash2(x >> 1, y >> 1) * 6)]);
+  disc(5, 9, 3, [.07, .07, .09]); rect(2, 12, 8, 31, [.12, .12, .16]); disc(5, 10, 1, skin);
+  disc(19, 10, 3, [.92, .86, .62]); rect(16, 13, 23, 31, [.15, .15, .2]); disc(19, 11, 1, skin);
+  disc(12, 12, 3, [.62, .2, .15]); disc(12, 13, 2, skin); rect(8, 16, 16, 26, [.24, .4, .76]); rect(9, 26, 15, 30, [.96, .96, .96]); rect(10, 30, 14, 34, [.1, .1, .12]);
+  for (let y = 34; y < 68; y++) for (let x = 0; x < w; x++) {
+    const d = (((x + y) >> 2) + ((x - y + 64) >> 2)) & 1;
+    put(x, y, y < 42 ? [.9, .58, .64] : d ? [.95, .93, .93] : [.8, .26, .38]);
+  }
+  for (const [x, y, c] of [[4, 47, [.1, .1, .12]], [12, 52, [.18, .25, .5]], [20, 47, [.12, .1, .1]], [5, 59, [.3, .3, .32]], [19, 60, [.4, .32, .28]]]) {
+    disc(x, y, 1, [.2, .14, .12]); rect(x - 1, y + 2, x + 2, y + 8, c);
+  }
+  rect(13, 55, 17, 57, [.85, .65, .25]);
+  for (let y = 68; y < 102; y++) for (let x = 0; x < w; x++) put(x, y, [.88, .22, .14]);
+  disc(9, 80, 4, [.2, .12, .1]); disc(9, 81, 2, skin);
+  rect(4, 85, 15, 101, [.15, .25, .55]); rect(7, 85, 12, 96, [.95, .95, .95]);
+  for (let i = 0; i < 9; i++) put(13 + i, 92 - i, [.5, .3, .15]);
+  for (let y = -2; y <= 2; y++) for (let x = -4; x <= 4; x++) if (x * x / 16 + y * y / 6 <= 1) put(10 + x, 95 + y, [.95, .76, .25]);
+  return t;
+})();
 const TEX_CHECK = makeTex(16, 16, (x, y) => ((x >> 2) + (y >> 2)) & 1 ? [.12, .3, .72] : [.92, .93, .95]);
 // one bay of the block across, one floor high; row 0 is the slab edge at the bottom
 function facade(laundry) {
@@ -390,7 +432,7 @@ const M = {
   wall: mat(hex('#c9ccd0')), fwall: mat(hex('#c9ccd0'), { boost: .3 }), ceil: mat(hex('#d6d7d8')), floor: mat([1, 1, 1], { tex: TEX_TILE, gloss: 1 }),
   white: mat(hex('#e2e1dc')), white2: mat(hex('#d3d3cf')), grey: mat(hex('#8d9196')), dark: mat(hex('#2a2b2e')),
   black: mat(hex('#141416')), lap: mat(hex('#18181b')), chrome: mat(hex('#dfe3ea')),
-  locker: mat(hex('#4a74a8')), navy: mat([1,1,1], { tex: TEX_NAVY, ds: true }), gold: mat([1,1,1], { tex: TEX_GOLD, ds: true }),
+  locker: mat(hex('#4a74a8')), locker2: mat(hex('#5580b4')), beige: mat(hex('#c9b48e')), beige2: mat(hex('#b39f7a')), navy: mat([1,1,1], { tex: TEX_NAVY, ds: true }), gold: mat([1,1,1], { tex: TEX_GOLD, ds: true }),
   keys: mat([1,1,1], { tex: TEX_KEYS }), paper: mat([1,1,1], { tex: TEX_PAPER, ds: true }), poster: mat([1,1,1], { tex: TEX_POSTER }),
   check: mat([1,1,1], { tex: TEX_CHECK }), suit: mat(hex('#7d8288')), suit2: mat(hex('#a7abb0')), mattress: mat(hex('#8f98a3')),
   tree: mat(hex('#3d5a34'), { emis: true }), tree2: mat(hex('#2f4a2c'), { emis: true }), hill: mat(hex('#7d9580'), { emis: true }),
@@ -524,8 +566,8 @@ function buildLeft() {
   box(ROOM.x0, .76, 2.0, ROOM.x0 + .3, 1.18, 2.03, M.white2);
   box(ROOM.x0 + .04, .77, 2.4, ROOM.x0 + .1, 1.08, 2.85, M.dark);      // a monitor turned to the wall
   box(ROOM.x0 + .02, .77, 2.95, ROOM.x0 + .1, 1.05, 3.0, M.black); box(ROOM.x0 + .02, .77, 3.05, ROOM.x0 + .1, 1.02, 3.1, M.black);
-  push(); tr(-0.858, .78, 1.302); quad([0, 0, 0], [.06, 0, 0], [.06, .7, 0], [0, .7, 0], M.poster, null, [0, 0, -1]); pop();
-  push(); tr(-0.851, .8, 1.32); quad([0, 0, 0], [0, 0, .3], [0, .62, .3], [0, .62, 0], M.poster, null, [1, 0, 0]); pop();
+  box(-1.06, 0, 1.72, -1.0, 2.0, 2.08, M.white);                       // the column of the desk below, set back
+  quad([-0.999, .62, 1.76], [-0.999, .62, 2.06], [-0.999, 1.88, 2.06], [-0.999, 1.88, 1.76], M.poster, [0, 1, 1, 1, 1, 0, 0, 0], [1, 0, 0]);
   push(); tr(-1.2, 0, 2.55); rotY(-1.4);
   box(-.2, .45, -.2, .2, .48, .2, M.white); box(-.2, .48, .16, .2, .95, .2, M.white2);
   for (const [x, z] of [[-.18, -.18], [.18, -.18], [-.18, .18], [.18, .18]]) box(x - .015, 0, z - .015, x + .015, .45, z + .015, M.white);
@@ -552,17 +594,17 @@ function buildRight() {
   box(0.88, 0, 0.72, ROOM.x1, 1.95, 1.3, M.white);
   box(0.875, 1.0, 0.98, 0.88, 1.12, 1.0, M.grey);
   loftBed(0.92, ROOM.x1, 1.3, 3.4, 1.6, M.navy, 0.9, 1);
-  // the stair of drawers up to the bed, blue fronts toward the room
-  for (let k = 0; k < 4; k++) {
-    const x0 = 0.52 + k * .1, y1 = .4 * (k + 1);
-    box(x0, 0, 1.95, 0.92, y1, 2.45, M.white);
-    box(x0 + .01, y1 - .36, 1.948, 0.91, y1 - .04, 1.95, M.locker);
-    box(x0 + .02, y1 - .03, 1.94, 0.92, y1, 2.45, M.white2);
-  }
+  // a tall blue locker, its door toward the room: two raised panels, a small vent near the top;
+  // a beige backpack hung on it
+  box(0.52, 0, 2.4, 0.9, 1.74, 2.85, M.locker);
+  box(0.55, .1, 2.39, 0.7, 1.4, 2.4, M.locker2); box(0.72, .1, 2.39, 0.87, 1.4, 2.4, M.locker2);
+  box(0.6, 1.47, 2.385, 0.74, 1.63, 2.39, M.dark);
+  box(0.86, .8, 2.37, 0.875, .95, 2.39, M.grey);
+  push(); tr(0.68, .98, 2.32); box(-.13, 0, -.06, .13, .4, .05, M.beige); blob(0, .4, 0, .13, 6, M.beige, .5, .45); box(-.08, .08, -.075, .08, .2, -.06, M.beige2); pop();
   box(0.95, .73, 2.5, ROOM.x1, .76, 3.35, M.white);
-  push(); tr(0.62, 0, 2.95); rotY(1.3);                               // an empty mesh chair
-  box(-.21, .44, -.21, .21, .5, .2, M.white); box(-.2, .52, .2, .2, 1.0, .24, M.white2);
-  cylY(0, 0, .08, .44, .025, 5, M.grey); box(-.25, .04, -.02, .25, .07, .02, M.grey); box(-.02, .04, -.25, .02, .07, .25, M.grey);
+  push(); tr(0.55, 0, 2.1); rotY(1.1);                                // a white plastic chair
+  box(-.21, .44, -.21, .21, .48, .2, M.white); box(-.2, .5, .17, .2, .92, .21, M.white);
+  for (const [x, z] of [[-.19, -.19], [.19, -.19], [-.19, .19], [.19, .19]]) box(x - .012, 0, z - .012, x + .012, .44, z + .012, M.white);
   pop();
   box(0.92, 0, 3.46, ROOM.x1, 2.1, 4.6, M.white);
   box(0.92, 1.0, 4.0, 0.925, 1.12, 4.02, M.grey);
@@ -1213,6 +1255,15 @@ function drawScreenDyn(t) {
    ========================================================================== */
 const AMBER = [1.0, .66, .22], TEAL = [.25, .85, .95], PLUS = [1, .33, .16], MINUS = [.25, .45, 1];
 const AG = .32;                                  // afterglow of a reply's line, real seconds
+const RAY_L = 14;                                // a reply's line is drawn this far out from the antenna, fading
+// a line from a along dir, brightest at a and fading to nothing at len: a direction, not a place
+function fadeRay(a, dir, length, col, opt) {
+  const n = 7;
+  for (let i = 0; i < n; i++) {
+    const k = 1 - i / n;
+    line3(add(a, mul(dir, length * i / n)), add(a, mul(dir, length * (i + 1) / n)), col.map(v => v * k * k), opt);
+  }
+}
 const dots = (t, i) => (i & 3) === 0;
 const dashes = (t, i) => (i % 6) < 3;
 function mark(p, col, kind, nodepth) {           // a small glyph at a point: where a path enters or stops
@@ -1226,24 +1277,12 @@ function mark(p, col, kind, nodepth) {           // a small glyph at a point: wh
     const o = i * 3; FB[o] = col[0]; FB[o + 1] = col[1]; FB[o + 2] = col[2];
   }
 }
-// screen-space corner brackets around an aircraft that is being decoded
-function bracket(p, col, k) {
-  view(p, LV0); if (LV0[2] < NEAR) return;
-  const iz = 1 / LV0[2], x = Math.round(W / 2 + cam.F * LV0[0] * iz), y = Math.round(H / 2 - cam.F * LV0[1] * iz);
-  if (x < -8 || y < -8 || x >= W + 8 || y >= H + 8) return;
-  const c = col.map(v => v * k), s = 4;
-  for (const [sx, sy] of [[-1, -1], [1, -1], [-1, 1], [1, 1]]) for (const [dx, dy] of [[0, 0], [-sx, 0], [0, -sy]]) {
-    const xx = x + sx * s + dx, yy = y + sy * s + dy;
-    if (xx < 0 || yy < 0 || xx >= W || yy >= H) continue;
-    const o = (yy * W + xx) * 3; FB[o] = c[0]; FB[o + 1] = c[1]; FB[o + 2] = c[2];
-  }
-}
 // every reply of the last moment, as a line from its aircraft to the antenna: solid through the
 // glass, dashed where it came through concrete, cut short where the block or the hill stopped it,
-// dotted when it arrived too weak to decode. Returns the antenna's glow.
+// dotted when it arrived too weak to decode. Lines show where a reply came from, not where its
+// aircraft is.
 function drawReplies(states, T, t) {
   const t0 = simLocal(T - AG);
-  let glow = 0;
   for (const s of states) {
     if (s.R > 250e3) continue;
     const L = s.link;
@@ -1258,22 +1297,21 @@ function drawReplies(states, T, t) {
       const fade = (1 - age) * (1 - age);
       const k = fade * (decoded ? .55 + .75 * clamp((L.dbm - THRESH) / 15, 0, 1) : .38);
       const c = col.map(v => v * k);
+      const dir = norm(sub(s.w, FEED));
       if (L.path.hit) {
-        line3(s.w, L.path.hit, c.map(v => v * .5), { dash: dots, nodepth: true });
+        fadeRay(L.path.hit, dir, 40, c.map(v => v * .5), { dash: dots, nodepth: true });
         mark(L.path.hit, col.map(v => v * fade * .9), 'x', true);
         continue;
       }
-      line3(s.w, FEED, c.map(v => v * .4), { dash: dots, nodepth: true });
+      fadeRay(FEED, dir, RAY_L, c.map(v => v * .4), { dash: dots, nodepth: true });
       if (decoded) {
         const st = { dash: L.path.kind === 'glass' ? null : dashes, bias: 1.002, mode: ADD };
-        line3(s.w, FEED, c, st);
-        line3(add(s.w, [0, 3 * s.R / 1e3 * 1e-3, 0]), add(FEED, [0, .004, 0]), c.map(v => v * .45), st);
-      } else line3(s.w, FEED, c, { dash: dots, bias: 1.002 });
+        fadeRay(FEED, dir, RAY_L, c, st);
+        fadeRay(add(FEED, [0, .004, 0]), dir, RAY_L, c.map(v => v * .45), st);
+      } else fadeRay(FEED, dir, RAY_L, c, { dash: dots, bias: 1.002 });
       if (L.path.entry) mark(L.path.entry, col.map(v => v * fade * .8), 'd');
-      if (decoded) glow += fade * Math.min(1.5, 10 ** ((L.dbm - THRESH) / 20) * .25);
     }
   }
-  return glow;
 }
 function drawAircraft(states, T, t) {
   for (const s of states) {
@@ -1282,10 +1320,6 @@ function drawAircraft(states, T, t) {
     const strobe = ph < .05 || (ph > .12 && ph < .17), beacon = ((t + s.a.seed * .19) % 1) < .12;
     const col = strobe ? [1.4, 1.4, 1.4] : beacon ? [1.3, .15, .1] : [.32, .34, .38];
     point3(s.w, col, { bias: 1 });
-    if (s.R > 120e3) continue;
-    const ac = altColor(s.alt);
-    if (s.a.first <= t && s.link.dbm >= THRESH) bracket(s.w, ac, smooth(0, .5, T - realOf(s.a.first)) * .95);
-    else mark(s.w, ac.map(v => v * (s.link.path.hit ? .55 : .35)), s.link.path.hit ? 'd' : 'p', true);
   }
 }
 // a radio line drawn through whatever stands in front of it: faint where hidden, full where seen
@@ -1293,23 +1327,21 @@ function xline(a, b, col, opt = {}) {
   line3(a, b, col.map(v => v * .38), Object.assign({}, opt, { nodepth: true }));
   line3(a, b, opt.mode === ADD ? col.map(v => v * .62) : col, opt);
 }
-// the antenna's own response: the standing wave of current on its 46 cm, as it settles under a
-// decoded reply (its average), or as it is at this instant under the slowed hero
-function drawCurrent(Ic, peak, glow, ph) {
+// the antenna's own response under the slowed hero: the standing wave of current on its 46 cm,
+// following the reply's envelope smoothed over a few microseconds so the rods do not flicker
+function drawCurrent(Ic, peak, ph) {
+  if (!Ic) return;
   const nseg = 32;
   for (const dir of [1, -1]) for (let s = 0; s < nseg; s++) {
     const z0 = s / nseg * HE, z1 = (s + 1) / nseg * HE, zm = (z0 + z1) / 2;
     const shape = Math.sin(KW * (HE - zm));
-    let k = glow * Math.abs(shape) * .55;
-    if (Ic) k += Math.abs(shape * (Ic[0] * Math.cos(ph) + Ic[1] * Math.sin(ph))) / peak;
-    k = Math.min(1.6, k);
+    const k = Math.min(1.6, Math.abs(shape * (Ic[0] * Math.cos(ph) + Ic[1] * Math.sin(ph))) / peak);
     if (k < .03) continue;
     const a = [FEED[0], FEED[1] + dir * Math.max(.02, z0), FEED[2]], b = [FEED[0], FEED[1] + dir * Math.max(.02, z1), FEED[2]];
     const col = [1, .82, .5].map(c => c * k);
     xline(a, b, col, { mode: ADD, bias: 1.05 });
     for (const o of [[.003, 0, 0], [-.003, 0, 0], [0, 0, .003], [0, 0, -.003]]) xline(add(a, o), add(b, o), col.map(c => c * .4), { mode: ADD, bias: 1.05 });
   }
-  if (!Ic) return;
   const inow = Ic[0] * Math.cos(ph) + Ic[1] * Math.sin(ph);     // Re(I e^{-i ph})
   const qnow = Ic[0] * Math.sin(ph) - Ic[1] * Math.cos(ph);     // Re(i I e^{-i ph}): the charge, a quarter cycle on
   // arrowheads at the current maxima, a quarter and three quarters of a wavelength from each tip
@@ -1351,17 +1383,12 @@ function drawFence(src, env, ph, alpha) {
   xline(a, b, AMBER.map(c => c * .3 * alpha), { bias: 1.02, dash: dashes });
 }
 // the dipole's directivity as a wireframe of revolution, normalised to its peak
-function drawPattern(alpha, hero) {
+function drawPattern(alpha) {
   if (alpha <= .02) return;
   const Rd = .2, nt = 30, np = 16;
   const P = (t, p) => { const r = Rd * Math.abs(patF(Math.cos(t))) / PAT_MAX; return toWorld([r * Math.sin(t) * Math.cos(p), r * Math.sin(t) * Math.sin(p), r * Math.cos(t)]); };
   for (let j = 2; j < nt - 1; j += 2) for (let i = 0; i < np; i++) xline(P(j / nt * Math.PI, i / np * TAU), P(j / nt * Math.PI, (i + 1) / np * TAU), TEAL.map(c => c * .6), { alpha: alpha * .5 });
   for (let i = 0; i < np; i += 2) for (let j = 0; j < nt; j++) xline(P(j / nt * Math.PI, i / np * TAU), P((j + 1) / nt * Math.PI, i / np * TAU), TEAL.map(c => c * .6), { alpha: alpha * .5 });
-  if (hero) {   // where the hero's direction meets the pattern
-    const d = norm(hero.p), r = Rd * Math.abs(patF(d[2])) / PAT_MAX;
-    xline(FEED, toWorld(mul(d, Rd * 1.15)), AMBER.map(c => c * .5 * alpha), { dash: dots });
-    mark(toWorld(mul(d, Math.max(r, .004))), AMBER.map(c => c * alpha), 'd');
-  }
 }
 // the coax: a wave travelling from the feed to the receiver, its wavelength shortened by VF
 function drawCoax(VL, ref, ph) {
@@ -1428,8 +1455,7 @@ const PZ = { e: [0.06, 1.38, 0.1], d: shotDir(11, 1), f: 70 };
 const ease = u => { u = clamp(u, 0, 1); return u * u * (3 - 2 * u); };
 function camAt(T) {
   const u = ease((T - 15) / 7) * (1 - ease((T - 33.5) / 7));
-  const drift = [Math.sin(T * TAU / LOOP) * .012, Math.sin(T * TAU / LOOP * 2 + 1) * .006, 0];
-  const e = add(lerp3(P0.e, PZ.e, u), drift), d = norm(lerp3(P0.d, PZ.d, u));
+  const e = lerp3(P0.e, PZ.e, u), d = norm(lerp3(P0.d, PZ.d, u));
   return { e, t: add(e, mul(d, 3)), f: P0.f + (PZ.f - P0.f) * u };
 }
 function overlays(T) {
@@ -1468,7 +1494,7 @@ function renderAt(Tall) {
   dimWorld(smooth(-1.5, -5, logRate(T)) * 1.25);
   const ov = overlays(T);
   drawWindow(ov.window);
-  const glow = drawReplies(states, T, t);
+  drawReplies(states, T, t);
   // the two replies this film follows
   const hs = states[0], ds = states[4];
   drawShells(acState(HERO, HERO_TE).w, HERO_TE, HERO_BITS, t, altColor(hs.alt), ov.shells);
@@ -1476,7 +1502,7 @@ function renderAt(Tall) {
   const dTau = (t - (DEP_TE + (acState(DEP, DEP_TE).R - 125) / C0)) * 1e6;
   if (dTau > 0 && dTau < 121) {
     const k = envelope(DEP_BITS, dTau) * .6 + .4;
-    line3(ds.w, ds.link.path.hit || FEED, altColor(ds.alt).map(c => c * .5), { dash: dots, nodepth: true });
+    if (ds.link.path.hit) fadeRay(ds.link.path.hit, norm(sub(ds.w, FEED)), 40, altColor(ds.alt).map(c => c * .5), { dash: dots, nodepth: true });
     mark(ds.link.path.hit || FEED, altColor(ds.alt).map(c => c * k * 1.2), 'x', true);
   }
   const hTau = (t - SIM_ARR) * 1e6;
@@ -1484,16 +1510,18 @@ function renderAt(Tall) {
   if (hTau > -.2 && hTau < 121) {
     src = makeSource(mul(hs.p, -1 / hs.R), 1);
     env = envelope(HERO_BITS, hTau);
-    Ic = [src.I0[0] * env, src.I0[1] * env];
+    let envS = 0; for (let i = 0; i < 16; i++) envS += envelope(HERO_BITS, hTau - i * .25); envS = Math.min(1, envS / 16 * 2);
+    Ic = [src.I0[0] * envS, src.I0[1] * envS];
     peak = Math.hypot(src.I0[0], src.I0[1]);
     let avg = 0; for (let i = 0; i < 12; i++) avg += envelope(HERO_BITS, hTau - i * .5); avg /= 12;
-    line3(hs.w, FEED, altColor(hs.alt).map(c => c * (.15 + .35 * avg)), { dash: dots, nodepth: true });
-    line3(hs.w, FEED, altColor(hs.alt).map(c => c * (.25 + .75 * avg)), { bias: 1.002 });
+    const hd = norm(sub(hs.w, FEED));
+    fadeRay(FEED, hd, RAY_L, altColor(hs.alt).map(c => c * (.15 + .35 * avg)), { dash: dots, nodepth: true });
+    fadeRay(FEED, hd, RAY_L, altColor(hs.alt).map(c => c * (.25 + .75 * avg)), { bias: 1.002 });
     drawFence(src, env, ph, ov.fence);
     drawCoax([src.VL[0] * env, src.VL[1] * env], Math.hypot(src.VL[0], src.VL[1]), ph);
   }
-  drawCurrent(Ic, peak, glow, ph);
-  drawPattern(ov.pattern, hs);
+  drawCurrent(Ic, peak, ph);
+  drawPattern(ov.pattern);
   fade(Math.min(smooth(0, .7, T), 1 - smooth(LOOP - .8, LOOP, T)));
   return { T, t };
 }
