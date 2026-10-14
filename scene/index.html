@@ -160,7 +160,7 @@ function line3(p, q, col, opt = {}) {
     const t = i / n;
     const x = Math.round(sx + (ex - sx) * t), y = Math.round(sy + (ey - sy) * t);
     if (x < 0 || y < 0 || x >= W || y >= H) continue;
-    if (dash && !dash(t)) continue;
+    if (dash && !dash(t, i)) continue;
     const idx = y * W + x, iz = sz + (ez - sz) * t;
     if (!nodepth && iz * bias < ZB[idx]) continue;
     if (alpha < 1 && alpha <= BAYER[((y & 3) << 2) | (x & 3)]) continue;
@@ -340,7 +340,7 @@ const TEX_GOLD = makeTex(64, 64, (x, y) => {
 const TEX_TILE = makeTex(32, 32, (x, y) => (x === 0 || y === 0) ? [.5, .5, .52] : [.68 + .03 * hash2(x >> 3, y >> 3), .68, .7]);
 const TEX_WALLTILE = makeTex(16, 32, (x, y) => (x === 0 || y === 0) ? [.8, .8, .8] : [.95, .95, .95]);
 const TEX_KEYS = makeTex(64, 40, (x, y) => {
-  const black = [.09, .09, .1], gap = [.03, .03, .035];
+  const black = [.2, .2, .215], gap = [.05, .05, .055];
   if (y >= 30) { // palm rest: touchpad buttons with their red stripes
     if (y === 30 || y === 31) return (x > 22 && x < 42) ? ((x % 7 === 0) ? gap : [.6, .1, .1]) : black;
     if (y > 32 && x > 24 && x < 40) return [.13, .13, .14];
@@ -365,42 +365,62 @@ const TEX_POSTER = makeTex(16, 32, (x, y) => {
   return n > .5 ? [.95, .95, .95] : [.8, .15, .2];
 });
 const TEX_CHECK = makeTex(16, 16, (x, y) => ((x >> 2) + (y >> 2)) & 1 ? [.12, .3, .72] : [.92, .93, .95]);
-const TEX_BRICK = makeTex(32, 32, (x, y) => {
-  const fl = y % 8;
-  if (fl < 2) return [.93, .92, .9];                       // balcony slab
-  if (fl === 2) return [.35, .33, .32];
-  const win = (x % 8) > 2 && (x % 8) < 6 && fl > 3;
-  return win ? [.3, .3, .32] : [.72, .42, .3];
-});
+// one bay of the block across, one floor high; row 0 is the slab edge at the bottom
+function facade(laundry) {
+  return makeTex(32, 32, (x, y) => {
+    const v = 31 - y;                                           // texture rows run top-down
+    const brick = (((x >> 1) + (v >> 1)) & 3) ? [.71, .4, .28] : [.62, .34, .24];
+    if (x < 4 || x > 27) return (v % 3 === 0) ? [.78, .74, .7] : brick;     // pilasters
+    if (v < 3) return [.9, .9, .88];                            // slab edge
+    if (v < 12) return (x % 2) ? [.93, .93, .92] : [.5, .47, .45];          // the white railing
+    if (v > 28) return [.82, .82, .8];
+    if (x > 12 && x < 20 && v < 26) return [.16, .17, .19];                  // balcony door
+    if (x > 21 && x < 26 && v > 15 && v < 24) return [.25, .27, .3];         // window
+    if (laundry && v > 18 && v < 26 && x > 5 && x < 12) return [[.9, .9, .92], [.3, .45, .7], [.85, .5, .4], [.2, .2, .22]][(x + (v >> 2)) % 4];
+    if (!laundry && x > 5 && x < 11 && v > 12 && v < 17) return [.88, .88, .86];   // an air conditioner
+    return [.6, .56, .52];
+  });
+}
+const TEX_FAC1 = facade(true), TEX_FAC2 = facade(false);
+const TEX_A1FRONT = makeTex(32, 8, (x, y) => (x > 12 && x < 21 && y > 2 && y < 6 && (x + y) % 2 === 0) ? [.55, .55, .56] : (x > 23 && x < 29 && y === 4 && x % 3 !== 0) ? [.2, .2, .22] : [.86, .86, .84]);
+const TEX_TRAY = makeTex(4, 4, (x, y) => (x === 1 && y === 1) ? [.05, .05, .05] : [.16, .16, .17]);
 
 /* ---------- materials ---------- */
 const M = {
   wall: mat(hex('#c9ccd0')), fwall: mat(hex('#c9ccd0'), { boost: .3 }), ceil: mat(hex('#d6d7d8')), floor: mat([1, 1, 1], { tex: TEX_TILE, gloss: 1 }),
   white: mat(hex('#e2e1dc')), white2: mat(hex('#d3d3cf')), grey: mat(hex('#8d9196')), dark: mat(hex('#2a2b2e')),
-  black: mat(hex('#141416')), lap: mat(hex('#18181b')), alu: mat(hex('#b8bcc2')), chrome: mat(hex('#dfe3ea')),
+  black: mat(hex('#141416')), lap: mat(hex('#18181b')), chrome: mat(hex('#dfe3ea')),
   locker: mat(hex('#4a74a8')), navy: mat([1,1,1], { tex: TEX_NAVY, ds: true }), gold: mat([1,1,1], { tex: TEX_GOLD, ds: true }),
   keys: mat([1,1,1], { tex: TEX_KEYS }), paper: mat([1,1,1], { tex: TEX_PAPER, ds: true }), poster: mat([1,1,1], { tex: TEX_POSTER }),
-  check: mat([1,1,1], { tex: TEX_CHECK }), suit: mat(hex('#7d8288')), suit2: mat(hex('#a7abb0')),
-  hood: mat(hex('#6c6a64')), tee: mat(hex('#8e9294')), skin: mat(hex('#c9a088')), hair: mat(hex('#121010')), jeans: mat(hex('#3a3f4a')),
-  wtile: mat([1,1,1], { tex: TEX_WALLTILE }), frame: mat(hex('#e8e8e6')),
-  brick: mat([1,1,1], { tex: TEX_BRICK, emis: true }), tree: mat(hex('#3d5a34'), { emis: true }), tree2: mat(hex('#2f4a2c'), { emis: true }),
-  hill: mat(hex('#6f8a72'), { emis: true }), sky: mat(hex('#dfe6ea'), { emis: true }),
+  check: mat([1,1,1], { tex: TEX_CHECK }), suit: mat(hex('#7d8288')), suit2: mat(hex('#a7abb0')), mattress: mat(hex('#8f98a3')),
+  tree: mat(hex('#3d5a34'), { emis: true }), tree2: mat(hex('#2f4a2c'), { emis: true }), hill: mat(hex('#7d9580'), { emis: true }),
+  fac1: mat([1,1,1], { tex: TEX_FAC1, emis: true }), fac2: mat([1,1,1], { tex: TEX_FAC2, emis: true }),
+  oslab: mat(hex('#e6e5e1'), { emis: true }), oroof: mat(hex('#9a9893'), { emis: true }), ofr: mat(hex('#eeeeec'), { emis: true }), ofl: mat(hex('#b9b8b4'), { boost: .7 }),
   spool: mat(hex('#ecebe6')), clear: mat(hex('#c8d0d6'), { alpha: .35, ds: true }), red: mat(hex('#b23a2c')), orange: mat(hex('#e07a22')),
-  bottleB: mat(hex('#2f6fd0')), yellow: mat(hex('#e8c21c')), ledG: mat([.2, 1, .3], { emis: true }), ledR: mat([1, .2, .15], { emis: true }),
+  bottleB: mat(hex('#2f6fd0')), green: mat(hex('#3d7a3a')), yellow: mat(hex('#e8c21c')), ledG: mat([.2, 1, .3], { emis: true }), ledR: mat([1, .2, .15], { emis: true }),
   aw: mat([1,1,1], { tex: TEX_WALLTILE, boost: .75 }), afl: mat([1,1,1], { tex: TEX_TILE, boost: .6 }), ace: mat(hex('#d6d7d8'), { boost: .55 }),
   afr: mat(hex('#e8e8e6'), { boost: .8 }), awh: mat(hex('#e2e1dc'), { boost: .6 }), awh2: mat(hex('#d3d3cf'), { boost: .6 }),
-  intel: mat(hex('#2a6fc0')), silver: mat(hex('#9aa0a8')), cup: mat(hex('#34363b')),
+  intel: mat(hex('#2a6fc0')), silver: mat(hex('#9aa0a8')), cup: mat(hex('#34363b')), mat: mat(hex('#5c4b3d')),
+  a1: mat(hex('#dddcd8')), a1front: mat([1,1,1], { tex: TEX_A1FRONT }), a1tower: mat(hex('#8e9399')), plate: mat(hex('#1d1e21')),
+  tray: mat([1,1,1], { tex: TEX_TRAY }),
 };
 
 /* ==========================================================================
    The room, as photographed from the door end: x to the right, y up, z toward
    the balcony; metres. The photograph was taken from about (0, 1.35, 0),
-   turned 5 degrees right and 8 down; positions below were solved from it.
+   turned 5 degrees right and 8 down; positions below were solved from it and
+   from two more views of the corner by the door. A four-bed room, every bed a
+   loft over its own desk; sixth and top floor.
    ========================================================================== */
 const ROOM = { x0: -1.75, x1: 1.6, z0: -0.9, z1: 4.65, h: 2.95 };
 const DOOR = { x0: -0.98, x1: 0.22, top: 2.45 };         // the opening onto the balcony annex
 const ANNEX = { z0: 4.83, z1: 6.25 };
-// the dipole's feed point, held by the clamp of a suction-cup mount on the cabinet side
+const GLASS = { x0: -0.82, x1: 0.12, top: 2.95 };        // the glazed end of the annex
+const OPP = { z: 48, roof: 0.0, floor: 3.1 };            // the block across: parapet level with our floor
+// the wooded hill's crown as seen from the antenna, by azimuth from the room's axis (radians); low
+// terrain elsewhere
+function hillEl(az) { return Math.abs(az) < 1.15 ? (2.0 + .6 * Math.sin(az * 5 + 1) + .35 * Math.sin(az * 13)) * Math.PI / 180 : .4 * Math.PI / 180; }
+// the dipole's feed point, held by the clamp of a suction-cup mount on the shelf's side
 const FEED = [0.76, 1.668, 1.05];
 
 function buildRoom() {
@@ -416,7 +436,7 @@ function buildRoom() {
   const az = ANNEX.z0;
   quad([DOOR.x0, 0, z1], [DOOR.x0, 0, az], [DOOR.x0, DOOR.top, az], [DOOR.x0, DOOR.top, z1], M.awh, null, [1, 0, 0]);
   quad([DOOR.x1, 0, az], [DOOR.x1, 0, z1], [DOOR.x1, DOOR.top, z1], [DOOR.x1, DOOR.top, az], M.awh, null, [-1, 0, 0]);
-  quad([DOOR.x0, DOOR.top, z1], [DOOR.x1, DOOR.top, z1], [DOOR.x1, DOOR.top, az], [DOOR.x0, DOOR.top, az], M.white, null, [0, -1, 0]);
+  quad([DOOR.x0, DOOR.top, z1], [DOOR.x1, DOOR.top, z1], [DOOR.x1, DOOR.top, az], [DOOR.x0, DOOR.top, az], M.awh, null, [0, -1, 0]);
   push(); tr(-0.35, h - .03, 2.3); cylY(0, 0, 0, .03, .06, 8, M.white); pop();   // smoke detector
 
   // ---- the annex: tiled walls, a basin counter, the glazed balcony door ----
@@ -425,175 +445,178 @@ function buildRoom() {
   grid([ax0, ah, A1], [ax1, ah, A1], [ax0, ah, A0], 2, 2, M.ace, [0, -1, 0]);
   grid([ax0, 0, A1], [ax0, 0, A0], [ax0, ah, A1], 3, 4, M.aw, [1, 0, 0], [6, 9]);
   grid([ax1, 0, A0], [ax1, 0, A1], [ax1, ah, A0], 3, 4, M.aw, [-1, 0, 0], [6, 9]);
-  const gx0 = -0.82, gx1 = 0.12;                                   // the glazed opening
+  const gx0 = GLASS.x0, gx1 = GLASS.x1;
   grid([ax0, 0, A1], [gx0, 0, A1], [ax0, ah, A1], 1, 3, M.aw, [0, 0, -1], [3, 9]);
   grid([gx1, 0, A1], [ax1, 0, A1], [gx1, ah, A1], 1, 3, M.aw, [0, 0, -1], [3, 9]);
   box(gx0 - .05, 0, A1 - .06, gx0, ah, A1, M.afr);
   box(gx1, 0, A1 - .06, gx1 + .05, ah, A1, M.afr);
   box(gx0, 2.25, A1 - .06, gx1, 2.31, A1, M.afr);
   box(gx0, ah - .05, A1 - .06, gx1, ah, A1, M.afr);
-  box((gx0 + gx1) / 2 - .02, 2.31, A1 - .05, (gx0 + gx1) / 2 + .02, ah - .05, A1 - .01, M.afr);
-  push(); tr(gx1, 0, A1 - .06); rotY(-1.3);                        // the door leaf, open
-  box(-0.9, 0, -.02, -0.86, 2.22, .02, M.afr); box(-0.04, 0, -.02, 0, 2.22, .02, M.afr);
-  box(-0.9, 2.18, -.02, 0, 2.22, .02, M.afr); box(-0.9, 0, -.02, 0, .08, .02, M.afr);
-  pop();
+  box((gx0 + gx1) / 2 - .02, 0, A1 - .05, (gx0 + gx1) / 2 + .02, 2.25, A1 - .01, M.afr);    // the fixed light and the door meet here
   box(gx0, 0, A1 - .08, gx1, .04, A1 + .02, M.afr);
-  box(ax0, 0, A0 + .1, ax0 + .5, .82, A1 - .3, M.awh2);          // basin counter and bottles
+  box(ax0, 0, A0 + .1, ax0 + .5, .82, A1 - .3, M.awh2);
   box(ax0, .82, A0 + .1, ax0 + .52, .86, A1 - .3, M.awh);
-  [[M.bottleB, .26], [M.orange, .3], [M.awh, .22], [M.orange, .26], [M.tree, .2]].forEach(([m, hh], i) => {
+  [[M.bottleB, .26], [M.orange, .3], [M.awh, .22], [M.orange, .26], [M.green, .2]].forEach(([m, hh], i) => {
     push(); tr(ax0 + .4, .86, A0 + .3 + i * .08); cylY(0, 0, 0, hh, .033, 6, m); cylY(0, 0, hh, hh + .04, .014, 5, M.awh); pop();
   });
   push(); tr(gx1 + .2, 0, A1 - .35); rotZ(.14); box(-.01, .05, -.01, .01, 1.2, .01, M.yellow); box(-.08, 0, -.04, .08, .12, .03, M.grey); pop();
   push(); tr(gx1 + .18, 0, A1 - .6); rotY(.4); box(-.15, 0, -.1, .15, .14, .1, M.yellow, 'Y'); pop();
+  // our balcony: a slab and its rail, six floors up
+  const OZ = A1 + 1.2;
+  box(-1.6, -.15, A1, 1.0, 0, OZ, M.ofl);
+  box(-1.6, .95, OZ - .04, 1.0, 1.0, OZ + .02, M.ofr);
+  for (let i = 0; i < 14; i++) box(-1.58 + i * .19, 0, OZ - .03, -1.56 + i * .19, .95, OZ - .01, M.ofr);
 
-  // ---- outside: balcony rail, the dormitory across, a wooded hill, the ridge ----
-  const OZ = A1 + 1.1;
-  box(-1.4, .95, OZ, 1.0, 1.0, OZ + .06, M.frame);
-  for (let i = 0; i < 13; i++) box(-1.4 + i * .19, 0, OZ + .01, -1.38 + i * .19, .95, OZ + .03, M.frame);
-  push(); tr(0, -14, 30); grid([-20, 0, 0], [20, 0, 0], [-20, 16, 0], 6, 4, M.brick, [0, 0, -1], [11, 4]); pop();
-  for (let i = 0; i < 9; i++) { push(); tr(-15 + i * 3.8, -1.5, 29.6); box(-.3, 0, -.3, .3, .5, .3, M.white2); pop(); }
-  const R = rng(7);
-  for (let i = 0; i < 70; i++) {
-    push(); tr(-60 + R() * 120, 1 + R() * 9, 50 + R() * 50);
-    blob(0, 0, 0, 3 + R() * 4, 6, R() < .5 ? M.tree : M.tree2, 1.3); pop();
+  // ---- across: a six-storey block, parapet level with our floor; we see its top three floors ----
+  const bz = OPP.z;
+  for (let i = 0; i < 3; i++) {                                         // floors 6, 5, 4 under the roof
+    const top = OPP.roof - 1.0 - i * OPP.floor;
+    push(); tr(0, top - OPP.floor, bz);
+    grid([-48, 0, 0], [48, 0, 0], [-48, OPP.floor, 0], 12, 1, i === 0 ? M.fac1 : M.fac2, [0, 0, -1], [26.67, 1]);
+    pop();
+    box(-48, top - .16, bz - 1.25, 48, top, bz, M.oslab);              // balcony slab edge, white
   }
+  box(-48, OPP.roof - 1.0, bz - 1.3, 48, OPP.roof, bz - 1.1, M.oslab);  // parapet
+  for (let i = 0; i < 96; i++) box(-48 + i, OPP.roof, bz - 1.22, -47.96 + i, OPP.roof + .25, bz - 1.18, M.ofr);
+  box(-48, OPP.roof + .23, bz - 1.24, 48, OPP.roof + .26, bz - 1.16, M.ofr);
+  grid([-48, OPP.roof - .9, bz - 1.1], [48, OPP.roof - .9, bz - 1.1], [-48, OPP.roof - .9, bz + 14], 6, 2, M.oroof, [0, 1, 0]);
+  for (const x of [-30, -6, 21]) box(x, OPP.roof - .9, bz + 3, x + 4, OPP.roof + 1.6, bz + 7, M.oslab);   // stair heads on the roof
+  // the wooded hill behind it; its crown, seen from the antenna, is HILL_EL above the horizontal
+  const R = rng(7);
+  for (let i = 0; i < 190; i++) {
+    const x = -170 + R() * 340, z = 100 + R() * 80;
+    const az = Math.atan2(x - FEED[0], z - FEED[2]), d = Math.hypot(x - FEED[0], z - FEED[2]);
+    const top = FEED[1] + d * Math.tan(hillEl(az)) - R() * 1.2, r = 3 + R() * 3;
+    push(); tr(x, top - r * 1.4, z); blob(0, 0, 0, r, 6, R() < .5 ? M.tree : M.tree2, 1.4); pop();
+  }
+  grid([-300, -30, 110], [300, -30, 110], [-300, -1, 140], 6, 1, M.tree2, [0, 0, -1]);
   const ridge = [];
-  for (let i = 0; i <= 24; i++) ridge.push([-700 + i * 60, 30 + 30 * Math.sin(i * .9) + 25 * hash2(i, 3), 600]);
-  for (let i = 0; i < 24; i++) quad([ridge[i][0], -20, 600], [ridge[i + 1][0], -20, 600], ridge[i + 1], ridge[i], M.hill, null, [0, 0, -1]);
+  for (let i = 0; i <= 24; i++) ridge.push([-900 + i * 75, 18 + 22 * Math.sin(i * .9) + 20 * hash2(i, 3), 900]);
+  for (let i = 0; i < 24; i++) quad([ridge[i][0], -40, 900], [ridge[i + 1][0], -40, 900], ridge[i + 1], ridge[i], M.hill, null, [0, 0, -1]);
+}
+
+// a loft bed: the platform on four posts, a guard rail, mattress, curtain hung from a ceiling rail
+// down to the platform on the aisle side and the near end; the desk below is open
+function loftBed(xa, xb, za, zb, py, curtain, aisleX, side) {
+  const xo = side < 0 ? xb : xa;                                     // aisle edge
+  for (const z of [za, zb - .06]) box(xo - (side < 0 ? .06 : 0), 0, z, xo + (side < 0 ? 0 : .06), py + .45, z + .06, M.white);
+  box(xa, py - .08, za, xb, py, zb, M.white2);                       // platform
+  box(xa + .03, py, za + .03, xb - .03, py + .1, zb - .03, M.mattress);
+  box(xo - (side < 0 ? .04 : 0), py + .32, za, xo + (side < 0 ? 0 : .04), py + .36, zb, M.white);   // guard rail
+  // curtain: gathered panels from the rail at 2.85 m down to the platform
+  const n = 12, cx = aisleX;
+  for (let i = 0; i < n; i++) {
+    const z0 = za + (zb - za) * i / n, z1 = za + (zb - za) * (i + 1) / n;
+    const x0 = cx + side * (i % 2) * .028, x1 = cx + side * ((i + 1) % 2) * .028;
+    quad([x0, py - .02, z0], [x1, py - .02, z1], [x1, 2.85, z1], [x0, 2.85, z0], curtain, [i / n * 3, 1, (i + 1) / n * 3, 1, (i + 1) / n * 3, 0, i / n * 3, 0], [side < 0 ? 1 : -1, 0, 0]);
+  }
+  const wx0 = side < 0 ? ROOM.x0 : cx, wx1 = side < 0 ? cx : ROOM.x1;
+  quad([wx0, py - .02, za - .02], [wx1, py - .02, za - .02], [wx1, 2.85, za - .02], [wx0, 2.85, za - .02], curtain, [0, 1, .8, 1, .8, 0, 0, 0], [0, 0, -1]);
+  box(Math.min(wx0, wx1), 2.85, za - .03, Math.max(wx0, wx1), 2.87, zb, M.grey);    // the rail
 }
 
 function buildLeft() {
-  // the loft bed on the left over its desk; the gold curtain hangs to 1.68 m on the aisle side
-  const bx0 = ROOM.x0, bx1 = -0.85, bz0 = 1.3, bz1 = 4.55, by = 1.74;
-  box(bx1 - .07, 0, bz0, bx1, 2.0, bz0 + .07, M.white);              // near post
-  box(bx1 - .07, 0, bz1 - .07, bx1, 2.0, bz1, M.white);
-  box(bx0, by - .08, bz0, bx1, by, bz1, M.white2);
-  for (let i = 0; i < 12; i++) {
-    const za = bz0 + (bz1 - bz0) * i / 12, zb = bz0 + (bz1 - bz0) * (i + 1) / 12;
-    const xa = bx1 + .02 + (i % 2) * .03, xb = bx1 + .02 + ((i + 1) % 2) * .03;
-    quad([xa, 1.68, za], [xb, 1.68, zb], [xb, ROOM.h, zb], [xa, ROOM.h, za], M.gold, [i / 12 * 3, 1, (i + 1) / 12 * 3, 1, (i + 1) / 12 * 3, 0, i / 12 * 3, 0], [1, 0, 0]);
-  }
-  quad([bx0, 1.68, bz0 - .02], [bx1 + .02, 1.68, bz0 - .02], [bx1 + .02, ROOM.h, bz0 - .02], [bx0, ROOM.h, bz0 - .02], M.gold, [0, 1, 1, 1, 1, 0, 0, 0], [0, 0, -1]);
-  // wire hangers on a hook under the bed, and the round mesh rim above them
-  push(); tr(-0.98, 1.6, 1.75);
-  wire([[0, .08, 0], [0, -.02, 0]], [.75, .76, .78]);
-  for (let k = 0; k < 6; k++) { const o = k * .025; wire([[0, -.02, o], [-.2, -.17 - o * .6, o], [.2, -.17 - o * .6, o], [0, -.02, o]], [.86, .87, .9]); }
-  pop();
-  push(); tr(-1.0, 1.95, 1.55); const ring = []; for (let i = 0; i <= 14; i++) { const a = i / 14 * TAU; ring.push([.18 * Math.cos(a), .25 * Math.sin(a), .1 * Math.cos(a)]); } wire(ring, [.72, .72, .74]); pop();
-  // desk, shelf, posters under the bed
-  box(bx0, .74, 1.4, bx1 - .15, .77, bz1 - .1, M.white);
-  box(bx0, 1.25, 1.4, bx0 + .3, 1.28, bz1 - .1, M.white2);
-  box(bx0 + .02, .77, 2.6, bx0 + .2, 1.02, 2.7, M.dark);
-  box(bx0 + .03, .77, 2.95, bx0 + .1, 1.06, 3.0, M.black); box(bx0 + .03, .77, 3.05, bx0 + .1, 1.06, 3.1, M.black);
-  push(); tr(bx1 - .075, .75, bz0 + .08); quad([0, 0, 0], [0, 0, .0], [0, .75, 0], [0, .75, 0], M.poster); pop();
-  push(); tr(bx1 - .072, .78, bz0 - .002); quad([0, 0, 0], [.07, 0, 0], [.07, .72, 0], [0, .72, 0], M.poster, null, [0, 0, -1]); pop();
-  // the person at the left desk, hood up, turned to the wall
-  push(); tr(-1.1, 0, 3.0); rotY(-1.4);
-  box(-.2, .45, -.2, .2, .48, .2, M.white);
-  box(-.2, .48, .16, .2, .95, .2, M.white2);
+  loftBed(ROOM.x0, -0.85, 1.3, 3.4, 1.72, M.gold, -0.83, -1);
+  // under it: the desk, a hutch on the wall, a lamp; a white chair pushed in
+  box(ROOM.x0, .73, 1.36, -0.92, .76, 3.32, M.white);
+  box(-0.95, 0, 1.38, -0.92, .73, 1.42, M.white2); box(-0.95, 0, 3.26, -0.92, .73, 3.3, M.white2);
+  box(ROOM.x0, 1.18, 1.36, ROOM.x0 + .32, 1.21, 3.32, M.white2);
+  box(ROOM.x0, .76, 2.0, ROOM.x0 + .3, 1.18, 2.03, M.white2);
+  box(ROOM.x0 + .04, .77, 2.4, ROOM.x0 + .1, 1.08, 2.85, M.dark);      // a monitor turned to the wall
+  box(ROOM.x0 + .02, .77, 2.95, ROOM.x0 + .1, 1.05, 3.0, M.black); box(ROOM.x0 + .02, .77, 3.05, ROOM.x0 + .1, 1.02, 3.1, M.black);
+  push(); tr(-0.858, .78, 1.302); quad([0, 0, 0], [.06, 0, 0], [.06, .7, 0], [0, .7, 0], M.poster, null, [0, 0, -1]); pop();
+  push(); tr(-0.851, .8, 1.32); quad([0, 0, 0], [0, 0, .3], [0, .62, .3], [0, .62, 0], M.poster, null, [1, 0, 0]); pop();
+  push(); tr(-1.2, 0, 2.55); rotY(-1.4);
+  box(-.2, .45, -.2, .2, .48, .2, M.white); box(-.2, .48, .16, .2, .95, .2, M.white2);
   for (const [x, z] of [[-.18, -.18], [.18, -.18], [-.18, .18], [.18, .18]]) box(x - .015, 0, z - .015, x + .015, .45, z + .015, M.white);
-  box(-.17, .48, -.2, .17, .62, .12, M.jeans);
-  box(-.2, .6, -.08, .2, 1.05, .15, M.hood);
-  box(-.14, 1.05, -.06, .14, 1.13, .1, M.hood);
-  blob(0, 1.24, 0.0, .105, 7, M.hair, 1.15);
-  blob(0, 1.22, -.06, .082, 6, M.skin, 1.1);
-  box(-.25, .8, -.34, -.16, .88, .02, M.hood); box(.16, .8, -.34, .25, .88, .02, M.hood);
   pop();
-  // a coat over the back of the chair nearer the camera, and the bin
-  push(); tr(-1.05, .5, 2.35); rotY(-.25); box(-.24, -.08, -.04, .24, .5, .14, M.hood); box(-.2, -.45, .0, .2, -.08, .1, M.hood); pop();
+  // the far end: a tall wardrobe to the wall
+  box(ROOM.x0, 0, 3.46, -0.92, 2.1, 4.6, M.white);
+  box(-0.925, 1.0, 4.0, -0.92, 1.12, 4.02, M.grey);
   push(); tr(-0.8, 0, 1.95); cylY(0, 0, 0, .34, .14, 8, M.white, true, .16); cylY(0, 0, .3, .37, .12, 8, M.black, false); pop();
 }
 
 function buildCentre() {
   push(); tr(-0.2, 0, 4.3); rotY(.1); box(-.22, .06, -.13, .22, .76, .13, M.suit); box(-.05, .76, -.02, .05, .95, .02, M.dark);
   for (const x of [-.17, .17]) cylY(x, -.1, 0, .06, .03, 5, M.dark); pop();
-  push(); tr(0.36, 0, 3.55); rotY(-.2);
+  push(); tr(0.52, 0, 3.9); rotY(-.2);
   box(-.23, .06, -.14, .23, .72, .14, M.suit2);
-  for (let i = -3; i <= 3; i++) wire([[i * .06, .08, -.141], [i * .06, .7, -.141]], [.55, .58, .62]);
+  for (let i = -3; i <= 3; i++) box(i * .06 - .004, .08, -.146, i * .06 + .004, .7, -.14, M.suit);
   box(-.22, .72, -.15, .22, .96, .12, M.check);
   pop();
-  push(); tr(1.1, 1.3, 4.6); box(-.14, -.1, -.06, .14, .3, 0, M.dark); wire([[-.08, .3, -.03], [0, .52, -.03], [.08, .3, -.03]], [.1, .1, .1]); pop();
+  push(); tr(1.1, 1.3, 4.6); box(-.14, -.1, -.06, .14, .3, 0, M.dark); pop();
 }
 
 function buildRight() {
-  // the cabinet nearest the camera; the suction cup holds to its side, which faces the aisle
+  // the white shelf nearest the camera; the suction cup holds to its side, which faces the aisle
   box(0.88, 0, 0.72, ROOM.x1, 1.95, 1.3, M.white);
   box(0.875, 1.0, 0.98, 0.88, 1.12, 1.0, M.grey);
-  // the right loft bed beyond it, curtain to 1.55 m
-  const bx0 = 0.92, bx1 = ROOM.x1, bz0 = 1.3, bz1 = 4.3, by = 1.62;
-  box(bx0, by - .08, bz0, bx1, by, bz1, M.white2);
-  box(bx0 - .02, 0, 2.12, bx0 + .06, 2.0, 2.3, M.white);              // the ladder side, a white column
-  for (let k = 0; k < 4; k++) box(bx0 + .06, .35 + k * .38, 2.14, bx0 + .5, .38 + k * .38, 2.18, M.white2);
-  for (let i = 0; i < 12; i++) {
-    const za = bz0 + (bz1 - bz0) * i / 12, zb = bz0 + (bz1 - bz0) * (i + 1) / 12;
-    const xa = bx0 - .02 - (i % 2) * .03, xb = bx0 - .02 - ((i + 1) % 2) * .03;
-    quad([xa, 1.55, za], [xb, 1.55, zb], [xb, ROOM.h, zb], [xa, ROOM.h, za], M.navy, [i / 12 * 3, 1, (i + 1) / 12 * 3, 1, (i + 1) / 12 * 3, 0, i / 12 * 3, 0], [-1, 0, 0]);
+  loftBed(0.92, ROOM.x1, 1.3, 3.4, 1.6, M.navy, 0.9, 1);
+  // the stair of drawers up to the bed, blue fronts toward the room
+  for (let k = 0; k < 4; k++) {
+    const x0 = 0.52 + k * .1, y1 = .4 * (k + 1);
+    box(x0, 0, 1.95, 0.92, y1, 2.45, M.white);
+    box(x0 + .01, y1 - .36, 1.948, 0.91, y1 - .04, 1.95, M.locker);
+    box(x0 + .02, y1 - .03, 1.94, 0.92, y1, 2.45, M.white2);
   }
-  quad([bx1, 1.95, bz0 - .02], [bx0 - .02, 1.95, bz0 - .02], [bx0 - .02, ROOM.h, bz0 - .02], [bx1, ROOM.h, bz0 - .02], M.navy, [0, 1, .7, 1, .7, .3, 0, .3], [0, 0, -1]);
-  // a hook and a tote bag on the ladder column
-  push(); tr(0.9, 1.3, 2.2); box(-.04, -.4, -.13, 0, .05, .13, M.dark); wire([[0, .05, -.09], [-.05, .24, 0], [0, .05, .09]], [.1, .1, .1]); pop();
-  // the blue lockers under the bed, doors toward the camera
-  push(); tr(0.52, 0, 2.38);
-  box(0, 0, 0, .4, 1.62, .45, M.locker);
-  wire([[.2, .05, -.002], [.2, 1.57, -.002]], [.2, .3, .45]);
-  box(.15, .85, -.02, .17, .97, 0, M.dark); box(.23, .85, -.02, .25, .97, 0, M.dark);
-  pop();
-  box(0.95, .74, 2.35, bx1, .77, 3.9, M.white);
-  // the second person, in a white mesh chair, turned toward the desk on the right
-  push(); tr(0.52, 0, 2.0); rotY(1.3);
-  box(-.21, .44, -.21, .21, .5, .2, M.white);
-  box(-.2, .52, .2, .2, 1.0, .24, M.white2);
+  box(0.95, .73, 2.5, ROOM.x1, .76, 3.35, M.white);
+  push(); tr(0.62, 0, 2.95); rotY(1.3);                               // an empty mesh chair
+  box(-.21, .44, -.21, .21, .5, .2, M.white); box(-.2, .52, .2, .2, 1.0, .24, M.white2);
   cylY(0, 0, .08, .44, .025, 5, M.grey); box(-.25, .04, -.02, .25, .07, .02, M.grey); box(-.02, .04, -.25, .02, .07, .25, M.grey);
-  box(-.17, .5, -.18, .17, .62, .12, M.jeans);
-  box(-.19, .62, -.08, .19, 1.06, .14, M.tee);
-  blob(0, 1.21, .0, .095, 7, M.hair, 1.1);
-  blob(0, 1.18, -.07, .078, 6, M.skin, 1.1);
-  box(-.22, .9, -.3, -.15, .97, -.02, M.skin); box(.15, .9, -.3, .22, .97, -.02, M.skin);
-  box(.0, .98, -.36, .08, 1.12, -.34, M.black);
   pop();
+  box(0.92, 0, 3.46, ROOM.x1, 2.1, 4.6, M.white);
+  box(0.92, 1.0, 4.0, 0.925, 1.12, 4.02, M.grey);
 }
 
-/* ---- the near desk, the printer, the stand, and the X230 tilted on it ---- */
-// the laptop's hinge line centre; tilt is the deck's slope toward the user, open the lid angle
+/* ---- the trolley by the door: Bambu Lab A1 mini on top, the X230 above it on a monitor arm ---- */
 const LAPTOP = { p: [0.498, 1.30, 0.663], yaw: 0.25, tilt: 0.66, open: 2.24 };
-function buildDesk() {
-  box(0.1, .74, -.1, 0.88, .78, 1.3, M.white);
-  box(0.12, 0, -.05, 0.16, .74, -.01, M.white2);
-  box(0.12, .08, 0.0, 0.62, .5, 1.25, M.white2, 'x');
-  push(); tr(0.06, .782, .82); rotY(.12); rotZ(-.1); quad([0, 0, 0], [.4, 0, 0], [.4, 0, .3], [0, 0, .3], M.paper, null, [0, 1, 0]); pop();
-  push(); tr(0.1, .8, .86); rotY(-.1); rotZ(-.16); quad([0, 0, 0], [.38, 0, 0], [.38, 0, .27], [0, 0, .27], M.paper, [0, 0, 1, 0, 1, 1, 0, 1], [0, 1, 0]); pop();
-  box(0.2, .78, .32, 0.56, .86, .52, M.white2);                       // the vented box
-  // the printer: four 2020 posts, top ring, gantry and toolhead, spool on the right
-  const fx0 = 0.37, fx1 = 0.5, fz0 = 0.74, fz1 = 1.05, fy0 = .78, fy1 = 1.17;
-  for (const [x, z] of [[fx0, fz0], [fx1, fz0], [fx0, fz1], [fx1, fz1]]) box(x - .01, fy0, z - .01, x + .01, fy1, z + .01, M.alu);
-  box(fx0, fy1 - .02, fz0 - .01, fx1, fy1, fz0 + .01, M.alu); box(fx0, fy1 - .02, fz1 - .01, fx1, fy1, fz1 + .01, M.alu);
-  box(fx0 - .01, fy1 - .02, fz0, fx0 + .01, fy1, fz1, M.alu); box(fx1 - .01, fy1 - .02, fz0, fx1 + .01, fy1, fz1, M.alu);
-  box(0.16, 1.0, fz0 + .02, fx1, 1.02, fz0 + .04, M.alu);             // gantry reaching out to the left
-  box(0.25, .92, .7, 0.36, 1.06, .8, M.white);                         // toolhead on it, the extruder block below
-  box(0.26, .86, .71, 0.34, .92, .79, M.white2);
-  box(0.2, .86, .62, 0.31, .93, .7, M.white);
-  box(0.24, .82, .63, 0.28, .86, .67, M.dark);
-  box(0.12, fy0, .55, fx1 + .02, fy0 + .02, fz1, M.dark);             // bed plate
-  for (const [x, z] of [[fx0, fz0], [fx1, fz0], [fx0, fz1], [fx1, fz1]]) box(x - .02, fy1 - .04, z - .02, x + .02, fy1 + .005, z + .02, M.white2);
-  push(); tr(0.57, .99, 0.72); rotZ(Math.PI / 2);                     // the spool on the right of the frame, axis along x
-  cylY(0, 0, -.034, .034, .085, 14, M.spool, false);
-  cylY(0, 0, -.035, .035, .03, 10, M.white2, true);
-  cylY(0, 0, -.044, -.034, .1, 16, M.clear, true);
-  cylY(0, 0, .034, .044, .1, 16, M.clear, true);
+function buildCart() {
+  const x0 = 0.08, x1 = 0.86, z0 = 0.86, z1 = 1.28;
+  for (const y of [.13, .43, .72]) {
+    box(x0, y, z0, x1, y + .02, z1, M.white);
+    box(x0, y + .02, z0, x1, y + .045, z0 + .012, M.white2); box(x0, y + .02, z1 - .012, x1, y + .045, z1, M.white2);
+  }
+  for (const [x, z] of [[x0 + .015, z0 + .015], [x1 - .015, z0 + .015], [x0 + .015, z1 - .015], [x1 - .015, z1 - .015]]) {
+    push(); tr(x, 0, z); cylY(0, 0, .06, .76, .011, 6, M.white); cylY(0, 0, .0, .06, .022, 6, M.grey); pop();
+  }
+  box(0.2, .45, .9, 0.5, .5, 1.15, M.white2);                          // a router, vented
+  box(0.12, .15, .92, 0.56, .21, 1.2, M.dark);                         // the mixer on the bottom shelf
+  push(); tr(0.44, .21, .98); cylY(0, 0, 0, .02, .02, 8, M.red); pop();
+  box(0.58, .74, .87, 0.86, .742, 1.27, M.mat);                        // a brown cloth under the spool
+
+  // the A1 mini: its base along x, display at the left end, Z tower at the right, the arm cantilevered
+  // left over the bed with the toolhead on it, the build plate under the drawings
+  box(0.2, .74, .9, 0.58, .81, 1.22, M.a1, '', { z: M.a1front });
+  box(0.2, .805, .9, 0.245, .815, 1.0, M.dark);                       // the display
+  box(0.24, .81, .95, 0.43, .818, 1.15, M.plate);
+  push(); tr(0.15, .832, .9); rotY(.05); rotZ(-.04); quad([0, 0, 0], [.3, 0, 0], [.3, 0, .26], [0, 0, .26], M.paper, null, [0, 1, 0]); pop();
+  box(0.47, .81, 1.0, 0.525, 1.18, 1.06, M.a1tower);
+  box(0.465, 1.18, .995, 0.53, 1.2, 1.065, M.a1);
+  box(0.25, .985, 1.005, 0.5, 1.015, 1.04, M.a1tower);                 // X arm
+  box(0.34, .92, .97, 0.43, 1.03, 1.055, M.a1);                        // toolhead
+  push(); tr(0.385, .97, .968); rotX(Math.PI / 2); cylY(0, 0, -.002, .0, .024, 10, M.dark); pop();
+  box(0.29, 1.02, .99, 0.37, 1.07, 1.045, M.a1);                       // the camera bracket on top
+  push(); tr(0.29, 1.045, 1.0); rotX(Math.PI / 2); cylY(0, 0, -.004, .0, .014, 8, M.dark); pop();
+  wire(sag([0.38, .92, 1.02], [0.36, .8, .9], .02, 8).concat(sag([0.36, .8, .9], [0.42, .78, .9], -.01, 4)), [.06, .06, .07]);
+  // the spool, face to the room, on its black stand
+  box(0.66, .742, .92, 0.8, .77, 1.0, M.black);
+  push(); tr(0.73, .85, .95); rotX(Math.PI / 2);
+  cylY(0, 0, -.032, .032, .086, 16, M.spool, false);
+  cylY(0, 0, -.033, .033, .03, 10, M.white2, true);
+  cylY(0, 0, -.042, -.032, .1, 18, M.clear, true);
+  cylY(0, 0, .032, .042, .1, 18, M.clear, true);
   pop();
-  box(fx1, .985, .715, 0.63, .995, .725, M.alu);
-  // a folding stand on the printer's top ring, sloped toward the user
-  push(); tr(...LAPTOP.p); rotY(LAPTOP.yaw); rotX(-LAPTOP.tilt);
-  box(-.13, -.012, -.19, -.11, 0, .02, M.dark); box(.11, -.012, -.19, .13, 0, .02, M.dark);
-  pop();
-  for (const x of [0.4, 0.49]) rod([x, 1.17, .98], [x + .02, 1.29, .69], .006, 4, M.dark);
-  rod([0.6, .995, .72], [0.62, 1.27, .7], .006, 4, M.dark);
+  // the monitor arm: a black pole clamped at the back corner, two links to the tray
+  push(); tr(0.83, 0, 1.24); cylY(0, 0, .74, 1.16, .016, 6, M.black); box(-.03, .7, -.03, .03, .76, .03, M.black); pop();
 }
 function buildLaptop() {
   // ThinkPad X230: 305 x 206 mm, deck 20 mm, lid 7 mm. Local origin on the hinge line at the
-  // deck's bottom; the user's side is local -z
+  // deck's bottom; the user's side is local -z. It sits on a perforated tray, tilted toward the room.
   const w = .305, d = .206, hb = .02, hl = .007;
   push(); tr(...LAPTOP.p); rotY(LAPTOP.yaw); rotX(-LAPTOP.tilt); tr(0, 0, -d / 2);
+  box(-.165, -.012, -.11, .165, -.002, .11, M.tray, '', { Y: M.tray });
+  box(-.165, -.012, -.125, .165, .012, -.11, M.black);
+  LAPTOP.trayC = tp([0, -.012, .02]);
   box(-w / 2, 0, -d / 2, w / 2, hb, d / 2, M.lap, 'Y');
   quad([-w / 2, hb, -d / 2], [w / 2, hb, -d / 2], [w / 2, hb, d / 2 - .01], [-w / 2, hb, d / 2 - .01], M.keys, [0, 1, 1, 1, 1, 0, 0, 0], [0, 1, 0]);
   quad([-w / 2, hb, d / 2 - .01], [w / 2, hb, d / 2 - .01], [w / 2, hb, d / 2], [-w / 2, hb, d / 2], M.lap, null, [0, 1, 0]);
@@ -603,10 +626,10 @@ function buildLaptop() {
   quad([-w / 2, 0, -hl], [-w / 2, d, -hl], [w / 2, d, -hl], [w / 2, 0, -hl], M.lap, null, [0, 0, -1]);
   const sx = .2765 / 2, sy0 = .02, sy1 = sy0 + .1555;
   LAPTOP.screen = [tp([-sx, sy1, -hl - .0006]), tp([sx, sy1, -hl - .0006]), tp([sx, sy0, -hl - .0006]), tp([-sx, sy0, -hl - .0006])];
-  push(); tr(.11, .03, .0006); box(-.003, 0, 0, .003, .006, .001, M.ledR); pop();   // the logo's red dot, on the back
+  push(); tr(.11, .03, .0006); box(-.003, 0, 0, .003, .006, .001, M.ledR); pop();
   pop();
   push(); tr(.13, hb, d / 2 - .004); box(-.003, 0, -.002, .003, .002, .002, M.ledG); pop();
-  // the RTL-SDR in the right-hand USB port, its SMA pointing away from the machine
+  // the RTL-SDR in the right-hand USB port
   push(); tr(w / 2, .008, .045);
   box(0, -.002, -.009, .012, .006, .009, M.silver);
   box(.012, -.006, -.014, .078, .008, .014, M.black);
@@ -615,14 +638,18 @@ function buildLaptop() {
   LAPTOP.sdr = tp([.045, .001, 0]);
   pop();
   pop();
+  // the arm's links from the pole to the tray
+  const top = [0.83, 1.16, 1.24], elbow = [0.74, 1.2, 0.95];
+  rod(top, elbow, .014, 6, M.black); rod(elbow, LAPTOP.trayC, .012, 6, M.black);
+  blob(...elbow, .02, 6, M.black);
 }
 
-/* ---- the antenna ---- */
+/* ---- the antenna: two 23 cm telescopic elements, collapsed, swung straight up and straight down ---- */
 const LAMBDA = 299792458 / 1090e6;   // 0.2750 m
-const ARM = 0.95 * LAMBDA / 4;       // physical arm from the feed, end-corrected; electrically lambda/4
+const ARM = 0.23;                    // each element from the feed
 function buildAntenna() {
   const [fx, fy, fz] = FEED;
-  const cx = 0.88;                                                    // the cabinet side
+  const cx = 0.88;                                                    // the shelf side
   push(); tr(cx, fy, fz); rotZ(Math.PI / 2);
   cylY(0, 0, 0, .012, .034, 10, M.cup, true, .02);
   cylY(0, 0, .012, .03, .012, 6, M.cup);
@@ -634,32 +661,22 @@ function buildAntenna() {
   for (const s of [-1, 1]) blob(fx + .027, fy + s * .012, fz, .004, 5, M.silver);
   box(fx - .009, fy - .02, fz - .008, fx + .01, fy + .02, fz + .008, M.black);    // the dipole base
   const tele = (dir) => {
-    const y0 = fy + dir * .02, y1 = fy + dir * ARM, L = y1 - y0;
-    for (const [a, b, r] of [[0, .55, .0032], [.55, .85, .0026], [.85, 1, .0021]]) rod([fx, y0 + L * a, fz], [fx, y0 + L * b, fz], r, 6, M.chrome);
-    blob(fx, y1, fz, .0035, 6, M.chrome);
+    const y0 = fy + dir * .02, y1 = fy + dir * ARM;
+    box(fx - .006, Math.min(y0, y0 + dir * .016), fz - .006, fx + .006, Math.max(y0, y0 + dir * .016), fz + .006, M.black);   // swivel
+    rod([fx, y0 + dir * .016, fz], [fx, y1 - dir * .006, fz], .0036, 6, M.chrome);
+    rod([fx, y0 + dir * .03, fz], [fx, y0 + dir * .036, fz], .0044, 6, M.chrome);
+    blob(fx, y1 - dir * .004, fz, .0046, 6, M.chrome);
     SLINES.push({ a: [fx, y0, fz], b: [fx, y1, fz], col: hex('#cfd5de'), opt: {} });
   };
   tele(1); tele(-1);
 }
 
-/* ---- wires: hangers on the lid, USB leads, the coax ---- */
-function buildWires() {
-  push(); tr(...LAPTOP.p); rotY(LAPTOP.yaw);
-  const g = [.62, .63, .66];
-  wire([[.04, .24, .02], [.06, .27, -.01], [.03, .25, -.07], [-.03, .12, -.14], [-.13, .02, -.2], [.18, .03, -.22], [.03, .12, -.14]], g);
-  wire([[.09, .25, .03], [.11, .28, .0], [.09, .23, -.08], [.11, .08, -.18], [.05, -.02, -.24], [.29, .0, -.18], [.15, .1, -.12]], g);
-  wire([[-.16, -.02, -.16], [-.27, -.04, -.1], [-.42, -.1, -.04], [-.44, -.25, -.02]], [.55, .56, .58]);
-  pop();
-  wire(sag([0.36, 1.2, .55], [0.2, .8, .45], .05), [.08, .08, .09]);
-  wire(sag([0.36, 1.19, .58], [0.24, .78, .72], .1), [.85, .85, .86]);
-  wire(sag([0.35, 1.2, .52], [0.05, 1.25, .9], -.05), [.75, .76, .78]);
-}
 let COAX = [];
 function buildCoax() {
   const [fx, fy, fz] = FEED;
   const s = LAPTOP.sma;
-  const P = [[fx + .006, fy - .015, fz + .006], [fx + .02, fy - .06, fz + .03], [fx + .03, fy - .2, fz + .04],
-    [fx + .02, fy - .36, fz - .02], [s[0] + .07, s[1] + .05, s[2] + .1], [s[0] + .05, s[1] - .02, s[2] + .02], [s[0] + .015, s[1], s[2]], s];
+  const P = [[fx + .01, fy - .012, fz + .008], [fx + .03, fy - .05, fz + .04], [fx + .04, fy - .2, fz + .05],
+    [fx + .03, fy - .34, fz], [s[0] + .07, s[1] + .05, s[2] + .1], [s[0] + .05, s[1] - .02, s[2] + .02], [s[0] + .015, s[1], s[2]], s];
   COAX = [];
   for (let i = 0; i < P.length - 1; i++) {
     const p0 = P[Math.max(0, i - 1)], p1 = P[i], p2 = P[i + 1], p3 = P[Math.min(P.length - 1, i + 2)];
@@ -694,7 +711,7 @@ function lightAt(p, n, ds) {
     if (L.cos) k *= Math.max(0, -dot(L.d, l)) * 1.1 + .05;
     r += L.c[0] * k; g += L.c[1] * k; b += L.c[2] * k;
   }
-  if (LAPTOP.screen) { // the panel's glow on what is near it
+  if (LAPTOP.screen) {
     const sc = lerp3(LAPTOP.screen[0], LAPTOP.screen[2], .5), dv = sub(sc, p), d2 = dot(dv, dv) + .02;
     const ndl = Math.max(0, dot(n, norm(dv)));
     r += .012 * ndl / d2; g += .016 * ndl / d2; b += .024 * ndl / d2;
@@ -726,7 +743,6 @@ function bake() {
    Frame
    ========================================================================== */
 const VA = new Float64Array(8), VB = new Float64Array(8), VC = new Float64Array(8);
-const FOG = [.62, .66, .7];
 function setV(o, p, c, u, v) {
   view(p, o);
   o[3] = c[0]; o[4] = c[1]; o[5] = c[2]; o[6] = u; o[7] = v;
@@ -810,48 +826,64 @@ function present() {
 /* ==========================================================================
    Build, then run
    ========================================================================== */
-buildRoom(); buildLeft(); buildCentre(); buildRight(); buildDesk(); buildLaptop(); buildAntenna(); buildWires(); buildCoax();
+buildRoom(); buildLeft(); buildCentre(); buildRight(); buildCart(); buildLaptop(); buildAntenna(); buildCoax();
 addLights(); bake();
 
 /* ==========================================================================
    Physics. Computed, not drawn to taste.
-   - 1090 MHz; lambda = c / f.
-   - The dipole: centre-fed, thin, its current I0 sin k(h - |z|) with kh = pi/2;
-     the exact near field of that current (Balanis, Antenna Theory, 8.2).
-   - Reception by the induced EMF: Voc = E0 (2/k)[cos(kh cos t) - cos kh]/(sin t sin kh),
-     I = Voc / (Za + Zl), the resonant dipole's 73 ohms into the receiver's 50.
-   - Mode S extended squitters (DF17) with their real CRC-24 and CPR position,
-     acquisition squitters (DF11), propagation in free space at c.
-   Phasors are e^{-i w t}. Field maths runs in a right-handed frame P = (x, z, y)
-   of the world with its origin at the feed point, Z up the antenna.
+   - 1090 MHz; lambda = c / f = 27.50 cm.
+   - The dipole: two 23 cm elements, 2h = 1.67 lambda, centre-fed and thin; its current
+     I0 sin k(h - |z|), and the exact near field of that current (Balanis, Antenna Theory, 8.2).
+   - Its input impedance by the induced EMF method, Zin = Zm / sin^2 kh (Balanis 8.60-8.61),
+     into the receiver's 50 ohms; its pattern [cos(kh cos t) - cos kh] / sin t, with a null at
+     11.3 degrees of elevation and its main lobes at about 40 degrees.
+   - Reception: Voc = E0 (2/k)[cos(kh cos t) - cos kh] / (sin t sin kh), I = Voc / (Zin + Zl).
+   - Each reply's power at the receiver: transponder EIRP, free-space loss, the dipole's
+     directivity toward the aircraft, the mismatch, and whatever lies on the straight path:
+     the balcony glass, a wall, the roof slab over this top floor, the block across, the hill.
+   - Mode S extended squitters (DF17) with their real CRC-24 and CPR position, acquisition
+     squitters (DF11), propagation in free space at c.
+   Phasors are e^{-i w t}. Field maths runs in a right-handed frame P = (x, z, y) of the world
+   with its origin at the feed point, Z up the antenna.
    ========================================================================== */
 const C0 = 299792458, FREQ = 1090e6, KW = TAU / LAMBDA, ETA = 376.730313668;
-const HE = LAMBDA / 4, KH = KW * HE, COSKH = Math.cos(KH), SINKH = Math.sin(KH);
-const ZA = 73.1, ZL = 50, VF = 0.66;            // RG-174 velocity factor
-const AZ_ROOM = 150 * Math.PI / 180;            // the bearing the room faces, toward the balcony
+const HE = ARM, KH = KW * HE, COSKH = Math.cos(KH), SINKH = Math.sin(KH), AROD = .0036;
+const ZL = 50, VF = 0.66;                       // the receiver's input; RG-174's velocity factor
+// sine and cosine integrals by their power series (arguments here stay below 25)
+function Si(x) { let p = x, s = 0; for (let n = 0; n < 80; n++) { s += p / (2 * n + 1); p *= -x * x / ((2 * n + 2) * (2 * n + 3)); } return s; }
+function Ci(x) { let q = 1, s = 0.5772156649015329 + Math.log(x); for (let n = 1; n < 80; n++) { q *= -x * x / ((2 * n - 1) * (2 * n)); s += q / (2 * n); } return s; }
+const ZIN = (function () {
+  const kl = KW * 2 * HE, g = 0.5772156649015329;
+  const Rm = ETA / TAU * (g + Math.log(kl) - Ci(kl) + .5 * Math.sin(kl) * (Si(2 * kl) - 2 * Si(kl)) + .5 * Math.cos(kl) * (g + Math.log(kl / 2) + Ci(2 * kl) - 2 * Ci(kl)));
+  const Xm = ETA / (2 * TAU) * (2 * Si(kl) + Math.cos(kl) * (2 * Si(kl) - Si(2 * kl)) - Math.sin(kl) * (2 * Ci(kl) - Ci(2 * kl) - Ci(2 * KW * AROD * AROD / (2 * HE))));
+  return [Rm / SINKH ** 2, Xm / SINKH ** 2];
+})();
+const MISMATCH = (function () {                 // 1 - |gamma|^2 into 50 ohms
+  const nr = ZIN[0] - ZL, ni = ZIN[1], dr = ZIN[0] + ZL, di = ZIN[1];
+  return 1 - (nr * nr + ni * ni) / (dr * dr + di * di);
+})();
 const toPhys = w => [w[0] - FEED[0], w[2] - FEED[2], w[1] - FEED[1]];
 const toWorld = p => [p[0] + FEED[0], p[2] + FEED[1], p[1] + FEED[2]];
 const vWorld = p => [p[0], p[2], p[1]];
-const enuToPhys = (e, n, u) => [e * Math.cos(AZ_ROOM) - n * Math.sin(AZ_ROOM), e * Math.sin(AZ_ROOM) + n * Math.cos(AZ_ROOM), u];
-const physToEN = p => [p[0] * Math.cos(AZ_ROOM) + p[1] * Math.sin(AZ_ROOM), -p[0] * Math.sin(AZ_ROOM) + p[1] * Math.cos(AZ_ROOM)];
 const crossR = cross;   // the component formula; in the right-handed P frame it is the physical cross product
 
-// pattern of the thin dipole, t from its axis
-function patF(ct) { const st = Math.sqrt(Math.max(1e-9, 1 - ct * ct)); return (Math.cos(KH * ct) - COSKH) / st; }
+function patF(ct) { const st = Math.sqrt(Math.max(1e-12, 1 - ct * ct)); return (Math.cos(KH * ct) - COSKH) / st; }
+const PAT_INT = (function () { let s = 0; const n = 3000; for (let i = 0; i < n; i++) { const t = (i + .5) / n * Math.PI; s += patF(Math.cos(t)) ** 2 * Math.sin(t); } return s * Math.PI / n; })();
+const PAT_MAX = (function () { let m = 0; for (let i = 1; i < 1800; i++) m = Math.max(m, Math.abs(patF(Math.cos(i / 1800 * Math.PI)))); return m; })();
+const directivity = ct => 2 * patF(ct) ** 2 / PAT_INT;
 
 // a plane wave arriving with unit propagation vector k (P frame), its E in the vertical plane
 // through k (the aircraft's antenna is a vertical monopole), amplitude E0 at the feed
 function makeSource(k, E0) {
-  const up = [0, 0, 1];
-  let e = sub(up, mul(k, dot(up, k))); e = norm(e);
+  let e = sub([0, 0, 1], mul(k, k[2])); e = norm(e);
   const h = crossR(k, e);                        // H = (1/eta) k x E
-  const ct = -k[2];                              // cosine of the angle between the antenna and the direction to the source
-  const st = Math.sqrt(Math.max(1e-9, 1 - ct * ct));
+  const ct = -k[2], st = Math.sqrt(Math.max(1e-12, 1 - ct * ct));
   const voc = E0 * (2 / KW) * (Math.cos(KH * ct) - COSKH) / (st * SINKH);
-  const Iin = voc / (ZA + ZL);
-  return { k, e, h, E0, I0: Iin / SINKH, Iin, VL: Iin * ZL };
+  const dr = ZIN[0] + ZL, di = ZIN[1], dd = dr * dr + di * di;
+  const Iin = [voc * dr / dd, -voc * di / dd];
+  return { k, e, h, E0, Iin, I0: [Iin[0] / SINKH, Iin[1] / SINKH], VL: [Iin[0] * ZL, Iin[1] * ZL] };
 }
-// total field (incident + the dipole's re-radiation) at P; returns 12 numbers: E re/im xyz, H re/im xyz
+// total field (incident + the dipole's re-radiation) at P; 12 numbers: E re/im xyz, H re/im xyz
 const FLD = new Float64Array(12);
 function fieldAt(P, s, env) {
   const ph = KW * dot(s.k, P), c = Math.cos(ph) * env, sn = Math.sin(ph) * env;
@@ -860,35 +892,28 @@ function fieldAt(P, s, env) {
     FLD[j] = E0 * s.e[j] * c; FLD[3 + j] = E0 * s.e[j] * sn;
     FLD[6 + j] = H0 * s.h[j] * c; FLD[9 + j] = H0 * s.h[j] * sn;
   }
-  const z = P[2], rho = Math.max(.004, Math.hypot(P[0], P[1]));
-  const R1 = Math.hypot(rho, z - HE), R2 = Math.hypot(rho, z + HE), r = Math.hypot(rho, z);
-  const I0 = s.I0 * env;
-  // E_z = i (eta I0 / 4pi) [e^{ikR1}/R1 + e^{ikR2}/R2 - 2 cos kh e^{ikr}/r]
+  const z = P[2], rho = Math.max(.005, Math.hypot(P[0], P[1]));
+  const R1 = Math.hypot(rho, z - HE), R2 = Math.hypot(rho, z + HE), r = Math.max(.005, Math.hypot(rho, z));
+  const ar = ETA * s.I0[0] * env / (4 * Math.PI), ai = ETA * s.I0[1] * env / (4 * Math.PI);
+  // E_z = i (eta I0 / 4pi) S,  S = e^{ikR1}/R1 + e^{ikR2}/R2 - 2 cos kh e^{ikr}/r
   const sr = Math.cos(KW * R1) / R1 + Math.cos(KW * R2) / R2 - 2 * COSKH * Math.cos(KW * r) / r;
   const si = Math.sin(KW * R1) / R1 + Math.sin(KW * R2) / R2 - 2 * COSKH * Math.sin(KW * r) / r;
-  const a = ETA * I0 / (4 * Math.PI);
-  const ezr = -a * si, ezi = a * sr;
-  // E_rho = -i (eta I0 / 4pi rho) [(z-h) e^{ikR1}/R1 + (z+h) e^{ikR2}/R2 - 2 z cos kh e^{ikr}/r]
+  const ezr = -(ar * si + ai * sr), ezi = ar * sr - ai * si;
+  // E_rho = -i (eta I0 / 4pi rho) Pz,  Pz = (z-h) e^{ikR1}/R1 + (z+h) e^{ikR2}/R2 - 2 z cos kh e^{ikr}/r
   const pr = (z - HE) * Math.cos(KW * R1) / R1 + (z + HE) * Math.cos(KW * R2) / R2 - 2 * z * COSKH * Math.cos(KW * r) / r;
   const pi_ = (z - HE) * Math.sin(KW * R1) / R1 + (z + HE) * Math.sin(KW * R2) / R2 - 2 * z * COSKH * Math.sin(KW * r) / r;
-  const err = a / rho * pi_, eri = -a / rho * pr;
-  // H_phi = -i (I0 / 4pi rho) [e^{ikR1} + e^{ikR2} - 2 cos kh e^{ikr}]
+  const err = (ar * pi_ + ai * pr) / rho, eri = -(ar * pr - ai * pi_) / rho;
+  // H_phi = -i (I0 / 4pi rho) Qz,  Qz = e^{ikR1} + e^{ikR2} - 2 cos kh e^{ikr}
   const qr = Math.cos(KW * R1) + Math.cos(KW * R2) - 2 * COSKH * Math.cos(KW * r);
   const qi = Math.sin(KW * R1) + Math.sin(KW * R2) - 2 * COSKH * Math.sin(KW * r);
-  const b = I0 / (4 * Math.PI * rho);
-  const hpr = b * qi, hpi = -b * qr;
+  const br = s.I0[0] * env / (4 * Math.PI * rho), bi = s.I0[1] * env / (4 * Math.PI * rho);
+  const hpr = br * qi + bi * qr, hpi = -(br * qr - bi * qi);
   const ux = P[0] / rho, uy = P[1] / rho;        // rho-hat; phi-hat = Z x rho-hat = (-uy, ux, 0)
   FLD[0] += err * ux; FLD[1] += err * uy; FLD[2] += ezr;
   FLD[3] += eri * ux; FLD[4] += eri * uy; FLD[5] += ezi;
   FLD[6] += -hpr * uy; FLD[7] += hpr * ux;
   FLD[9] += -hpi * uy; FLD[10] += hpi * ux;
   return FLD;
-}
-// time-averaged Poynting vector 1/2 Re(E x H*)
-function poynting(F) {
-  const er = [F[0], F[1], F[2]], ei = [F[3], F[4], F[5]], hr = [F[6], F[7], F[8]], hi = [F[9], F[10], F[11]];
-  const a = crossR(er, hr), b = crossR(ei, hi);
-  return [(a[0] + b[0]) / 2, (a[1] + b[1]) / 2, (a[2] + b[2]) / 2];
 }
 
 /* ---------- Mode S ---------- */
@@ -923,13 +948,12 @@ function df17pos(icao, latd, lond, ft, odd) {
 function randomFrame(icao, seed, long) {
   const R = rng(seed);
   if (!long) { const b = [...toBits(11, 5), ...toBits(5, 3), ...toBits(icao, 24)]; return b.concat(crc24(b, 32)); }
-  const tc = R() < .5 ? 19 : 4;
-  const b = [...toBits(17, 5), ...toBits(5, 3), ...toBits(icao, 24), ...toBits(tc, 5)];
+  const b = [...toBits(17, 5), ...toBits(5, 3), ...toBits(icao, 24), ...toBits(R() < .5 ? 19 : 4, 5)];
   while (b.length < 88) b.push(R() < .5 ? 1 : 0);
   return b.concat(crc24(b, 88));
 }
-// envelope of a reply, tau in microseconds from its leading edge: the four preamble pulses at
-// 0, 1, 3.5 and 4.5, then one bit per microsecond from 8, a pulse in the first half for a one
+// a reply's envelope, tau in microseconds from its leading edge: preamble pulses at 0, 1, 3.5
+// and 4.5, then one bit a microsecond from 8, the pulse in the first half for a one
 function envelope(bits, tau) {
   const edge = .05;
   const pulse = (a) => smooth(a - edge, a + edge, tau) * (1 - smooth(a + .5 - edge, a + .5 + edge, tau));
@@ -937,37 +961,20 @@ function envelope(bits, tau) {
   if (tau < 8) return pulse(0) + pulse(1) + pulse(3.5) + pulse(4.5);
   const i = Math.floor(tau - 8);
   if (i >= bits.length) return 0;
-  const s = 8 + i + (bits[i] ? 0 : .5);
-  let v = pulse(s);
-  if (i > 0) { const p = 8 + i - 1 + (bits[i - 1] ? 0 : .5); v += pulse(p); }
+  let v = pulse(8 + i + (bits[i] ? 0 : .5));
+  if (i > 0) v += pulse(8 + i - 1 + (bits[i - 1] ? 0 : .5));
   return Math.min(1, v);
 }
-const msgDur = bits => 8 + bits.length;          // microseconds
-
-/* ---------- traffic ---------- */
-const LAT0 = 30.80, LON0 = 106.08;              // a city-level place for the CPR arithmetic
-const enToLatLon = (e, n) => [LAT0 + n / 111320, LON0 + e / (111320 * Math.cos(LAT0 * Math.PI / 180))];
-const RE = 6371e3;
-const TM = 1 / 6.2;                              // mean squitter interval per aircraft
-const AC = [];
-(function makeTraffic() {
-  const R = rng(1090);
-  for (let i = 0; i < 26; i++) {
-    const d = 15e3 + R() * 170e3, b = R() * TAU, hd = R() * TAU, sp = 120 + R() * 130;
-    AC.push({ icao: 0x780000 + Math.floor(R() * 0x3FFFF), alt: 900 + R() * 11000, p0: [d * Math.sin(b), d * Math.cos(b)], v: [sp * Math.sin(hd), sp * Math.cos(hd)], seed: i * 977 + 13 });
-  }
-})();
-function wrapEN(p) { const L = 400e3; return p.map(v => ((v + L / 2) % L + L) % L - L / 2); }
 
 /* ---------- the clock: real seconds T -> simulated seconds ----------
-   The story runs in real time, slows to four millionths of real time for one message from one
-   aircraft, and comes back. Everything below reads the simulated clock, so a slowed world is still
-   a consistent one: the 1090 MHz carrier itself would turn over 4000 times per real second even
-   then, so it is drawn as a stroboscope or a sampling oscilloscope would show it, its phase
-   aliased to a slow constant drift (F_VIS); every other rate is the true one, slowed. */
+   The story runs in real time, slows to under two millionths of real time for one message, and
+   comes back; each loop starts the same afternoon over again. Everything reads the simulated clock,
+   so the slowed world stays consistent: the carrier itself would still turn over thousands of
+   times a real second, so it is drawn as a stroboscope or a sampling oscilloscope would show it,
+   its phase aliased to a slow drift (F_VIS); every other rate is the true one, slowed. */
 const LOOP = 54, F_VIS = 0.5;
-const RATE_KNOTS = [[0, 0], [16, 0], [17.6, -3.4], [19.6, -3.85], [21.2, -4.15], [22.0, -5.8], [27.2, -5.8], [30, -5.0], [32, -4.0], [33.5, -3.0], [36, 0], [LOOP, 0]];
-const T_ARR = 22.0;                             // when the leading edge of the hero's message reaches the feed
+const RATE_KNOTS = [[0, 0], [15.5, 0], [17.5, -3.6], [19.5, -4.3], [21.2, -4.6], [22.0, -5.8], [27.2, -5.8], [30, -5.0], [32, -4.0], [33.5, -3.0], [36, 0], [LOOP, 0]];
+const T_ARR = 22.0, T_HILL = 20.3;
 function logRate(T) {
   for (let i = 0; i + 1 < RATE_KNOTS.length; i++) {
     const [a, la] = RATE_KNOTS[i], [b, lb] = RATE_KNOTS[i + 1];
@@ -978,95 +985,137 @@ function logRate(T) {
 const SIM_DT = 1 / 400, SIM_N = Math.ceil(LOOP / SIM_DT) + 1, SIMTAB = new Float64Array(SIM_N);
 for (let i = 1; i < SIM_N; i++) { const T = (i - .5) * SIM_DT; SIMTAB[i] = SIMTAB[i - 1] + SIM_DT * 10 ** logRate(T); }
 const SIM_LOOP = SIMTAB[SIM_N - 1];
-function simLocal(T) { const f = T / SIM_DT, i = Math.min(SIM_N - 2, Math.floor(f)); return SIMTAB[i] + (SIMTAB[i + 1] - SIMTAB[i]) * (f - i); }
-const SIM_ARR = simLocal(T_ARR);
+function simLocal(T) { T = clamp(T, 0, LOOP); const f = T / SIM_DT, i = Math.min(SIM_N - 2, Math.floor(f)); return SIMTAB[i] + (SIMTAB[i + 1] - SIMTAB[i]) * (f - i); }
+function realOf(t) {
+  let lo = 0, hi = SIM_N - 1;
+  if (t <= 0) return 0; if (t >= SIM_LOOP) return LOOP;
+  while (hi - lo > 1) { const m = (lo + hi) >> 1; if (SIMTAB[m] < t) lo = m; else hi = m; }
+  return (lo + (t - SIMTAB[lo]) / (SIMTAB[hi] - SIMTAB[lo])) * SIM_DT;
+}
+const SIM_ARR = simLocal(T_ARR), SIM_HILL = simLocal(T_HILL);
 
-/* ---------- the hero: an airliner seen through the balcony door ---------- */
-const HERO = (function () {
-  const glass = toPhys([-0.35, 1.25, ANNEX.z1]);
-  const hdir = norm([glass[0], glass[1], 0]);
-  const el = 7 * Math.PI / 180, D = 75e3, Dh = D * Math.cos(el);
-  const ref = [hdir[0] * Dh, hdir[1] * Dh, D * Math.sin(el)];
-  const vel = mul(norm([hdir[1], -hdir[0], 0]), 236);    // crossing left to right as seen from the room
-  const altM = ref[2] + Dh * Dh / (2 * RE);
-  return { ref, vel, D, Dh, hdir, altM };
+/* ---------- the air: the station's ground under us, the antenna 17 m up; ENU metres ---------- */
+const AZ_ROOM = 150 * Math.PI / 180;            // the bearing the room faces, toward the balcony
+const ANT_H = 17, RE43 = 6371e3 * 4 / 3;        // effective earth radius for radio paths
+const LAT0 = 30.80, LON0 = 106.08;              // a city-level place for the CPR arithmetic
+const enToLatLon = (e, n) => [LAT0 + n / 111320, LON0 + e / (111320 * Math.cos(LAT0 * Math.PI / 180))];
+const enuToPhys = (e, n, u) => [e * Math.cos(AZ_ROOM) - n * Math.sin(AZ_ROOM), e * Math.sin(AZ_ROOM) + n * Math.cos(AZ_ROOM), u];
+const D2R = Math.PI / 180, TM = 1 / 6.2;
+// an aircraft by bearing relative to the room's axis (degrees, right positive), distance, height
+// above our ground; its velocity in ENU metres per second
+function aircraft(o) {
+  const b = AZ_ROOM + o.rel * D2R;
+  return Object.assign({ e0: o.d * Math.sin(b), n0: o.d * Math.cos(b), vz: 0, eirp: 54, long: .85 }, o);
+}
+const AC = [
+  // the airliner that is followed through the slowed message, crossing the balcony door at 25 km
+  aircraft({ id: 'hero', rel: -15.6, d: 25000, alt: 2025, ve: 0, vn: 0, icao: 0x780A5C, seed: 11 }),
+  // an airway far beyond, seen in the door but too faint for this antenna down there
+  aircraft({ rel: -15.2, d: 82000, alt: 10360, icao: 0x7805D1, seed: 12 }),
+  aircraft({ rel: -10.4, d: 91000, alt: 11280, icao: 0x780E42, seed: 13 }),
+  aircraft({ rel: -13.0, d: 74000, alt: 9750, icao: 0x781C07, seed: 14 }),
+  // a departure climbing out from behind the hill
+  aircraft({ id: 'dep', rel: -10.2, d: 14000, alt: 322, vz: 9, icao: 0x7808B3, seed: 15 }),
+  // near and high: heard through the roof slab, in the dipole's upper lobes
+  aircraft({ rel: -72, d: 6000, alt: 5500, icao: 0x780F1E, seed: 16 }),
+  aircraft({ rel: 60, d: 12000, alt: 7600, icao: 0x7812A9, seed: 17 }),
+  aircraft({ rel: 150, d: 9000, alt: 4200, icao: 0x7816C4, seed: 18 }),
+  // close but in the dipole's null at 11.3 degrees: through the far wall, never decoded
+  aircraft({ rel: 16, d: 21000, alt: 4740, icao: 0x7819F0, seed: 19 }),
+];
+(function () {
+  // headings and speeds: the hero and the airway cross left to right, the departure climbs away
+  const R = rng(1090);
+  for (const a of AC) {
+    const b = AZ_ROOM + a.rel * D2R;
+    let hd, sp;
+    if (a.id === 'dep') { hd = b; sp = 85; }
+    else if (a.d > 50000 || a.id === 'hero') { hd = b + Math.PI / 2; sp = a.id === 'hero' ? 125 : 235; }
+    else { hd = R() * TAU; sp = 120 + R() * 110; }
+    a.ve = sp * Math.sin(hd); a.vn = sp * Math.cos(hd);
+  }
+  for (let i = 0; i < 14; i++) {
+    const d = 40e3 + R() * 160e3, rel = R() * 360 - 180, hd = R() * TAU, sp = 150 + R() * 100;
+    AC.push(Object.assign(aircraft({ rel, d, alt: 2000 + R() * 9500, icao: 0x780000 + Math.floor(R() * 0x3FFFF), seed: 100 + i }), { ve: sp * Math.sin(hd), vn: sp * Math.cos(hd) }));
+  }
 })();
-// hero j of the airway: at FL300, 320 or 340 in turn; it crosses the line of sight through the
-// balcony door when its loop's message is emitted
-const heroAlt = j => [30000, 32000, 34000][((j % 3) + 3) % 3] * .3048;
-function heroRef(j) { const a = heroAlt(j); return [HERO.hdir[0] * HERO.Dh, HERO.hdir[1] * HERO.Dh, a - HERO.Dh * HERO.Dh / (2 * RE)]; }
-const heroLoop = t => Math.round((t - SIM_ARR) / SIM_LOOP);
-function heroEmit(j) { return j * SIM_LOOP + SIM_ARR - len(heroRef(j)) / C0; }
-function heroPos(j, t) { return add(heroRef(j), mul(HERO.vel, t - heroEmit(j))); }
-function heroIcao(j) { return 0x7800A0 + ((j * 2654435761) >>> 0) % 0x3FF00; }
-function heroBits(j) {
-  const p = heroPos(j, heroEmit(j)), en = physToEN(p), [la, lo] = enToLatLon(en[0], en[1]);
-  return df17pos(heroIcao(j), la, lo, heroAlt(j) / .3048, j & 1);
+const HERO = AC[0], DEP = AC[4];
+function acState(a, t) {
+  const e = a.e0 + a.ve * t, n = a.n0 + a.vn * t, alt = a.alt + a.vz * t, d = Math.hypot(e, n);
+  const p = enuToPhys(e, n, alt - ANT_H - d * d / (2 * RE43));
+  return { a, p, w: toWorld(p), en: [e, n], alt, R: len(p), trk: Math.atan2(a.ve, a.vn) };
 }
 
-// all aircraft, as positions in the P frame (metres from the feed) at sim time t
-function aircraftAt(t) {
-  const out = [];
-  for (const a of AC) {
-    const en = wrapEN([a.p0[0] + a.v[0] * t, a.p0[1] + a.v[1] * t]);
-    const d = Math.hypot(en[0], en[1]);
-    const p = enuToPhys(en[0], en[1], a.alt - d * d / (2 * RE));
-    out.push({ p, icao: a.icao, alt: a.alt, en, trk: Math.atan2(a.v[0], a.v[1]), seed: a.seed, hero: -1 });
+/* ---------- the straight path from the antenna toward a direction: what it passes through ---------- */
+const ATT = { glass: 2, wall: 12, side: 15, roof: 18, bldg: 35, hill: 30 };   // dB
+function pathOf(w) {   // w: world unit vector from the feed
+  const F = FEED, out = { kind: 'glass', db: ATT.glass, entry: null, hit: null };
+  const tt = (lo, hi, i) => w[i] > 0 ? (hi - F[i]) / w[i] : w[i] < 0 ? (lo - F[i]) / w[i] : Infinity;
+  const tx = tt(ROOM.x0, ROOM.x1, 0), ty = tt(0, ROOM.h, 1), tz = tt(ROOM.z0, ROOM.z1, 2), t = Math.min(tx, ty, tz);
+  const at = t => [F[0] + w[0] * t, F[1] + w[1] * t, F[2] + w[2] * t];
+  const p = at(t);
+  if (t === ty) Object.assign(out, { kind: 'roof', db: ATT.roof, entry: p });
+  else if (t === tx || (t === tz && w[2] < 0)) Object.assign(out, { kind: 'side', db: ATT.side, entry: p });
+  else if (p[0] < DOOR.x0 || p[0] > DOOR.x1 || p[1] > DOOR.top) Object.assign(out, { kind: 'wall', db: ATT.wall, entry: p });
+  else {
+    const tg = (ANNEX.z1 - F[2]) / w[2], g = at(tg);
+    if (g[0] < GLASS.x0 || g[0] > GLASS.x1 || g[1] > GLASS.top) Object.assign(out, { kind: 'wall', db: ATT.wall, entry: g });
   }
-  const j0 = Math.round((t - heroEmit(0)) / SIM_LOOP);
-  for (let j = j0 - 8; j <= j0 + 8; j++) {
-    const p = heroPos(j, t), en = physToEN(p);
-    if (Math.hypot(en[0], en[1]) > 190e3) continue;
-    out.push({ p, icao: heroIcao(j), alt: heroAlt(j), en, trk: Math.atan2(...physToEN(HERO.vel)), seed: 5000 + j, hero: j });
+  // beyond the room, ahead of the balcony: the block across, then the hill
+  if (w[2] > 0) {
+    const tb = (OPP.z - 1.25 - F[2]) / w[2], b = at(tb);
+    if (Math.abs(b[0]) < 48 && b[1] < OPP.roof + .25) return Object.assign(out, { kind: 'bldg', db: out.db + ATT.bldg, hit: b });
+  }
+  const az = Math.atan2(w[0], w[2]), el = Math.asin(w[1]);
+  if (el < hillEl(az)) {
+    const d = Math.abs(az) < 1.15 ? 125 : 400;
+    return Object.assign(out, { kind: 'hill', db: out.db + ATT.hill, hit: at(d / Math.max(.2, Math.hypot(w[0], w[2]))) });
   }
   return out;
 }
-// how much of a wave from direction d (P frame, toward the source) gets into the room: through the
-// balcony glass, or through brick and concrete
-function transmission(d) {
-  const w = vWorld(d);
-  if (w[2] <= 0) return .22;
-  const at = z => [FEED[0] + w[0] * (z - FEED[2]) / w[2], FEED[1] + w[1] * (z - FEED[2]) / w[2]];
-  const [x1, y1] = at(ROOM.z1), [x2, y2] = at(ANNEX.z1);
-  return (x1 > DOOR.x0 && x1 < DOOR.x1 && y1 < DOOR.top && x2 > -0.82 && x2 < 0.12 && y2 < 2.9) ? .85 : .22;
+const FSPL = R => 20 * Math.log10(4 * Math.PI * R / LAMBDA);
+const THRESH = -90;                              // dBm a reply needs to be decoded here
+// received power, dBm, for an aircraft state
+function link(s) {
+  const k = mul(s.p, -1 / s.R), path = pathOf(vWorld(norm(s.p)));
+  const ct = -k[2];
+  const dbm = s.a.eirp + (hash2(s.a.seed, 7) - .5) * 2 - FSPL(s.R) + 10 * Math.log10(Math.max(1e-9, directivity(ct)) * MISMATCH) - path.db;
+  return { dbm, path, k };
 }
-const E_REF = 1;
-const HERO_T = transmission(norm(HERO.ref));                                // the hero's field at the feed, the unit of everything drawn
-// replies arriving at the feed at sim time t: [{src, env, bits, tau}]
-const HERO_GUARD = [-200e-6, 400e-6];
-function arrivals(t, all) {
-  const out = [];
-  const k = heroLoop(t);
-  const heroArr = k * SIM_LOOP + SIM_ARR;
-  for (const a of all) {
-    const R = len(a.p), delay = R / C0;
-    const n0 = Math.floor((t - delay) / TM);
-    for (let n = n0 - 1; n <= n0 + 1; n++) {
-      let te = (n + (hash2(a.seed, n) - .5) * .8) * TM;
-      let long = (n % 7) !== 3, bits = null;
-      const ta = te + delay;
-      const dur = (long ? 120 : 64) * 1e-6;
-      if (t < ta || t > ta + dur) continue;
-      if (ta + dur > heroArr + HERO_GUARD[0] && ta < heroArr + HERO_GUARD[1]) continue;    // nothing garbles the hero
-      bits = randomFrame(a.icao, a.seed * 7919 + n, long);
-      out.push({ a, R, tau: (t - ta) * 1e6, bits });
-    }
-    if (a.hero >= 0) {
-      const ta = a.hero * SIM_LOOP + SIM_ARR;
-      const tau = (t - ta) * 1e6;
-      if (tau > -1 && tau < 121) out.push({ a, R, tau, bits: heroBits(a.hero), hero: true });
-    }
+// the first simulated second each aircraft became decodable (the departure clears the hill)
+for (const a of AC) {
+  a.first = Infinity;
+  for (let t = 0; t <= SIM_LOOP; t += .25) if (link(acState(a, t)).dbm > THRESH) { a.first = t; break; }
+}
+
+/* ---------- replies: the scheduled squitters of each aircraft, and the two this film follows ---------- */
+const GUARD = [[SIM_ARR - 300e-6, SIM_ARR + 400e-6], [SIM_HILL - 400e-6, SIM_HILL + 200e-6]];
+function heroBits() {
+  const s = acState(HERO, SIM_ARR - HERO_R / C0), [la, lo] = enToLatLon(s.en[0], s.en[1]);
+  return df17pos(HERO.icao, la, lo, s.alt / .3048, 0);
+}
+const HERO_R = acState(HERO, SIM_ARR).R;
+const HERO_BITS = heroBits();
+const DEP_BITS = (function () { const s = acState(DEP, SIM_HILL), [la, lo] = enToLatLon(s.en[0], s.en[1]); return df17pos(DEP.icao, la, lo, s.alt / .3048, 1); })();
+// the departure's reply is timed to reach the hill (some 125 m out) at T_HILL
+const DEP_TE = SIM_HILL - (acState(DEP, SIM_HILL).R - 125) / C0;
+const HERO_TE = SIM_ARR - HERO_R / C0;
+// regular replies arriving at the feed between sim times t0 and t1 (arrival times)
+function repliesBetween(s, t0, t1) {
+  const out = [], delay = s.R / C0;
+  for (let n = Math.floor((t0 - delay) / TM) - 1; n <= Math.floor((t1 - delay) / TM) + 1; n++) {
+    const te = (n + (hash2(s.a.seed, n) - .5) * .8) * TM, ta = te + delay;
+    if (ta < t0 || ta > t1) continue;
+    const long = hash2(s.a.seed + 3, n) < s.a.long, dur = (long ? 120 : 64) * 1e-6;
+    if (GUARD.some(([g0, g1]) => ta + dur > g0 && ta < g1)) continue;
+    out.push({ ta, n, long });
   }
-  return out.map(m => {
-    const d = norm(m.a.p), E0 = E_REF * (HERO.D / m.R) * transmission(d) / HERO_T;
-    const src = makeSource(mul(d, -1), E0);
-    return Object.assign(m, { src, env: envelope(m.bits, m.tau) });
-  });
+  return out;
 }
 
 /* ==========================================================================
    The HamClock on the X230's panel: 1366 x 768 drawn at a quarter, no glyphs, its
-   ADS-B scope fed from the same simulated air.
+   ADS-B scope fed by what this antenna can actually decode.
    ========================================================================== */
 const SW = 342, SH = 192;
 const SCREEN = { w: SW, h: SH, r: new Float32Array(SW * SH), g: new Float32Array(SW * SH), b: new Float32Array(SW * SH), clamp: true };
@@ -1079,22 +1128,19 @@ function sLine(x0, y0, x1, y1, c, dash) {
 }
 function sCircle(cx, cy, r, c) { const n = Math.ceil(r * 7); for (let i = 0; i < n; i++) { const a = i / n * TAU; sPix(cx + r * Math.cos(a), cy + r * Math.sin(a), c); } }
 const rgb = (r, g, b) => [r / 255, g / 255, b / 255];
-const SCOPE = { cx: 206.5, cy: 30, r: 25.5, rangeM: 50 * 1609.344 };
+const SCOPE = { cx: 206.5, cy: 30, r: 25.5, rangeM: 30 * 1609.344 };
 function drawScreenBase() {
   const R = rng(4);
   sRect(0, 0, SW, SH, [0, 0, 0]);
-  // the map: shaded relief, the mountains in the west, the basin east; rivers, borders, grid
   const mx0 = 66, my0 = 60, mx1 = 330, my1 = 186;
   const hgt = (x, y) => { const w = clamp((150 - x) / 70, 0, 1); return w * (vnoise(x * .09, y * .09) * .7 + vnoise(x * .3, y * .3) * .3) * 1.6 + (1 - w) * vnoise(x * .05, y * .05) * .25; };
   for (let y = my0; y < my1; y++) for (let x = mx0; x < mx1; x++) {
-    const h = hgt(x, y), s = clamp(.6 + (hgt(x - 1, y - 1) - h) * 6, .15, 1.2);
-    const w = clamp((150 - x) / 70, 0, 1);
-    const base = [.42 * w + .22 * (1 - w), .4 * w + .33 * (1 - w), .38 * w + .2 * (1 - w)];
-    sPix(x, y, base.map(v => v * s));
+    const h = hgt(x, y), s = clamp(.6 + (hgt(x - 1, y - 1) - h) * 6, .15, 1.2), w = clamp((150 - x) / 70, 0, 1);
+    sPix(x, y, [.42 * w + .22 * (1 - w), .4 * w + .33 * (1 - w), .38 * w + .2 * (1 - w)].map(v => v * s));
   }
-  for (let k = 0; k < 7; k++) {   // rivers
+  for (let k = 0; k < 7; k++) {
     let x = mx0 + R() * 120, y = my0, a = 1.0 + R() * .6;
-    while (y < my1 && x < mx1) { const nx = x + Math.cos(a) * 1.5, ny = y + Math.sin(a) * 1.5; sLine(x, y, nx, ny, rgb(40, 110, 230)); x = nx; y = ny; a += (R() - .5) * .5; a = clamp(a, .3, 2.2); }
+    while (y < my1 && x < mx1) { const nx = x + Math.cos(a) * 1.5, ny = y + Math.sin(a) * 1.5; sLine(x, y, nx, ny, rgb(40, 110, 230)); x = nx; y = ny; a = clamp(a + (R() - .5) * .5, .3, 2.2); }
   }
   for (let k = 0; k < 4; k++) { let x = mx0 + R() * 260, y = my0 + R() * 120; for (let s = 0; s < 40; s++) { const nx = x + (R() - .5) * 8, ny = y + (R() - .3) * 6; sLine(x, y, nx, ny, [.85, .85, .85], true); x = nx; y = ny; } }
   for (let gx = mx0 + 20; gx < mx1; gx += 66) sLine(gx, my0, gx, my1, rgb(60, 70, 120));
@@ -1106,28 +1152,22 @@ function drawScreenBase() {
   sRect(mx0, my1, mx1 - mx0, SH - my1, [0, 0, 0]);
   sRect(mx0 + 3, my1 + 2, 20, 1, [1, 1, 1]);
   for (let k = 0; k < 9; k++) sRect(200 + k * 14, my1 + 2, 8, 2, [rgb(0, 200, 255), [.6, .6, .6], [.8, .2, .1], rgb(250, 200, 0), rgb(0, 220, 120), rgb(0, 180, 255), [1, .5, 0], [1, 1, 0], [.5, .8, 1]][k]);
-  // cluster column
   sRect(10, 59, 56, SH - 59, [0, 0, 0]);
   sRect(24, 62, 22, 6, rgb(40, 220, 60));
   const cols = [rgb(200, 180, 40), rgb(80, 200, 60), rgb(250, 240, 40), rgb(80, 230, 160), rgb(30, 120, 255)];
   for (let k = 0; k < 16; k++) { const y = 74 + k * 6.7; sRect(11, y, 22, 5, cols[(k * 7 + 3) % 5]); sRect(35, y + 1, 12 + (k % 3) * 2, 3, [.85, .85, .85]); sRect(58, y + 1, 5, 3, [.85, .85, .85]); }
   sRect(11, 178, 20, 2, rgb(240, 120, 30)); sRect(13, 183, 3, 4, rgb(250, 230, 0)); sRect(40, 183, 3, 4, rgb(40, 230, 60));
-  // pane frames
   for (const [x, w] of [[104, 64], [172, 68], [240, 64], [306, 36]]) { sLine(x, 0, x, 58, [.35, .35, .35]); sLine(x + w - 1, 0, x + w - 1, 58, [.35, .35, .35]); }
   sLine(0, 59, SW, 59, [.35, .35, .35]);
-  // call box: the red-and-black slant with its line of script
   for (let y = 0; y < 20; y++) for (let x = 0; x < 102; x++) sPix(x, y, x + y * 1.8 < 70 ? rgb(215, 30, 40) : [0, 0, 0]);
   for (let k = 0; k < 40; k++) sRect(30 + R() * 66, 5 + R() * 10, 1 + R() * 2, 1, [1, 1, 1]);
-  // X-ray: flux history, red long band, blue short
   let py = 40;
   for (let x = 110; x < 166; x++) { const y = 33 + Math.sin(x * .2) * .5 + (x === 150 ? 6 : 0); sLine(x - 1, py, x, y, rgb(220, 40, 40)); py = y; }
   py = 50; for (let x = 110; x < 166; x++) { const y = 48 + (R() - .5) * 5; sLine(x - 1, py, x, y, rgb(60, 60, 255)); py = y; }
   sRect(108, 3, 2, 50, rgb(200, 40, 40));
-  // weather: the big temperature and its lines, as their colour and mass
   sRect(250, 5, 44, 15, rgb(255, 110, 20));
   for (let k = 0; k < 4; k++) sRect(244 + (k % 2) * 3, 24 + k * 8, 52 - (k % 2) * 8, 6, rgb(255, 120, 30));
   sRect(318, 2, 6, 9, rgb(80, 200, 220)); sRect(314, 15, 16, 10, rgb(80, 220, 230)); sRect(312, 30, 20, 10, rgb(255, 140, 40)); sRect(312, 45, 20, 9, rgb(230, 40, 230));
-  // the scope's base: dim rivers and roads, rings, ticks
   const { cx, cy, r } = SCOPE;
   for (let k = 0; k < 5; k++) { let a = R() * TAU, rr = R() * r * .9; let x = cx + rr * Math.cos(a), y = cy + rr * Math.sin(a); for (let s = 0; s < 20; s++) { const nx = x + (R() - .5) * 4, ny = y + (R() - .5) * 4; if (Math.hypot(nx - cx, ny - cy) < r) sLine(x, y, nx, ny, k < 3 ? rgb(30, 70, 160) : rgb(120, 85, 25)); x = nx; y = ny; } }
   sCircle(cx, cy, r / 3, rgb(41, 40, 98)); sCircle(cx, cy, 2 * r / 3, rgb(41, 40, 98)); sCircle(cx, cy, r, [.5, .5, .5]);
@@ -1141,331 +1181,324 @@ function altColor(m) {
   return ft < 2000 ? rgb(255, 64, 64) : ft < 10000 ? rgb(246, 129, 49) : ft < 20000 ? rgb(255, 255, 0) : ft < 30000 ? rgb(0, 255, 0) : rgb(0, 255, 255);
 }
 let scopeStamp = -1;
-// the scope is redrawn every two simulated seconds from what has been decoded; the hero of the
-// current loop only after its message has come in
-function drawScreenDyn(t, Tloc) {
-  const stamp = Math.floor(t / 2);
-  const clockSec = Math.floor(t);
+// redrawn every two simulated seconds from what has been decoded; nothing it cannot hear is drawn
+function drawScreenDyn(t) {
+  const stamp = Math.floor(t / 2), clockSec = Math.floor(t);
   if (stamp === scopeStamp && SCREEN.sec === clockSec) return;
   SCREEN.r.set(SBASE.r); SCREEN.g.set(SBASE.g); SCREEN.b.set(SBASE.b);
-  // the clock: big digits as blocks that change with the seconds
   const R = rng(clockSec);
   for (let d = 0; d < 4; d++) for (let k = 0; k < 6; k++) if (hash2(clockSec >> (d === 3 ? 0 : 6), d * 7 + k) > .3) sRect(14 + d * 15 + (d > 1 ? 6 : 0) + (k % 2) * 6, 25 + Math.floor(k / 2) * 6, 6, 6, [.95, .95, .95]);
   sRect(44, 31, 2, 2, [1, 1, 1]); sRect(44, 39, 2, 2, [1, 1, 1]);
   sRect(76, 24, 10, 8, [.9, .9, .9].map(v => v * (.7 + .3 * R())));
   sRect(12, 47, 76, 7, [.85, .85, .85]);
   scopeStamp = stamp; SCREEN.sec = clockSec;
-  const tt = stamp * 2;
-  const k = heroLoop(tt);
-  const decodedHero = tt > k * SIM_LOOP + SIM_ARR + 125e-6;
-  const { cx, cy, r, rangeM } = SCOPE;
-  for (const a of aircraftAt(tt)) {
-    if (a.hero >= 0 && (a.hero > k || (a.hero === k && !decodedHero))) continue;
-    const d = Math.hypot(a.en[0], a.en[1]);
+  const tt = stamp * 2, { cx, cy, r, rangeM } = SCOPE;
+  for (const a of AC) {
+    if (a.first > tt) continue;
+    const s = acState(a, tt);
+    if (link(s).dbm < THRESH) continue;
+    const d = Math.hypot(s.en[0], s.en[1]);
     if (d > rangeM) continue;
-    const col = altColor(a.alt), dim = col.map(v => v * .45);
-    const x = cx + a.en[0] / rangeM * r, y = cy - a.en[1] / rangeM * r;
-    // the trail: where it was over the past minute
-    const tx = cx + (a.en[0] - Math.sin(a.trk) * 236 * 60) / rangeM * r, ty = cy - (a.en[1] - Math.cos(a.trk) * 236 * 60) / rangeM * r;
-    sLine(tx, ty, x, y, dim);
-    const s = Math.sin(a.trk), c = Math.cos(a.trk);
-    sPix(x, y, col); sPix(x + s, y - c, col); sPix(x - c * .9 - s * .5, y - s * .9 + c * .5, col); sPix(x + c * .9 - s * .5, y + s * .9 + c * .5, col);
+    const col = altColor(s.alt), dim = col.map(v => v * .45);
+    const x = cx + s.en[0] / rangeM * r, y = cy - s.en[1] / rangeM * r;
+    const back = Math.min(60, tt - a.first + 1);
+    sLine(cx + (s.en[0] - a.ve * back) / rangeM * r, cy - (s.en[1] - a.vn * back) / rangeM * r, x, y, dim);
+    const sn = Math.sin(s.trk), c = Math.cos(s.trk);
+    sPix(x, y, col); sPix(x + sn, y - c, col); sPix(x - c * .9 - sn * .5, y - sn * .9 + c * .5, col); sPix(x + c * .9 - sn * .5, y + sn * .9 + c * .5, col);
   }
 }
 
 /* ==========================================================================
-   What is drawn of the field
+   What is drawn of the radio
    ========================================================================== */
-const AMBER = [1.0, .66, .22], TEAL = [.25, .85, .95], CREAM = [1, .93, .78], PLUS = [1, .33, .16], MINUS = [.25, .45, 1];
-// the hedgehog: E at a square of points in the antenna's equatorial plane, two wavelengths a side,
-// aligned with the hero's direction of arrival
-const GRID = (function () {
-  const kh = norm([-HERO.ref[0], -HERO.ref[1], 0]), side = [kh[1], -kh[0], 0];
-  const n = 9, pts = [], fence = [];
-  for (let j = 0; j < n; j++) for (let i = 0; i < n; i++) {
-    const u = (i / (n - 1) - .5) * 2 * LAMBDA, v = (j / (n - 1) - .5) * 2 * LAMBDA;
-    const P = add(mul(kh, u), mul(side, v));
-    if (j === (n >> 1) || Math.hypot(P[0], P[1]) < .012) continue;
-    pts.push({ P, w: toWorld(P), edge: Math.min(1, (LAMBDA * 1.05 - Math.max(Math.abs(u), Math.abs(v))) / (LAMBDA * .4)) });
+const AMBER = [1.0, .66, .22], TEAL = [.25, .85, .95], PLUS = [1, .33, .16], MINUS = [.25, .45, 1];
+const AG = .32;                                  // afterglow of a reply's line, real seconds
+const dots = (t, i) => (i & 3) === 0;
+const dashes = (t, i) => (i % 6) < 3;
+function mark(p, col, kind, nodepth) {           // a small glyph at a point: where a path enters or stops
+  view(p, LV0); if (LV0[2] < NEAR) return;
+  const iz = 1 / LV0[2], x = Math.round(W / 2 + cam.F * LV0[0] * iz), y = Math.round(H / 2 - cam.F * LV0[1] * iz);
+  const pts = kind === 'x' ? [[-2, -2], [-1, -1], [1, 1], [2, 2], [2, -2], [1, -1], [-1, 1], [-2, 2], [0, 0]] : kind === 'p' ? [[0, 0]] : [[0, -2], [1, -1], [2, 0], [1, 1], [0, 2], [-1, 1], [-2, 0], [-1, -1]];
+  for (const [dx, dy] of pts) {
+    const xx = x + dx, yy = y + dy;
+    if (xx < 0 || yy < 0 || xx >= W || yy >= H) continue;
+    const i = yy * W + xx; if (!nodepth && iz * 1.05 < ZB[i]) continue;
+    const o = i * 3; FB[o] = col[0]; FB[o + 1] = col[1]; FB[o + 2] = col[2];
   }
-  // the fence: E and H along the line of arrival through the feed, sixteen samples a wavelength
-  for (let i = -16; i <= 16; i++) {
-    const u = i / 16 * LAMBDA, P = mul(kh, u);
-    if (Math.abs(u) < .008) continue;
-    fence.push({ P, w: toWorld(P), edge: Math.min(1, (LAMBDA * 1.05 - Math.abs(u)) / (LAMBDA * .35)) });
+}
+// screen-space corner brackets around an aircraft that is being decoded
+function bracket(p, col, k) {
+  view(p, LV0); if (LV0[2] < NEAR) return;
+  const iz = 1 / LV0[2], x = Math.round(W / 2 + cam.F * LV0[0] * iz), y = Math.round(H / 2 - cam.F * LV0[1] * iz);
+  if (x < -8 || y < -8 || x >= W + 8 || y >= H + 8) return;
+  const c = col.map(v => v * k), s = 4;
+  for (const [sx, sy] of [[-1, -1], [1, -1], [-1, 1], [1, 1]]) for (const [dx, dy] of [[0, 0], [-sx, 0], [0, -sy]]) {
+    const xx = x + sx * s + dx, yy = y + sy * s + dy;
+    if (xx < 0 || yy < 0 || xx >= W || yy >= H) continue;
+    const o = (yy * W + xx) * 3; FB[o] = c[0]; FB[o + 1] = c[1]; FB[o + 2] = c[2];
   }
-  return { pts, fence, kh, side };
-})();
-// Poynting streamlines of the hero's wave in the same plane, time-averaged: where the energy the
-// receiver takes comes from. Computed once.
-const STREAMS = (function () {
-  const s = makeSource(norm(mul(HERO.ref, -1)), 1);
-  const lines = [];
-  for (let i = -9; i <= 9; i++) {
-    let P = add(mul(GRID.kh, -1.15 * LAMBDA), mul(GRID.side, i * LAMBDA / 26));
-    const pts = [P], step = LAMBDA / 140;
-    let caught = false;
-    for (let n = 0; n < 900; n++) {
-      const dir = (Q) => { const S = poynting(fieldAt(Q, s, 1)); return norm([S[0], S[1], 0]); };
-      const k1 = dir(P), k2 = dir(add(P, mul(k1, step / 2))), k3 = dir(add(P, mul(k2, step / 2))), k4 = dir(add(P, mul(k3, step)));
-      P = add(P, mul(add(add(k1, mul(k2, 2)), add(mul(k3, 2), k4)), step / 6));
-      pts.push(P);
-      if (Math.hypot(P[0], P[1]) < .006) { caught = true; break; }
-      if (dot(P, GRID.kh) > 1.15 * LAMBDA || Math.abs(dot(P, GRID.side)) > 1.2 * LAMBDA) break;
-    }
-    lines.push({ pts: pts.map(toWorld), caught, s: pts.map((_, k) => k * step) });
-  }
-  return lines;
-})();
-
-// one frame of field drawing at sim time t, strobe phase ph
-function drawField(msgs, ph, view) {
-  if (!msgs.length) return;
-  const cph = Math.cos(ph), sph = Math.sin(ph);
-  // the dipole's own current and charge, the sum over what is arriving
-  let Ir = 0, Ii = 0;
-  for (const m of msgs) { Ir += m.src.I0 * m.env; }
-  const peak = Math.abs(makeSource(norm(mul(HERO.ref, -1)), E_REF).I0);
-  // hedgehog
-  const vs = .055 / E_REF;
-  const sample = (g) => {
-    let ex = 0, ey = 0, ez = 0, hx = 0, hy = 0, hz = 0;
-    for (const m of msgs) {
-      if (m.env < 1e-3) continue;
-      const F = fieldAt(g.P, m.src, m.env);
-      ex += F[0] * cph + F[3] * sph; ey += F[1] * cph + F[4] * sph; ez += F[2] * cph + F[5] * sph;
-      hx += F[6] * cph + F[9] * sph; hy += F[7] * cph + F[10] * sph; hz += F[8] * cph + F[11] * sph;
-    }
-    return [vWorld([ex * vs, ey * vs, ez * vs]), vWorld([hx * vs * ETA, hy * vs * ETA, hz * vs * ETA])];
-  };
-  for (const g of GRID.pts) {
-    const fade = g.edge * view.gridA;
-    if (fade <= 0.03) continue;
-    const [e] = sample(g), mag = len(e) / (vs * E_REF);
-    if (mag < .03) continue;
-    line3(g.w, add(g.w, e), AMBER.map(c => c * fade * (.25 + .6 * Math.min(1, mag))), { bias: 1.02 });
-  }
-  const fA = Math.max(view.fenceA, view.gridA * .8);
-  if (fA > .03) for (const g of GRID.fence) {
-    const [e, hv] = sample(g), mag = len(e) / (vs * E_REF);
-    if (mag < .03) continue;
-    const k = g.edge * fA * (.4 + .8 * Math.min(1, mag));
-    line3(g.w, add(g.w, e), AMBER.map(c => c * k * 1.2), { bias: 1.02 });
-    if (view.fenceA > .03) line3(g.w, add(g.w, hv), TEAL.map(c => c * k), { alpha: view.fenceA, bias: 1.02 });
-  }
-  if (fA > .03) { const a = GRID.fence[0].w, b = GRID.fence[GRID.fence.length - 1].w; line3(a, b, AMBER.map(c => c * .3 * fA), { bias: 1.02, dash: tt => (tt * 66 | 0) % 2 === 0 }); }
-  // crest lines of the incident wave across the plane
-  if (view.crestA > 0) for (const m of msgs) {
-    if (!m.hero || m.env < .02) continue;
-    const kh = norm([m.src.k[0], m.src.k[1], 0]), sd = [kh[1], -kh[0], 0], kz = Math.hypot(m.src.k[0], m.src.k[1]);
-    for (let c = -3; c <= 3; c++) {
-      const u = (ph / TAU + c) * LAMBDA / kz;               // phase k u kz - ph = 2 pi c
-      if (Math.abs(u) > LAMBDA * .98) continue;
-      const a = toWorld(add(mul(kh, u), mul(sd, -LAMBDA * .98))), b = toWorld(add(mul(kh, u), mul(sd, LAMBDA * .98)));
-      line3(a, b, AMBER, { alpha: view.crestA * m.env * .55, bias: 1.02, dash: tt => (tt * 40 | 0) % 2 === 0 });
+}
+// every reply of the last moment, as a line from its aircraft to the antenna: solid through the
+// glass, dashed where it came through concrete, cut short where the block or the hill stopped it,
+// dotted when it arrived too weak to decode. Returns the antenna's glow.
+function drawReplies(states, T, t) {
+  const t0 = simLocal(T - AG);
+  let glow = 0;
+  for (const s of states) {
+    if (s.R > 250e3) continue;
+    const L = s.link;
+    if (L.dbm < THRESH - 10) continue;
+    const reps = repliesBetween(s, t0, t);
+    if (!reps.length) continue;
+    const decoded = L.dbm >= THRESH;
+    const col = altColor(s.alt);
+    for (const r of reps) {
+      const age = (T - realOf(r.ta)) / AG;
+      if (age < 0 || age > 1) continue;
+      const fade = (1 - age) * (1 - age);
+      const k = fade * (decoded ? .55 + .75 * clamp((L.dbm - THRESH) / 15, 0, 1) : .38);
+      const c = col.map(v => v * k);
+      if (L.path.hit) {
+        line3(s.w, L.path.hit, c.map(v => v * .5), { dash: dots, nodepth: true });
+        mark(L.path.hit, col.map(v => v * fade * .9), 'x', true);
+        continue;
+      }
+      line3(s.w, FEED, c.map(v => v * .4), { dash: dots, nodepth: true });
+      if (decoded) {
+        const st = { dash: L.path.kind === 'glass' ? null : dashes, bias: 1.002, mode: ADD };
+        line3(s.w, FEED, c, st);
+        line3(add(s.w, [0, 3 * s.R / 1e3 * 1e-3, 0]), add(FEED, [0, .004, 0]), c.map(v => v * .45), st);
+      } else line3(s.w, FEED, c, { dash: dots, bias: 1.002 });
+      if (L.path.entry) mark(L.path.entry, col.map(v => v * fade * .8), 'd');
+      if (decoded) glow += fade * Math.min(1.5, 10 ** ((L.dbm - THRESH) / 20) * .25);
     }
   }
-  // the antenna: current along the arms, charge at the ends
-  const Inow = Ir * cph;                                  // Re(I e^{-i ph}), the sources' I0 are real here
-  const Qnow = Ir * sph;                                  // the charge leads by a quarter cycle
-  const nseg = 14;
+  return glow;
+}
+function drawAircraft(states, T, t) {
+  for (const s of states) {
+    if (s.R > 260e3) continue;
+    const ph = (t + s.a.seed * .37) % 1.2;
+    const strobe = ph < .05 || (ph > .12 && ph < .17), beacon = ((t + s.a.seed * .19) % 1) < .12;
+    const col = strobe ? [1.4, 1.4, 1.4] : beacon ? [1.3, .15, .1] : [.32, .34, .38];
+    point3(s.w, col, { bias: 1 });
+    if (s.R > 120e3) continue;
+    const ac = altColor(s.alt);
+    if (s.a.first <= t && s.link.dbm >= THRESH) bracket(s.w, ac, smooth(0, .5, T - realOf(s.a.first)) * .95);
+    else mark(s.w, ac.map(v => v * (s.link.path.hit ? .55 : .35)), s.link.path.hit ? 'd' : 'p', true);
+  }
+}
+// a radio line drawn through whatever stands in front of it: faint where hidden, full where seen
+function xline(a, b, col, opt = {}) {
+  line3(a, b, col.map(v => v * .38), Object.assign({}, opt, { nodepth: true }));
+  line3(a, b, opt.mode === ADD ? col.map(v => v * .62) : col, opt);
+}
+// the antenna's own response: the standing wave of current on its 46 cm, as it settles under a
+// decoded reply (its average), or as it is at this instant under the slowed hero
+function drawCurrent(Ic, peak, glow, ph) {
+  const nseg = 32;
   for (const dir of [1, -1]) for (let s = 0; s < nseg; s++) {
-    const z0 = s / nseg * HE, z1 = (s + 1) / nseg * HE;
-    const iz = Math.sin(KW * (HE - (z0 + z1) / 2)) * Inow / peak;
-    const k = Math.min(1.4, Math.abs(iz));
-    if (k < .02) continue;
-    const a = [FEED[0], FEED[1] + dir * (.02 + (ARM - .02) * z0 / HE), FEED[2]], b = [FEED[0], FEED[1] + dir * (.02 + (ARM - .02) * z1 / HE), FEED[2]];
-    const col = [1, .85, .55].map(c => c * k * 1.3);
-    line3(a, b, col, { mode: ADD, bias: 1.05 });
-    for (const o of [[.0025, 0, 0], [-.0025, 0, 0], [0, 0, .0025], [0, 0, -.0025]]) line3(add(a, o), add(b, o), col.map(c => c * .45), { mode: ADD, bias: 1.05 });
+    const z0 = s / nseg * HE, z1 = (s + 1) / nseg * HE, zm = (z0 + z1) / 2;
+    const shape = Math.sin(KW * (HE - zm));
+    let k = glow * Math.abs(shape) * .55;
+    if (Ic) k += Math.abs(shape * (Ic[0] * Math.cos(ph) + Ic[1] * Math.sin(ph))) / peak;
+    k = Math.min(1.6, k);
+    if (k < .03) continue;
+    const a = [FEED[0], FEED[1] + dir * Math.max(.02, z0), FEED[2]], b = [FEED[0], FEED[1] + dir * Math.max(.02, z1), FEED[2]];
+    const col = [1, .82, .5].map(c => c * k);
+    xline(a, b, col, { mode: ADD, bias: 1.05 });
+    for (const o of [[.003, 0, 0], [-.003, 0, 0], [0, 0, .003], [0, 0, -.003]]) xline(add(a, o), add(b, o), col.map(c => c * .4), { mode: ADD, bias: 1.05 });
   }
-  // little arrowheads for the current's direction, halfway up each arm
-  if (Math.abs(Inow / peak) > .15) for (const dir of [1, -1]) {
-    const y = FEED[1] + dir * ARM * .5, up = Inow > 0 ? 1 : -1, s = .006 * Math.min(1, Math.abs(Inow / peak));
+  if (!Ic) return;
+  const inow = Ic[0] * Math.cos(ph) + Ic[1] * Math.sin(ph);     // Re(I e^{-i ph})
+  const qnow = Ic[0] * Math.sin(ph) - Ic[1] * Math.cos(ph);     // Re(i I e^{-i ph}): the charge, a quarter cycle on
+  // arrowheads at the current maxima, a quarter and three quarters of a wavelength from each tip
+  for (const dir of [1, -1]) for (const zt of [HE - LAMBDA / 4, HE - 3 * LAMBDA / 4]) {
+    if (zt < .025) continue;
+    const i = Math.sin(KW * (HE - zt)) * inow / peak;
+    if (Math.abs(i) < .12) continue;
+    const y = FEED[1] + dir * zt, up = i > 0 ? 1 : -1, s = .009 * Math.min(1, Math.abs(i));
     const p = [FEED[0], y + up * s, FEED[2]];
-    line3(p, [FEED[0] - s, y - up * s * .4, FEED[2] + s * .3], [1, .9, .6], { mode: ADD, bias: 1.05 });
-    line3(p, [FEED[0] + s, y - up * s * .4, FEED[2] - s * .3], [1, .9, .6], { mode: ADD, bias: 1.05 });
+    xline(p, [FEED[0] - s, y - up * s * .5, FEED[2] + s * .3], [1, .92, .65], { mode: ADD, bias: 1.05 });
+    xline(p, [FEED[0] + s, y - up * s * .5, FEED[2] - s * .3], [1, .92, .65], { mode: ADD, bias: 1.05 });
   }
-  const q = Qnow / peak;
-  for (const dir of [1, -1]) {
-    const tipq = q * dir, col = tipq > 0 ? PLUS : MINUS, k = Math.min(1, Math.abs(tipq));
-    if (k < .05) continue;
-    const c = [FEED[0], FEED[1] + dir * ARM, FEED[2]];
-    for (let r = 0; r < 3; r++) { const rr = .004 + r * .004 * k; for (let a = 0; a < 8; a++) { const a0 = a / 8 * TAU, a1 = (a + 1) / 8 * TAU; line3([c[0] + rr * Math.cos(a0), c[1] + rr * Math.sin(a0), c[2]], [c[0] + rr * Math.cos(a1), c[1] + rr * Math.sin(a1), c[2]], col.map(v => v * k * (1 - r * .3)), { mode: ADD, bias: 1.05 }); } }
+  // charge gathers where the current has its nodes: the tips, and half a wavelength in from them
+  for (const dir of [1, -1]) for (const zt of [HE, HE - LAMBDA / 2]) {
+    const q = dir * Math.cos(KW * (HE - zt)) * qnow / peak, k = Math.min(1, Math.abs(q));
+    if (k < .06) continue;
+    const col = q > 0 ? PLUS : MINUS, c = [FEED[0], FEED[1] + dir * zt, FEED[2]];
+    for (let r = 0; r < 3; r++) { const rr = .005 + r * .005 * k; for (let a = 0; a < 10; a++) { const a0 = a / 10 * TAU, a1 = (a + 1) / 10 * TAU; xline([c[0] + rr * Math.cos(a0), c[1] + rr * Math.sin(a0), c[2]], [c[0] + rr * Math.cos(a1), c[1] + rr * Math.sin(a1), c[2]], col.map(v => v * k * (1 - r * .3)), { mode: ADD, bias: 1.05 }); } }
   }
-  // the coax: a travelling wave from the feed to the receiver, its wavelength shortened by the
-  // velocity factor
-  const VLnow = msgs.reduce((acc, m) => acc + m.src.VL * m.env, 0), VLp = makeSource(norm(mul(HERO.ref, -1)), E_REF).VL;
-  if (Math.abs(VLnow / VLp) > .02) for (let i = 0; i + 1 < COAX.length; i++) {
-    const s = (COAX.s[i] + COAX.s[i + 1]) / 2;
-    const v = (VLnow / VLp) * Math.cos(KW / VF * s - ph);
+}
+// E (amber) and H (teal) along the hero's line of arrival through the feed, total field
+function drawFence(src, env, ph, alpha) {
+  if (alpha <= .02 || env < .01) return;
+  const kh = norm([src.k[0], src.k[1], 0]);
+  const cph = Math.cos(ph), sph = Math.sin(ph), vs = .07;
+  for (let i = -20; i <= 20; i++) {
+    const u = i / 20 * LAMBDA * 1.25;
+    if (Math.abs(u) < .012) continue;
+    const P = mul(kh, u), F = fieldAt(P, src, env), w = toWorld(P);
+    const e = vWorld([0, 1, 2].map(j => (F[j] * cph + F[3 + j] * sph) * vs / src.E0));
+    const h = vWorld([0, 1, 2].map(j => (F[6 + j] * cph + F[9 + j] * sph) * vs * ETA / src.E0));
+    const edge = Math.min(1, (LAMBDA * 1.3 - Math.abs(u)) / (LAMBDA * .4)), mag = len(e) / vs;
+    if (mag < .03) continue;
+    const k = edge * alpha * (.35 + .8 * Math.min(1, mag));
+    xline(w, add(w, e), AMBER.map(c => c * k * 1.15), { bias: 1.02 });
+    xline(w, add(w, h), TEAL.map(c => c * k), { bias: 1.02 });
+  }
+  const a = toWorld(mul(kh, -LAMBDA * 1.25)), b = toWorld(mul(kh, LAMBDA * 1.25));
+  xline(a, b, AMBER.map(c => c * .3 * alpha), { bias: 1.02, dash: dashes });
+}
+// the dipole's directivity as a wireframe of revolution, normalised to its peak
+function drawPattern(alpha, hero) {
+  if (alpha <= .02) return;
+  const Rd = .2, nt = 30, np = 16;
+  const P = (t, p) => { const r = Rd * Math.abs(patF(Math.cos(t))) / PAT_MAX; return toWorld([r * Math.sin(t) * Math.cos(p), r * Math.sin(t) * Math.sin(p), r * Math.cos(t)]); };
+  for (let j = 2; j < nt - 1; j += 2) for (let i = 0; i < np; i++) xline(P(j / nt * Math.PI, i / np * TAU), P(j / nt * Math.PI, (i + 1) / np * TAU), TEAL.map(c => c * .6), { alpha: alpha * .5 });
+  for (let i = 0; i < np; i += 2) for (let j = 0; j < nt; j++) xline(P(j / nt * Math.PI, i / np * TAU), P((j + 1) / nt * Math.PI, i / np * TAU), TEAL.map(c => c * .6), { alpha: alpha * .5 });
+  if (hero) {   // where the hero's direction meets the pattern
+    const d = norm(hero.p), r = Rd * Math.abs(patF(d[2])) / PAT_MAX;
+    xline(FEED, toWorld(mul(d, Rd * 1.15)), AMBER.map(c => c * .5 * alpha), { dash: dots });
+    mark(toWorld(mul(d, Math.max(r, .004))), AMBER.map(c => c * alpha), 'd');
+  }
+}
+// the coax: a wave travelling from the feed to the receiver, its wavelength shortened by VF
+function drawCoax(VL, ref, ph) {
+  const m = Math.hypot(VL[0], VL[1]) / ref;
+  if (m < .02) return;
+  for (let i = 0; i + 1 < COAX.length; i++) {
+    const s = (COAX.s[i] + COAX.s[i + 1]) / 2, a = KW / VF * s - ph;
+    const v = (VL[0] * Math.cos(a) - VL[1] * Math.sin(a)) / ref;     // Re(VL e^{i(k s - ph)})
     if (v <= 0) continue;
-    line3(COAX[i], COAX[i + 1], [1, .7, .3].map(c => c * v * .9), { mode: ADD, bias: 1.05 });
+    xline(COAX[i], COAX[i + 1], [1, .7, .3].map(c => c * v * .9), { mode: ADD, bias: 1.05 });
   }
 }
-function drawStreams(alpha, Tg) {
-  if (alpha <= 0) return;
-  for (const L of STREAMS) {
-    const P = L.pts;
-    for (let i = 0; i + 1 < P.length; i += 2) {
-      const s = L.s[i];
-      const on = ((s - Tg * .045) / .03 % 1 + 1) % 1 < .3;
-      if (!on && !L.caught) continue;
-      const k = on ? (L.caught ? 1.05 : .5) : .3;
-      line3(P[i], P[Math.min(P.length - 1, i + 2)], CREAM.map(c => c * k), { alpha: alpha, bias: 1.02 });
-    }
-  }
-}
-// the reception pattern of the dipole as a wireframe of revolution: |F(t)| / F(90)
-function drawPattern(alpha) {
-  if (alpha <= 0) return;
-  const Rd = .13, nt = 12, np = 16, f90 = patF(0);
-  const P = (t, p) => { const ct = Math.cos(t), st = Math.sin(t), r = Rd * Math.abs(patF(ct)) / f90; return toWorld([r * st * Math.cos(p), r * st * Math.sin(p), r * ct]); };
-  for (let j = 1; j < nt; j++) for (let i = 0; i < np; i++) {
-    const t = j / nt * Math.PI, p0 = i / np * TAU, p1 = (i + 1) / np * TAU;
-    line3(P(t, p0), P(t, p1), TEAL.map(c => c * .6), { alpha: alpha * .45 });
-  }
-  for (let i = 0; i < np; i += 2) for (let j = 0; j < nt; j++) {
-    const p = i / np * TAU, t0 = j / nt * Math.PI, t1 = (j + 1) / nt * Math.PI;
-    line3(P(t0, p), P(t1, p), TEAL.map(c => c * .6), { alpha: alpha * .45 });
-  }
-}
-// the hero's message on its way, as the limbs of its spherical pulse fronts seen from the eye
-function drawShells(t, alpha) {
-  if (alpha <= 0) return;
-  const k = heroLoop(t);
-  const te = heroEmit(k), src = toWorld(heroPos(k, te));
-  const bits = heroBits(k);
-  // the four preamble pulses' fronts, and the back of the last bit: the message is 36 km thick
+// a reply on its way, as the limbs of its spherical pulse fronts seen from the eye
+function drawShells(srcW, te, bits, t, col, alpha) {
+  if (alpha <= .02) return;
   const edges = [0, 1, 3.5, 4.5, 8 + bits.length];
-  const E = cam.e, D = len(sub(E, src)), ax = norm(sub(E, src));
+  const E = cam.e, D = len(sub(E, srcW)), ax = norm(sub(E, srcW));
   const u = norm(cross(ax, [0, 1, 0])), v = cross(ax, u);
   for (let n = 0; n < edges.length; n++) {
     const Rs = C0 * (t - te - edges[n] * 1e-6);
     if (Rs <= 0 || Rs >= D) continue;
-    const q = Rs / D, ctr = add(src, mul(sub(E, src), q * q)), rad = Rs * Math.sqrt(1 - q * q);
+    const q = Rs / D, ctr = add(srcW, mul(sub(E, srcW), q * q)), rad = Rs * Math.sqrt(1 - q * q);
     const a = alpha * (n < 4 ? .95 : .4) * (1 - q * q * .5);
-    const N = 72;
     let prev = null;
-    for (let i = 0; i <= N; i++) {
-      const th = i / N * TAU, p = add(ctr, add(mul(u, rad * Math.cos(th)), mul(v, rad * Math.sin(th))));
-      if (prev) line3(prev, p, AMBER, { alpha: a, nodepth: true });
+    for (let i = 0; i <= 72; i++) {
+      const th = i / 72 * TAU, p = add(ctr, add(mul(u, rad * Math.cos(th)), mul(v, rad * Math.sin(th))));
+      if (prev) line3(prev, p, col, { alpha: a, nodepth: true });
       prev = p;
     }
   }
 }
-function drawAircraft(all, t) {
-  for (const a of all) {
-    const w = toWorld(a.p);
-    // anti-collision beacon (red, ~1 Hz) and wingtip strobes (white double flash), in sim time
-    const ph = (t + a.seed * .37) % 1.2;
-    const strobe = ph < .05 || (ph > .12 && ph < .17);
-    const beacon = ((t + a.seed * .19) % 1) < .12;
-    const col = strobe ? [1.4, 1.4, 1.4] : beacon ? [1.3, .15, .1] : [.3, .32, .36];
-    point3(w, col, { bias: 1 });
+// the antenna's line of sight to the sky: from the feed through the clear part of the doorway and
+// the balcony glass, down to the hill's crown
+const WINDOW = (function () {
+  const az = (x, z) => Math.atan2(x - FEED[0], z - FEED[2]);
+  const a0 = Math.max(az(DOOR.x0, ROOM.z1), az(GLASS.x0, ANNEX.z1)), a1 = Math.min(az(DOOR.x1, ROOM.z1), az(GLASS.x1, ANNEX.z1));
+  const top = a => Math.min(Math.atan2(DOOR.top - FEED[1], (ROOM.z1 - FEED[2]) / Math.cos(a)), Math.atan2(GLASS.top - FEED[1], (ANNEX.z1 - FEED[2]) / Math.cos(a)));
+  const dir = (a, e) => [Math.sin(a) * Math.cos(e), Math.sin(e), Math.cos(a) * Math.cos(e)];
+  const n = 8, rim = [];
+  for (let i = 0; i <= n; i++) { const a = a0 + (a1 - a0) * i / n; rim.push(dir(a, top(a))); }
+  for (let i = n; i >= 0; i--) { const a = a0 + (a1 - a0) * i / n; rim.push(dir(a, hillEl(a))); }
+  return { rim, a0, a1 };
+})();
+function drawWindow(alpha) {
+  if (alpha <= .02) return;
+  const far = 125, col = TEAL.map(c => c * .55);
+  const ends = WINDOW.rim.map(d => add(FEED, mul(d, far / Math.max(.2, Math.hypot(d[0], d[2])))));
+  for (let i = 0; i < ends.length; i++) {
+    line3(ends[i], ends[(i + 1) % ends.length], col.map(v => v * .6), { alpha: alpha * .6, nodepth: true, dash: dots });
+    line3(ends[i], ends[(i + 1) % ends.length], col, { alpha: alpha * .8 });
+  }
+  for (const i of [0, 8, 9, 17]) {
+    line3(FEED, ends[i], col.map(v => v * .5), { alpha: alpha * .5, dash: dots, nodepth: true });
+    line3(FEED, ends[i], col, { alpha: alpha * .7, dash: dashes });
   }
 }
 
 /* ==========================================================================
-   The camera's path
+   The camera: the photograph's own view, easing a little closer while time is slowed
    ========================================================================== */
-const D2R = Math.PI / 180;
-const P0 = { e: [0, 1.35, 0], t: [Math.sin(5 * D2R) * 3, 1.35 - Math.sin(8 * D2R) * 3, Math.cos(5 * D2R) * 3], f: 76 };
-const P1 = { e: [0.06, 1.38, 0.22], t: [0.45, 1.2, 3.2], f: 72 };
-const SA = { e: [0.22, 1.86, 0.25], t: [0.83, 1.34, 3.14], f: 66 };
-const SB = { e: add(FEED, [-0.34, 0.26, -0.20]), t: add(FEED, [0.02, -0.06, 0.02]), f: 56 };
-function lerpShot(a, b, u) { return { e: lerp3(a.e, b.e, u), t: lerp3(a.t, b.t, u), f: a.f + (b.f - a.f) * u }; }
+const shotDir = (yaw, pitch) => [Math.sin(yaw * D2R) * Math.cos(pitch * D2R), -Math.sin(pitch * D2R), Math.cos(yaw * D2R) * Math.cos(pitch * D2R)];
+const P0 = { e: [0, 1.35, 0], d: shotDir(5, 8), f: 76 };
+const PZ = { e: [0.06, 1.38, 0.1], d: shotDir(11, 1), f: 70 };
 const ease = u => { u = clamp(u, 0, 1); return u * u * (3 - 2 * u); };
-function orbit(u) {   // from SA round to SB about the feed
-  const oa = sub(SA.e, FEED), ob = sub(SB.e, FEED);
-  const a0 = Math.atan2(oa[0], oa[2]), a1 = Math.atan2(ob[0], ob[2]);
-  const r0 = Math.hypot(oa[0], oa[2]), r1 = Math.hypot(ob[0], ob[2]);
-  const a = a0 + (a1 - a0) * u, r = r0 + (r1 - r0) * u, y = oa[1] + (ob[1] - oa[1]) * u;
-  return { e: add(FEED, [r * Math.sin(a), y, r * Math.cos(a)]), t: lerp3(SA.t, SB.t, ease(Math.min(1, u * 1.8))), f: SA.f + (SB.f - SA.f) * u };
-}
-let SC = null, SM = null, SC2 = null;
-function shotsAfterBuild() {
-  const s = LAPTOP.screen;
-  const at = (u, v) => lerp3(lerp3(s[0], s[1], u), lerp3(s[3], s[2], u), v);
-  let n = norm(cross(sub(s[1], s[0]), sub(s[3], s[0])));
-  if (dot(n, sub(P0.e, s[0])) < 0) n = mul(n, -1);
-  const scope = at(.6, .16);
-  SC = { e: add(add(scope, mul(n, .13)), [0.01, .015, 0]), t: scope, f: 52 };
-  const mid = at(.5, .5);
-  SM = { e: add(add(mid, mul(n, .42)), [0.03, .14, 0]), t: lerp3(mid, FEED, .35), f: 60 };
-  // the push-in ends on the spot where this loop's airliner will first be drawn
-  const en = physToEN(heroPos(0, SIM_ARR + 1.7));
-  const hpt = at((SCOPE.cx + en[0] / SCOPE.rangeM * SCOPE.r) / SW, (SCOPE.cy - en[1] / SCOPE.rangeM * SCOPE.r) / SH);
-  SC2 = { e: add(add(lerp3(scope, hpt, .6), mul(n, .085)), [0.004, .008, 0]), t: lerp3(scope, hpt, .75), f: 48 };
-}
 function camAt(T) {
-  let s;
-  if (T < 7) s = lerpShot(P0, P1, ease(T / 7) * .3);
-  else if (T < 16.5) s = lerpShot(lerpShot(P0, P1, .3), SA, ease((T - 7) / 9.5));
-  else if (T < 22.6) s = SA;
-  else if (T < 28) s = orbit(ease((T - 22.6) / 5.4));
-  else if (T < 31) s = SB;
-  else if (T < 33.5) s = lerpShot(SB, SM, ease((T - 31) / 2.5));
-  else if (T < 36) s = lerpShot(SM, SC, ease((T - 33.5) / 2.5));
-  else if (T < 42) s = lerpShot(SC, SC2, ease((T - 36) / 6));
-  else s = lerpShot(SC2, P0, ease((T - 42) / (LOOP - 42 - 1.5)));
-  return s;
+  const u = ease((T - 15) / 7) * (1 - ease((T - 33.5) / 7));
+  const drift = [Math.sin(T * TAU / LOOP) * .012, Math.sin(T * TAU / LOOP * 2 + 1) * .006, 0];
+  const e = add(lerp3(P0.e, PZ.e, u), drift), d = norm(lerp3(P0.d, PZ.d, u));
+  return { e, t: add(e, mul(d, 3)), f: P0.f + (PZ.f - P0.f) * u };
 }
-// how much of each overlay to show, by story time
 function overlays(T) {
   const inS = (a, b, c, d) => smooth(a, b, T) * (1 - smooth(c, d, T));
   return {
-    gridA: .5 + .5 * inS(24, 26.5, 31, 33),
-    fenceA: inS(21.5, 22.5, 31, 33),
-    crestA: inS(21.5, 22.5, 31, 33),
-    streamA: inS(27.2, 28.6, 31, 33),
-    patternA: inS(25, 26.5, 28, 29.2),
-    shellA: inS(17.5, 18.2, 22.5, 23.5),
+    window: .45 * smooth(2, 6, T) * (1 - smooth(51, 53.5, T)) + .55 * inS(14, 16.5, 37, 40),
+    shells: inS(17.5, 18.3, 22.6, 23.6),
+    fence: inS(21.5, 22.4, 31.5, 33.5),
+    pattern: inS(24.5, 26.2, 31.5, 33.5),
   };
 }
 
 /* ==========================================================================
    Frame and loop
    ========================================================================== */
-function renderAt(Tall) {
-  const loop = Math.floor(Tall / LOOP), T = Tall - loop * LOOP;
-  const t = loop * SIM_LOOP + simLocal(T);
-  const ph = TAU * F_VIS * Tall;
-  const s = camAt(T);
-  setCam(s.e, s.t, s.f);
-  ZB.fill(0);
-  drawSky();
-  drawStatic();
-  drawScreenDyn(t, T);
-  drawScreen();
-  const all = aircraftAt(t);
-  drawAircraft(all, t);
-  dimWorld(smooth(-1.5, -5, logRate(T)));
-  const ov = overlays(T);
-  const msgs = arrivals(t, all);
-  drawShells(t, ov.shellA);
-  drawField(msgs, ph, ov);
-  const heroOn = msgs.find(m => m.hero);
-  if (heroOn) {
-    // the energy flow follows the average envelope, not each pulse
-    let avg = 0; for (let i = 0; i < 16; i++) avg += envelope(heroOn.bits, heroOn.tau - i * .25); avg /= 16;
-    drawStreams(ov.streamA * Math.min(1, avg * 2.2), Tall);
-  }
-  drawPattern(ov.patternA);
-  return { T, t, msgs };
-}
-// time slowed: the room darkens and greys a little
 function dimWorld(k) {
   if (k <= 0) return;
-  const m = 1 - .42 * k, sat = 1 - .45 * k;
+  const m = 1 - .42 * k, sat = 1 - .5 * k;
   for (let i = 0; i < W * H * 3; i += 3) {
     const l = (FB[i] * .3 + FB[i + 1] * .55 + FB[i + 2] * .15);
     FB[i] = (l + (FB[i] - l) * sat) * m; FB[i + 1] = (l + (FB[i + 1] - l) * sat) * m; FB[i + 2] = (l + (FB[i + 2] - l) * sat) * m * 1.04;
   }
 }
+function fade(k) { if (k >= 1) return; for (let i = 0; i < W * H * 3; i++) FB[i] *= k; }
+function renderAt(Tall) {
+  const T = ((Tall % LOOP) + LOOP) % LOOP, t = simLocal(T), ph = TAU * F_VIS * Tall;
+  const s = camAt(T);
+  setCam(s.e, s.t, s.f);
+  ZB.fill(0);
+  drawSky();
+  drawStatic();
+  drawScreenDyn(t);
+  drawScreen();
+  const states = AC.map(a => { const st = acState(a, t); st.link = link(st); return st; });
+  drawAircraft(states, T, t);
+  dimWorld(smooth(-1.5, -5, logRate(T)) * 1.25);
+  const ov = overlays(T);
+  drawWindow(ov.window);
+  const glow = drawReplies(states, T, t);
+  // the two replies this film follows
+  const hs = states[0], ds = states[4];
+  drawShells(acState(HERO, HERO_TE).w, HERO_TE, HERO_BITS, t, altColor(hs.alt), ov.shells);
+  drawShells(acState(DEP, DEP_TE).w, DEP_TE, DEP_BITS, t, altColor(ds.alt).map(c => c * .8), ov.shells);
+  const dTau = (t - (DEP_TE + (acState(DEP, DEP_TE).R - 125) / C0)) * 1e6;
+  if (dTau > 0 && dTau < 121) {
+    const k = envelope(DEP_BITS, dTau) * .6 + .4;
+    line3(ds.w, ds.link.path.hit || FEED, altColor(ds.alt).map(c => c * .5), { dash: dots, nodepth: true });
+    mark(ds.link.path.hit || FEED, altColor(ds.alt).map(c => c * k * 1.2), 'x', true);
+  }
+  const hTau = (t - SIM_ARR) * 1e6;
+  let Ic = null, peak = 1, src = null, env = 0;
+  if (hTau > -.2 && hTau < 121) {
+    src = makeSource(mul(hs.p, -1 / hs.R), 1);
+    env = envelope(HERO_BITS, hTau);
+    Ic = [src.I0[0] * env, src.I0[1] * env];
+    peak = Math.hypot(src.I0[0], src.I0[1]);
+    let avg = 0; for (let i = 0; i < 12; i++) avg += envelope(HERO_BITS, hTau - i * .5); avg /= 12;
+    line3(hs.w, FEED, altColor(hs.alt).map(c => c * (.15 + .35 * avg)), { dash: dots, nodepth: true });
+    line3(hs.w, FEED, altColor(hs.alt).map(c => c * (.25 + .75 * avg)), { bias: 1.002 });
+    drawFence(src, env, ph, ov.fence);
+    drawCoax([src.VL[0] * env, src.VL[1] * env], Math.hypot(src.VL[0], src.VL[1]), ph);
+  }
+  drawCurrent(Ic, peak, glow, ph);
+  drawPattern(ov.pattern, hs);
+  fade(Math.min(smooth(0, .7, T), 1 - smooth(LOOP - .8, LOOP, T)));
+  return { T, t };
+}
 function drawScreen() {
   const s = LAPTOP.screen;
-  // a TN panel: bright square on, washed and dim off axis
   const n = norm(cross(sub(s[1], s[0]), sub(s[3], s[0])));
   const vdir = norm(sub(cam.e, lerp3(s[0], s[2], .5)));
   const k = .45 + .65 * Math.abs(dot(n, vdir));
@@ -1482,17 +1515,15 @@ addEventListener('resize', resize); resize();
 
 (function init() {
   drawScreenBase();
-  shotsAfterBuild();
   const hist = new Uint32Array(32768);
-  for (const T of [0, 12, 19.5, 22.05, 24.4, 27.3, 29.6, 31.2, 35, 41, 48]) { renderAt(T); histFrame(hist); }
+  for (const T of [2, 10, 19.5, 20.4, 22.05, 24.4, 27.5, 30, 33, 40, 44, 50]) { renderAt(T); histFrame(hist); }
   buildPalette(hist);
   const fixed = Q.get('t');
   const t0 = performance.now();
   function loop() {
     const T = fixed != null ? +fixed : (performance.now() - t0) / 1000;
-    const info = renderAt(T); present();
-    if (fixed == null) requestAnimationFrame(loop);
-    else { window.INFO = { T: info.T, t: info.t, msgs: info.msgs.map(m => ({ hero: !!m.hero, tau: m.tau, env: m.env, R: m.R })) }; document.title = 'ready'; }
+    renderAt(T); present();
+    if (fixed == null) requestAnimationFrame(loop); else document.title = 'ready';
   }
   loop();
 })();
