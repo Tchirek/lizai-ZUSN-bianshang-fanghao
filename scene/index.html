@@ -10,17 +10,17 @@ canvas{position:absolute;left:50%;top:50%;transform:translate(-50%,-50%);image-r
 </style>
 </head>
 <body>
-<canvas id="c" width="320" height="240"></canvas>
+<canvas id="c" width="222" height="167"></canvas>
 <script>
 'use strict';
 /* ==========================================================================
-   A software rasteriser in the manner of 1995: 320x240, z-buffer, flat and
+   A software rasteriser in the manner of 1995: 222x167, z-buffer, flat and
    Gouraud polygons, perspective-correct point-sampled textures, screen-door
    transparency, and one 256-colour palette with a 4x4 ordered dither.
    ========================================================================== */
 const Q = new URLSearchParams(location.search);
 const SCALE = Math.max(1, Math.min(3, +Q.get('res') || 1));
-const W = 320 * SCALE, H = 240 * SCALE;
+const W = 222 * SCALE, H = 167 * SCALE;          // 222 wide, the nearest whole height to 4:3
 const cv = document.getElementById('c');
 cv.width = W; cv.height = H;
 const g2 = cv.getContext('2d');
@@ -1015,7 +1015,8 @@ function envelope(bits, tau) {
    times a real second, so it is drawn as a stroboscope or a sampling oscilloscope would show it,
    its phase aliased to a slow drift (F_VIS); every other rate is the true one, slowed. */
 const LOOP = 54, F_VIS = 0.5;
-const RATE_KNOTS = [[0, 0], [15.5, 0], [17.5, -3.6], [19.5, -4.3], [21.2, -4.6], [22.0, -5.8], [27.2, -5.8], [30, -5.0], [32, -4.0], [33.5, -3.0], [36, 0], [LOOP, 0]];
+const XF = 3, STORY = LOOP + XF;                // the last XF seconds of the story are crossfaded into its start
+const RATE_KNOTS = [[0, 0], [15.5, 0], [17.5, -3.6], [19.5, -4.3], [21.2, -4.6], [22.0, -5.8], [27.2, -5.8], [30, -5.0], [32, -4.0], [33.5, -3.0], [36, 0], [STORY, 0]];
 const T_ARR = 22.0, T_HILL = 20.3;
 function logRate(T) {
   for (let i = 0; i + 1 < RATE_KNOTS.length; i++) {
@@ -1024,13 +1025,13 @@ function logRate(T) {
   }
   return 0;
 }
-const SIM_DT = 1 / 400, SIM_N = Math.ceil(LOOP / SIM_DT) + 1, SIMTAB = new Float64Array(SIM_N);
+const SIM_DT = 1 / 400, SIM_N = Math.ceil(STORY / SIM_DT) + 1, SIMTAB = new Float64Array(SIM_N);
 for (let i = 1; i < SIM_N; i++) { const T = (i - .5) * SIM_DT; SIMTAB[i] = SIMTAB[i - 1] + SIM_DT * 10 ** logRate(T); }
-const SIM_LOOP = SIMTAB[SIM_N - 1];
-function simLocal(T) { T = clamp(T, 0, LOOP); const f = T / SIM_DT, i = Math.min(SIM_N - 2, Math.floor(f)); return SIMTAB[i] + (SIMTAB[i + 1] - SIMTAB[i]) * (f - i); }
+const SIM_STORY = SIMTAB[SIM_N - 1];
+function simLocal(T) { T = clamp(T, 0, STORY); const f = T / SIM_DT, i = Math.min(SIM_N - 2, Math.floor(f)); return SIMTAB[i] + (SIMTAB[i + 1] - SIMTAB[i]) * (f - i); }
 function realOf(t) {
   let lo = 0, hi = SIM_N - 1;
-  if (t <= 0) return 0; if (t >= SIM_LOOP) return LOOP;
+  if (t <= 0) return 0; if (t >= SIM_STORY) return STORY;
   while (hi - lo > 1) { const m = (lo + hi) >> 1; if (SIMTAB[m] < t) lo = m; else hi = m; }
   return (lo + (t - SIMTAB[lo]) / (SIMTAB[hi] - SIMTAB[lo])) * SIM_DT;
 }
@@ -1127,7 +1128,7 @@ function link(s) {
 // the first simulated second each aircraft became decodable (the departure clears the hill)
 for (const a of AC) {
   a.first = Infinity;
-  for (let t = 0; t <= SIM_LOOP; t += .25) if (link(acState(a, t)).dbm > THRESH) { a.first = t; break; }
+  for (let t = 0; t <= SIM_STORY; t += .25) if (link(acState(a, t)).dbm > THRESH) { a.first = t; break; }
 }
 
 /* ---------- replies: the scheduled squitters of each aircraft, and the two this film follows ---------- */
@@ -1253,7 +1254,7 @@ function drawScreenDyn(t) {
 /* ==========================================================================
    What is drawn of the radio
    ========================================================================== */
-const AMBER = [1.0, .66, .22], TEAL = [.25, .85, .95], PLUS = [1, .33, .16], MINUS = [.25, .45, 1];
+const AMBER = [1.0, .66, .22], TEAL = [.25, .85, .95];
 const AG = .32;                                  // afterglow of a reply's line, real seconds
 const RAY_L = 14;                                // a reply's line is drawn this far out from the antenna, fading
 // a line from a along dir, brightest at a and fading to nothing at len: a direction, not a place
@@ -1343,7 +1344,6 @@ function drawCurrent(Ic, peak, ph) {
     for (const o of [[.003, 0, 0], [-.003, 0, 0], [0, 0, .003], [0, 0, -.003]]) xline(add(a, o), add(b, o), col.map(c => c * .4), { mode: ADD, bias: 1.05 });
   }
   const inow = Ic[0] * Math.cos(ph) + Ic[1] * Math.sin(ph);     // Re(I e^{-i ph})
-  const qnow = Ic[0] * Math.sin(ph) - Ic[1] * Math.cos(ph);     // Re(i I e^{-i ph}): the charge, a quarter cycle on
   // arrowheads at the current maxima, a quarter and three quarters of a wavelength from each tip
   for (const dir of [1, -1]) for (const zt of [HE - LAMBDA / 4, HE - 3 * LAMBDA / 4]) {
     if (zt < .025) continue;
@@ -1353,13 +1353,6 @@ function drawCurrent(Ic, peak, ph) {
     const p = [FEED[0], y + up * s, FEED[2]];
     xline(p, [FEED[0] - s, y - up * s * .5, FEED[2] + s * .3], [1, .92, .65], { mode: ADD, bias: 1.05 });
     xline(p, [FEED[0] + s, y - up * s * .5, FEED[2] - s * .3], [1, .92, .65], { mode: ADD, bias: 1.05 });
-  }
-  // charge gathers where the current has its nodes: the tips, and half a wavelength in from them
-  for (const dir of [1, -1]) for (const zt of [HE, HE - LAMBDA / 2]) {
-    const q = dir * Math.cos(KW * (HE - zt)) * qnow / peak, k = Math.min(1, Math.abs(q));
-    if (k < .06) continue;
-    const col = q > 0 ? PLUS : MINUS, c = [FEED[0], FEED[1] + dir * zt, FEED[2]];
-    for (let r = 0; r < 3; r++) { const rr = .005 + r * .005 * k; for (let a = 0; a < 10; a++) { const a0 = a / 10 * TAU, a1 = (a + 1) / 10 * TAU; xline([c[0] + rr * Math.cos(a0), c[1] + rr * Math.sin(a0), c[2]], [c[0] + rr * Math.cos(a1), c[1] + rr * Math.sin(a1), c[2]], col.map(v => v * k * (1 - r * .3)), { mode: ADD, bias: 1.05 }); } }
   }
 }
 // E (amber) and H (teal) along the hero's line of arrival through the feed, total field
@@ -1479,9 +1472,8 @@ function dimWorld(k) {
     FB[i] = (l + (FB[i] - l) * sat) * m; FB[i + 1] = (l + (FB[i + 1] - l) * sat) * m; FB[i + 2] = (l + (FB[i + 2] - l) * sat) * m * 1.04;
   }
 }
-function fade(k) { if (k >= 1) return; for (let i = 0; i < W * H * 3; i++) FB[i] *= k; }
-function renderAt(Tall) {
-  const T = ((Tall % LOOP) + LOOP) % LOOP, t = simLocal(T), ph = TAU * F_VIS * Tall;
+function renderStory(T, ph) {
+  const t = simLocal(T);
   const s = camAt(T);
   setCam(s.e, s.t, s.f);
   ZB.fill(0);
@@ -1522,8 +1514,61 @@ function renderAt(Tall) {
   }
   drawCurrent(Ic, peak, ph);
   drawPattern(ov.pattern);
-  fade(Math.min(smooth(0, .7, T), 1 - smooth(LOOP - .8, LOOP, T)));
   return { T, t };
+}
+// one frame of the loop: in its first XF seconds the story's own continuation past the end fades
+// into its beginning, so the last frame leads straight into the first
+const FB2 = new Float32Array(W * H * 3);
+function renderAt(Tall) {
+  const T = ((Tall % LOOP) + LOOP) % LOOP, ph = TAU * F_VIS * Tall;
+  let info;
+  if (T < XF) {
+    renderStory(T + LOOP, ph); FB2.set(FB);
+    info = renderStory(T, ph);
+    const w = smooth(0, XF, T);
+    for (let i = 0; i < FB.length; i++) FB[i] = FB2[i] + (FB[i] - FB2[i]) * w;
+  } else info = renderStory(T, ph);
+  drawTitle(T < 10 ? 1 - smooth(2.5, 4, T) : smooth(LOOP - 4, LOOP - 2.5, T));
+  return info;
+}
+
+/* ---------- the title at the start and the end: an 8x8 home-computer face at twice size ---------- */
+const FONT = {
+  S: ['..####..', '.##..##.', '.##.....', '..####..', '.....##.', '.##..##.', '..####..', '........'],
+  u: ['........', '........', '.##..##.', '.##..##.', '.##..##.', '.##..##.', '..#####.', '........'],
+  i: ['...##...', '........', '..###...', '...##...', '...##...', '...##...', '..####..', '........'],
+  n: ['........', '........', '.#####..', '.##..##.', '.##..##.', '.##..##.', '.##..##.', '........'],
+  g: ['........', '........', '..#####.', '.##..##.', '.##..##.', '..#####.', '.....##.', '.#####..'],
+  L: ['.##.....', '.##.....', '.##.....', '.##.....', '.##.....', '.##.....', '.######.', '........'],
+  e: ['........', '........', '..####..', '.##..##.', '.######.', '.##.....', '..####..', '........'],
+  v: ['........', '........', '.##..##.', '.##..##.', '.##..##.', '..####..', '...##...', '........'],
+  l: ['..###...', '...##...', '...##...', '...##...', '...##...', '...##...', '..####..', '........'],
+  4: ['.....##.', '....###.', '...####.', '..##.##.', '.######.', '.....##.', '.....##.', '........'],
+  ' ': ['........', '........', '........', '........', '........', '........', '........', '........'],
+};
+// each glyph row its own colour, cream at the top running down to a low sun's red
+const TITLE_RAMP = [[1, .96, .82], [1, .9, .66], [1, .82, .5], [1, .72, .38], [.98, .6, .3], [.95, .48, .25], [.88, .37, .22], [.78, .29, .2]];
+function drawTitle(a) {
+  if (a <= .005) return;
+  for (let i = 0; i < FB.length; i++) FB[i] *= 1 - .38 * a;
+  const S = 2 * SCALE, lines = ['Suining', 'Level 4'];
+  const lh = 8 * S, gap = 3 * S, y0 = Math.round((H - (2 * lh + gap)) / 2);
+  const block = (x, y, col) => {
+    for (let j = 0; j < S; j++) for (let i = 0; i < S; i++) {
+      const xx = x + i, yy = y + j;
+      if (xx < 0 || yy < 0 || xx >= W || yy >= H) continue;
+      const o = (yy * W + xx) * 3;
+      for (let k = 0; k < 3; k++) FB[o + k] += (col[k] - FB[o + k]) * a;
+    }
+  };
+  for (const pass of [0, 1]) lines.forEach((str, li) => {
+    const x0 = Math.round((W - str.length * 8 * S) / 2), y = y0 + li * (lh + gap);
+    for (let ci = 0; ci < str.length; ci++) {
+      const g = FONT[str[ci]];
+      for (let r = 0; r < 8; r++) for (let c = 0; c < 8; c++) if (g[r][c] === '#')
+        pass ? block(x0 + (ci * 8 + c) * S, y + r * S, TITLE_RAMP[r]) : block(x0 + (ci * 8 + c + 1) * S, y + (r + 1) * S, [.02, .02, .03]);
+    }
+  });
 }
 function drawScreen() {
   const s = LAPTOP.screen;
@@ -1544,7 +1589,7 @@ addEventListener('resize', resize); resize();
 (function init() {
   drawScreenBase();
   const hist = new Uint32Array(32768);
-  for (const T of [2, 10, 19.5, 20.4, 22.05, 24.4, 27.5, 30, 33, 40, 44, 50]) { renderAt(T); histFrame(hist); }
+  for (const T of [1.5, 10, 19.5, 20.4, 22.05, 24.4, 27.5, 30, 33, 40, 44, 50]) { renderAt(T); histFrame(hist); }
   buildPalette(hist);
   const fixed = Q.get('t');
   const t0 = performance.now();
